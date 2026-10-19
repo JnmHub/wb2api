@@ -267,6 +267,10 @@ func TestReportActivityReadsTheStreak(t *testing.T) {
 
 func TestDailyChat(t *testing.T) {
 	e := newEnv(t, "intl", nil)
+	// The desktop leg on its own; the web-console leg has its own tests.
+	if err := e.c.Settings.SetSwitch("daily_chat_web", false); err != nil {
+		t.Fatal(err)
+	}
 	var sent map[string]any
 	e.vendor.h["/v2/chat/completions"] = func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)

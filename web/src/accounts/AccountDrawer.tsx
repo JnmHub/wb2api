@@ -10,6 +10,7 @@ const actionLabel: Record<string, string> = {
   checkin: '签到',
   'report-activity': '活跃上报',
   'daily-chat': '每日活跃',
+  'daily-chat-web': '网页活跃',
   'sync-profile': '同步昵称',
   test: '测试账号',
 }
@@ -191,6 +192,11 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
                   {a.realm === 'intl' && (
                     <button className="btn sm" disabled={!!busy} onClick={() => runAction('daily-chat')}>
                       每日活跃
+                    </button>
+                  )}
+                  {a.realm === 'intl' && (
+                    <button className="btn sm" disabled={!!busy} onClick={() => runAction('daily-chat-web')}>
+                      网页活跃
                     </button>
                   )}
                   <button className="btn sm" disabled={!!busy} onClick={() => runAction('sync-profile')}>

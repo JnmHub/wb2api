@@ -52,6 +52,7 @@
 | `internal/quota`（额度主动查询） | `quota_scan_models` 勾选的模型每 6 小时为每个「账号×模型」发一个最小请求体检：通了清该模型冷却；429 带重置时刻则记冷却并把这条配额线交给窗口探针；失败按 15 分钟重试、6 次后顺延一个完整周期；已有 429 窗口或冷却中的线跳过。调度器独立执行；`GET/POST /api/v2/quota-scan*`，设置页可维护模型并立即查询 | 4 个单测 + 1 个 API 测试 |
 | `internal/webtools`（Responses 本地 web 工具） | 开关 `local_web_tools`：把客户端声明的 `web_search` / `web_fetch` 换成网关自己的 function，模型调用后本地执行——搜索按 DuckDuckGo → Wikipedia → Google News 链式回退，抓取只允许公网 http(s) 文本页（私网/重定向复检、4 MB 上限、10 万字符分页），结果作为 tool 消息喂回并多轮继续（默认 3 轮、上限 8）。流式发 `web_search_call` 卡片并隐藏内部 tool_call；非流式只返回最终答案。客户端原始工具声明仍回显 | 6 个 webtools 单测 + 2 个 Responses 集成测试 |
 | `internal/atrest`（桌面凭据导入） | AES-256-GCM 信封（AAD 逐字节对齐）、keyblob 解封自检、内存密钥缓存（换钥自动失效）、桌面 `*.info` 扫描、`accessToken`/`refreshToken`/昵称解密、按 token/域名判定区域后导入（国内版自动补签到）；支持手工 64 位 hex 保护密钥或 44 字符 base64 的 atRestSecretKey。`GET/POST /api/v2/accounts/desktop`，面板账号页新增“桌面导入”弹窗 | 6 个 atrest 单测 + 1 个 API 测试 |
+| `internal/ops/webchat.go`（国际版网页会话） | 国际版每日活跃补上真正计入积分的网页腿：`POST /console/as/conversations/` 建会话 → 取沙箱 `link/token` → 接 ACP SSE（`Acp-Connection-Id`）→ `initialize` / `session/load` / `session/set_model` / `session/prompt` → 轮询会话到 `completed`。失败按首轮 120s 起翻倍重试（默认 3 次，可在设置里改次数/首轮等待）；桌面腿与网页腿合并成一次活动记录，只有网页腿成功才算当天完成。开关 `daily_chat_web` / `daily_chat_web_retry`，账号抽屉新增“网页活跃”动作 | 3 个 ops 单测（ACP 全流程、慢会话重试、CN 拒绝）+ 设置默认值断言 |
 
 `go vet`、`gofmt` 干净；`go test ./...` 全绿。本机没有 C 编译器，`-race` 跑不了，需在 CI（Linux）补。
 
@@ -154,7 +155,7 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 
 ## 还没做
 
-- 没移植：国际网页会话那一路、价格估算、智能体配置。
+- 没移植：价格估算、智能体配置。
 - 目录：`upstream_effort_of`（按目录钉死思考档位改写请求）、模型封锁表、`/u/<ref>/v1/models`（定址路由）。
 - TLS 指纹（JA3/JA4）：仍是 Go 标准 `crypto/tls`，与旧版 Python 的 OpenSSL 指纹不同（风险 R1）；**只在模拟上游上验证过，没连真实上游账号**，是否会被识别未验证。
 - 本机没有 C 编译器，`go test -race` 跑不了，需在 CI（Linux）补。

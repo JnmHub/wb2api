@@ -382,6 +382,23 @@ var switchKeys = map[string]bool{
 	"auto_switch_product": true, "egress_backoff_enabled": true, "free_model_credit_fallback": true,
 	"enable_anthropic_messages": true, "auth_disabled": true, "remaining_priority_enabled": true,
 	"local_web_tools": true, "log_db_enabled": true, "update_check_enabled": true,
+	"daily_chat_web": true, "daily_chat_web_retry": true,
+}
+
+// SetDailyChatWebAttempts stores the total web-turn attempts (1..5).
+func (s *Store) SetDailyChatWebAttempts(n int) error {
+	if n < 1 || n > 5 {
+		return fmt.Errorf("attempts must be between 1 and 5")
+	}
+	return s.Update(func(d Doc) error { d["daily_chat_web_attempts"] = n; return nil })
+}
+
+// SetDailyChatWebTimeout stores the first-turn wait in seconds (30..600).
+func (s *Store) SetDailyChatWebTimeout(sec int) error {
+	if sec < 30 || sec > 600 {
+		return fmt.Errorf("timeout must be between 30 and 600 seconds")
+	}
+	return s.Update(func(d Doc) error { d["daily_chat_web_timeout"] = sec; return nil })
 }
 
 // SetSwitch stores one boolean toggle.

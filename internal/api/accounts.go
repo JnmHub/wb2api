@@ -623,7 +623,7 @@ func (a *Accounts) batchFn(b batchReq) (jobs.Func, error) {
 			}
 			return nil
 		}, nil
-	case "refresh_credits", "checkin", "daily_chat", "report_activity", "sync_profile", "test":
+	case "refresh_credits", "checkin", "daily_chat", "daily_chat_web", "report_activity", "sync_profile", "test":
 		return a.upstreamAction(b)
 	case "refresh_token":
 		if a.Refresher == nil {

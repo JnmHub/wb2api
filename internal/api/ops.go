@@ -67,6 +67,8 @@ func (a *Accounts) upstreamAction(b batchReq) (jobs.Func, error) {
 				return resultErr(a.Ops.Checkin(ctx, acc, "manual"))
 			case "daily_chat":
 				return resultErr(a.Ops.DailyChat(ctx, acc, "manual"))
+			case "daily_chat_web":
+				return resultErr(a.Ops.DailyChatWeb(ctx, acc))
 			case "report_activity":
 				return resultErr(a.Ops.ReportActivity(ctx, acc, "manual"))
 			case "sync_profile":
@@ -116,7 +118,11 @@ func (o *Operations) action(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength != 0 && !decode(w, r, &in) {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 3*time.Minute)
+	timeout := 3 * time.Minute
+	if r.PathValue("name") == "daily-chat-web" {
+		timeout = 20 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), timeout)
 	defer cancel()
 	var res any
 	switch name := r.PathValue("name"); name {
@@ -126,6 +132,8 @@ func (o *Operations) action(w http.ResponseWriter, r *http.Request) {
 		res = o.Ops.Checkin(ctx, acc, "manual")
 	case "daily-chat":
 		res = o.Ops.DailyChat(ctx, acc, "manual")
+	case "daily-chat-web":
+		res = o.Ops.DailyChatWeb(ctx, acc)
 	case "report-activity":
 		res = o.Ops.ReportActivity(ctx, acc, "manual")
 	case "sync-profile":

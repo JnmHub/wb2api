@@ -219,17 +219,46 @@ func gz(b []byte) []byte {
 	return buf.Bytes()
 }
 
-// DailyChat is the INTL daily activity: one throwaway "Hi" conversation on a
-// free model through the account's own outbound identity. (The vendor also has
-// a web-console conversation leg; it is not ported — see docs/PROGRESS.md.)
+// DailyChat is the INTL daily activity: a throwaway "Hi" chat through the
+// account's outbound identity, plus (unless disabled) the web-console agent
+// conversation, which is the leg that actually counts for the daily bonus.
 func (c *Client) DailyChat(ctx context.Context, acc *pool.Account, trigger string) Result {
 	rec := acc.Record()
 	if rec.Realm != realm.Intl {
 		return failure("daily chat is only for international accounts")
 	}
-	res := c.dailyChatUpstream(ctx, acc)
+	desktop := c.dailyChatUpstream(ctx, acc)
+	if !c.Settings.DailyChatWeb() {
+		if desktop.OK {
+			c.stampDailyChat(acc)
+		}
+		c.record(acc, activity.TaskDailyChat, trigger, desktop.OK, firstNonEmpty(desktop.Msg, desktop.Error))
+		return desktop
+	}
+	web := c.dailyChatWebUpstream(ctx, acc)
+	res := Result{OK: web.OK, Msg: web.Msg, Error: web.Error}
+	if res.OK {
+		c.stampDailyChat(acc)
+		_ = c.FetchCredits(ctx, acc)
+	} else if desktop.OK {
+		res.Msg = "桌面通道成功，但网页通道失败：" + res.Error
+	}
+	if res.Extra == nil {
+		res.Extra = map[string]any{}
+	}
+	res.Extra["desktop_ok"] = desktop.OK
+	if web.Extra != nil {
+		for k, v := range web.Extra {
+			res.Extra["web_"+k] = v
+		}
+	}
 	c.record(acc, activity.TaskDailyChat, trigger, res.OK, firstNonEmpty(res.Msg, res.Error))
 	return res
+}
+
+func (c *Client) stampDailyChat(acc *pool.Account) {
+	stamp := stampNow(c.now())
+	c.update(acc, func(r *accountsRecord) { r.LastDailyChat = stamp })
 }
 
 func (c *Client) dailyChatUpstream(ctx context.Context, acc *pool.Account) Result {
@@ -275,8 +304,6 @@ func (c *Client) dailyChatUpstream(ctx context.Context, acc *pool.Account) Resul
 		return failure("HTTP %d: %s", resp.StatusCode, truncate(string(data), 100))
 	}
 	_ = c.FetchCredits(ctx, acc)
-	stamp := stampNow(c.now())
-	c.update(acc, func(r *accountsRecord) { r.LastDailyChat = stamp })
 	return Result{OK: true, Msg: "每日活跃对话成功完成"}
 }
 

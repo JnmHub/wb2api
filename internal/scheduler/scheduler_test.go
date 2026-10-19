@@ -72,6 +72,11 @@ func newFx(t *testing.T, specs ...map[string]any) *fx {
 	f.pool = pool.New(recs)
 	dir := t.TempDir()
 	st := settings.Open(dir)
+	// This fixture covers the desktop chore; the web-console leg has its own
+	// tests in internal/ops.
+	if err := st.SetSwitch("daily_chat_web", false); err != nil {
+		t.Fatal(err)
+	}
 	client := &ops.Client{Pool: f.pool, Up: upstream.NewManager(upstream.DefaultTimeouts()), Settings: st,
 		Activity: &activity.Log{Dir: dir}, BaseOverride: srv.URL}
 	f.s = &Scheduler{Pool: f.pool, Ops: client, Refresher: refresher{f}, Settings: st,

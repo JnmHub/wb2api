@@ -32,6 +32,8 @@ const switchInfo: { key: string; label: string; hint: string }[] = [
   { key: 'free_model_credit_fallback', label: '免费模型用尽后回退到付费同款', hint: '仅国际版 deepseek-v4.1-flash → -sg：所有账号的免费窗口都用尽后才会触发一次，会真实消耗积分。' },
   { key: 'remaining_priority_enabled', label: '剩余用量优先调度', hint: '估计剩余越接近耗尽的「账号×模型」分到越多请求，先把快用完的额度用掉；默认关闭，需要先真实撞过限额才有预算样本。' },
   { key: 'local_web_tools', label: '本地执行 web_search / web_fetch', hint: '仅 /v1/responses：网关自己搜索/抓取并把结果喂回模型，默认关闭。搜索走 DuckDuckGo / Wikipedia / Google News，抓取只允许公网 http(s) 文本页。' },
+  { key: 'daily_chat_web', label: '国际版每日活跃：网页会话', hint: '除桌面端轻量对话外，再建一条网页端 agent 会话并驱动它跑完。网页会话才计入每日活跃积分；默认开启，30/50 积分的官方任务依赖它。' },
+  { key: 'daily_chat_web_retry', label: '网页会话失败重试', hint: '会话没在首轮等待时间内跑完时再试，等待时间每轮翻倍（首轮 120s → 240s → 480s），默认开启。' },
   { key: 'enable_anthropic_messages', label: '启用 Anthropic Messages（/v1/messages）', hint: '网关会忽略 cache_control，可能多耗积分，默认关闭。' },
   { key: 'auth_disabled', label: '关闭 API Key 校验', hint: '危险：任何能访问端口的人都能使用你的账号。仅限可信内网。' },
   { key: 'update_check_enabled', label: '启用更新检查', hint: '每天最多查一次 GitHub Releases；只读，不下载、不替换、不重启。默认关闭。' },
@@ -115,6 +117,7 @@ export function SettingsPage() {
         )}
       </section>
 
+      <DailyChatSection s={s} />
       <UpstreamSection s={s} />
       <ProbeSection s={s} />
       <ModelsSection s={s} />
@@ -124,8 +127,40 @@ export function SettingsPage() {
   )
 }
 
-function LimitRow(props: { name: string; info: { label: string; hint: string; unit: string }; entry: SettingsView['limits'][string]; onSave: (b: Record<string, unknown>) => void }) {
-  const { entry } = props
+function DailyChatSection({ s }: { s: SettingsView }) {
+  const save = useSaveSettings()
+  const [attempts, setAttempts] = useState(String(s.daily_chat_web_attempts))
+  const [timeout, setTimeout] = useState(String(s.daily_chat_web_timeout))
+  const dirty = attempts !== String(s.daily_chat_web_attempts) || timeout !== String(s.daily_chat_web_timeout)
+  return (
+    <section className="card sec">
+      <h3>国际版每日活跃</h3>
+      <p className="dim">
+        网页通道会创建会话、接上沙箱并驱动一轮 agent 对话；只有真正跑完的会话才计入每日活跃积分（30/50 积分任务），所以它比桌面端那次“Hi”更重要。首轮没跑完会按“次数”重试，第 N 轮等待是首轮的 2^(N-1) 倍。
+      </p>
+      <div className="row">
+        <div className="field">
+          <label>最多尝试次数</label>
+          <input className="input" type="number" min={1} max={5} value={attempts} onChange={(e) => setAttempts(e.target.value)} aria-label="网页会话最多尝试次数" />
+        </div>
+        <div className="field">
+          <label>首轮等待（秒）</label>
+          <input className="input" type="number" min={30} max={600} value={timeout} onChange={(e) => setTimeout(e.target.value)} aria-label="网页会话首轮等待秒数" />
+        </div>
+        <button
+          className="btn sm primary"
+          disabled={!dirty || save.isPending}
+          onClick={() => save.mutate({ daily_chat_web_attempts: Number(attempts), daily_chat_web_timeout: Number(timeout) })}
+        >
+          保存
+        </button>
+      </div>
+      {save.isError && <div className="err">{(save.error as Error).message}</div>}
+    </section>
+  )
+}
+
+function LimitRow(props: { name: string; info: { label: string; hint: string; unit: string }; entry: SettingsView['limits'][string]; onSave: (b: Record<string, unknown>) => void }) {  const { entry } = props
   const [g, setG] = useState(String(entry.global))
   const [i, setI] = useState(entry.intl == null ? '' : String(entry.intl))
   const [c, setC] = useState(entry.cn == null ? '' : String(entry.cn))

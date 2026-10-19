@@ -1,7 +1,9 @@
 package settings
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -197,6 +199,42 @@ func clampOverride(v *int) *int {
 
 func (d Doc) flag(key string) bool { b, _ := d[key].(bool); return b }
 
+// flagOr reads a switch with an explicit default for installs that never
+// toggled it.
+func (d Doc) flagOr(key string, def bool) bool {
+	if b, ok := d[key].(bool); ok {
+		return b
+	}
+	return def
+}
+
+func (d Doc) intOr(key string, def, lo, hi int) int {
+	var n int
+	switch v := d[key].(type) {
+	case float64:
+		n = int(v)
+	case int:
+		n = v
+	case int64:
+		n = int(v)
+	case json.Number:
+		i, err := v.Int64()
+		if err != nil {
+			return def
+		}
+		n = int(i)
+	default:
+		return def
+	}
+	if n < lo {
+		return lo
+	}
+	if n > hi {
+		return hi
+	}
+	return n
+}
+
 // AutoSwitchProduct: may an upstream 429 rotate an account's outbound identity
 // (off unless the operator turns it on).
 func (s *Store) AutoSwitchProduct() bool { return s.View().flag("auto_switch_product") }
@@ -243,6 +281,27 @@ func (s *Store) RemainingPriority() bool { return s.View().flag("remaining_prior
 
 // LocalWebTools: execute Responses web_search / web_fetch gateway-side.
 func (s *Store) LocalWebTools() bool { return s.View().flag("local_web_tools") }
+
+// DailyChatWeb: also run the INTL web-console agent conversation (the leg that
+// actually counts for the daily activity bonus). Default on.
+func (s *Store) DailyChatWeb() bool { return s.View().flagOr("daily_chat_web", true) }
+
+// DailyChatWebRetry: retry a slow web turn, doubling the wait each round.
+func (s *Store) DailyChatWebRetry() bool { return s.View().flagOr("daily_chat_web_retry", true) }
+
+// DailyChatWebAttempts: total web turns including the first (1..5).
+func (s *Store) DailyChatWebAttempts() int { return s.View().intOr("daily_chat_web_attempts", 3, 1, 5) }
+
+// DailyChatWebTimeout: seconds the first web turn may take (30..600).
+func (s *Store) DailyChatWebTimeout() int {
+	def := 120
+	if v := os.Getenv("WB_WEB_TURN_TIMEOUT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			def = n
+		}
+	}
+	return s.View().intOr("daily_chat_web_timeout", def, 30, 600)
+}
 
 // AnthropicMessages: the Messages compatibility layer is switched on.
 func (s *Store) AnthropicMessages() bool { return s.View().flag("enable_anthropic_messages") }

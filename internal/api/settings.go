@@ -61,6 +61,7 @@ func keyView(k settings.APIKey) map[string]any {
 var switchNames = []string{
 	"auto_switch_product", "egress_backoff_enabled", "free_model_credit_fallback", "enable_anthropic_messages",
 	"auth_disabled", "remaining_priority_enabled", "local_web_tools", "update_check_enabled",
+	"daily_chat_web", "daily_chat_web_retry",
 }
 
 func (s *Settings) snapshot() map[string]any {
@@ -71,7 +72,10 @@ func (s *Settings) snapshot() map[string]any {
 	}
 	switches := map[string]bool{}
 	for _, n := range switchNames {
-		b, _ := d[n].(bool)
+		b, ok := d[n].(bool)
+		if !ok && strings.HasPrefix(n, "daily_chat_web") {
+			b = true // the web leg and its retry default to on
+		}
 		switches[n] = b
 	}
 	up := s.Store.UpstreamConfig()
@@ -90,13 +94,15 @@ func (s *Settings) snapshot() map[string]any {
 			"header_timeout_seconds": int(up.HeaderTimeout.Seconds()), "idle_timeout_seconds": int(up.IdleTimeout.Seconds()),
 			"device_token_set": up.DeviceToken != "", "device_token_file": up.DeviceTokenFile,
 		},
-		"prompt":                map[string]any{"mode": s.Store.PromptConfig().Mode, "file": s.Store.PromptConfig().File},
-		"credits_refresh_hours": s.Store.CreditsRefreshHours(),
-		"proxy_slots":           slots,
-		"window_probe":          s.Store.WindowProbe(),
-		"quota_scan_models":     s.Store.QuotaScanModels(),
-		"banned_models":         s.Store.BannedModels(),
-		"banned_substring":      s.Store.BannedSubstring(),
+		"prompt":                  map[string]any{"mode": s.Store.PromptConfig().Mode, "file": s.Store.PromptConfig().File},
+		"credits_refresh_hours":   s.Store.CreditsRefreshHours(),
+		"proxy_slots":             slots,
+		"window_probe":            s.Store.WindowProbe(),
+		"quota_scan_models":       s.Store.QuotaScanModels(),
+		"banned_models":           s.Store.BannedModels(),
+		"banned_substring":        s.Store.BannedSubstring(),
+		"daily_chat_web_attempts": s.Store.DailyChatWebAttempts(),
+		"daily_chat_web_timeout":  s.Store.DailyChatWebTimeout(),
 	}
 	if s.Catalog != nil {
 		out["catalog"] = s.Catalog.Status()
@@ -121,17 +127,19 @@ func (s *Settings) applyRuntime() {
 }
 
 type settingsPatch struct {
-	Realm               *string                `json:"realm"`
-	Switches            map[string]bool        `json:"switches"`
-	AutoSwitchProducts  *[]string              `json:"auto_switch_products"`
-	Upstream            map[string]any         `json:"upstream"`
-	Prompt              map[string]any         `json:"prompt"`
-	CreditsRefreshHours *float64               `json:"credits_refresh_hours"`
-	Limits              map[string]limitChange `json:"limits"`
-	WindowProbe         *bool                  `json:"window_probe"`
-	QuotaScanModels     *[]string              `json:"quota_scan_models"`
-	BannedModels        *[]string              `json:"banned_models"`
-	BannedSubstring     *string                `json:"banned_substring"`
+	Realm                *string                `json:"realm"`
+	Switches             map[string]bool        `json:"switches"`
+	AutoSwitchProducts   *[]string              `json:"auto_switch_products"`
+	Upstream             map[string]any         `json:"upstream"`
+	Prompt               map[string]any         `json:"prompt"`
+	CreditsRefreshHours  *float64               `json:"credits_refresh_hours"`
+	Limits               map[string]limitChange `json:"limits"`
+	WindowProbe          *bool                  `json:"window_probe"`
+	QuotaScanModels      *[]string              `json:"quota_scan_models"`
+	BannedModels         *[]string              `json:"banned_models"`
+	BannedSubstring      *string                `json:"banned_substring"`
+	DailyChatWebAttempts *int                   `json:"daily_chat_web_attempts"`
+	DailyChatWebTimeout  *int                   `json:"daily_chat_web_timeout"`
 }
 
 type limitChange struct {
@@ -209,6 +217,18 @@ func (s *Settings) patch(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.BannedSubstring != nil {
 		if err := s.Store.SetBannedSubstring(*p.BannedSubstring); err != nil {
+			fail(err)
+			return
+		}
+	}
+	if p.DailyChatWebAttempts != nil {
+		if err := s.Store.SetDailyChatWebAttempts(*p.DailyChatWebAttempts); err != nil {
+			fail(err)
+			return
+		}
+	}
+	if p.DailyChatWebTimeout != nil {
+		if err := s.Store.SetDailyChatWebTimeout(*p.DailyChatWebTimeout); err != nil {
 			fail(err)
 			return
 		}

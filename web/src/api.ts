@@ -219,6 +219,8 @@ export interface SettingsView {
   quota_scan_models: string[]
   banned_models: string[]
   banned_substring: string
+  daily_chat_web_attempts: number
+  daily_chat_web_timeout: number
   proxy_slots: ProxySlot[]
   catalog?: CatalogStatus[]
 }
