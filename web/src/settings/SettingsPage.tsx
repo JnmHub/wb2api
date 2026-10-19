@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Segmented, Typography } from 'antd'
+import { Button, InputNumber, Segmented, Typography } from 'antd'
 import { ApiError, get, patch, post, type SettingsView, type UpdateStatus } from '../api'
 import { Toggle } from '../components/Modal'
 import { AgentsSection } from './AgentsSection'
@@ -193,12 +193,12 @@ function LimitRow(props: { name: string; info: { label: string; hint: string; un
         <b>{props.info.label}</b> <span className="dim">（{props.info.unit}）</span>
         <div className="dim hint">{props.info.hint}</div>
       </div>
-      <input className="input" type="number" min={0} value={g} onChange={(e) => setG(e.target.value)} aria-label={props.info.label + ' 全局'} />
-      <input className="input" type="number" min={0} placeholder="继承" value={i} onChange={(e) => setI(e.target.value)} aria-label={props.info.label + ' 国际版'} />
-      <input className="input" type="number" min={0} placeholder="继承" value={c} onChange={(e) => setC(e.target.value)} aria-label={props.info.label + ' 国内版'} />
-      <button className="btn sm primary" disabled={!dirty} onClick={submit}>
+      <InputNumber min={0} value={g === '' ? null : Number(g)} onChange={(v) => setG(v == null ? '' : String(v))} aria-label={props.info.label + ' 全局'} />
+      <InputNumber min={0} value={i === '' ? null : Number(i)} placeholder="继承" onChange={(v) => setI(v == null ? '' : String(v))} aria-label={props.info.label + ' 国际版'} />
+      <InputNumber min={0} value={c === '' ? null : Number(c)} placeholder="继承" onChange={(v) => setC(v == null ? '' : String(v))} aria-label={props.info.label + ' 国内版'} />
+      <Button size="small" type="primary" disabled={!dirty} onClick={submit}>
         保存
-      </button>
+      </Button>
     </div>
   )
 }

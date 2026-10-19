@@ -1,7 +1,10 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Button, Card, Collapse, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Typography } from 'antd'
+import type { ColumnsType } from 'antd/es/table'
+import { Copy, Pencil, Plus, Trash2 } from 'lucide-react'
 import { del, get, patch, post, type KeyView, type SettingsView } from '../api'
-import { Confirm, CopyButton, Modal } from '../components/Modal'
+import { CopyButton } from '../components/Modal'
 import { realmLabel } from '../format'
 
 interface Created extends KeyView {
@@ -13,71 +16,118 @@ export function KeysSection({ s }: { s: SettingsView }) {
   const refresh = () => qc.invalidateQueries({ queryKey: ['settings'] })
   const [editing, setEditing] = useState<KeyView | 'new' | null>(null)
   const [created, setCreated] = useState<Created | null>(null)
-  const [removing, setRemoving] = useState<KeyView | null>(null)
+  const [revealed, setRevealed] = useState<Record<string, string>>({})
   const toggle = useMutation({
     mutationFn: (k: KeyView) => patch(`/api/v2/keys/${k.id}`, { enabled: !k.enabled }),
     onSuccess: refresh,
   })
   const remove = useMutation({
     mutationFn: (k: KeyView) => del(`/api/v2/keys/${k.id}`),
-    onSuccess: () => {
-      setRemoving(null)
-      refresh()
-    },
+    onSuccess: refresh,
   })
   const live = s.keys.filter((k) => !k.deleted)
   const gone = s.keys.filter((k) => k.deleted)
-  return (
-    <section className="card sec">
-      <div className="row">
-        <h3>API Key</h3>
-        <span className="spacer" />
-        <button className="btn primary sm" onClick={() => setEditing('new')}>
-          新建 Key
-        </button>
-      </div>
-      {live.length === 0 && (
-        <p className="warn" role="note">
-          还没有任何 Key：网关此刻不校验调用方，任何能访问端口的客户端都能使用你的账号。建议先建一个。
-        </p>
-      )}
-      <div className="keytable" role="table" aria-label="API Key 列表">
-        {live.map((k) => (
-          <div className="keyrow" role="row" key={k.id}>
-            <div>
-              <b>{k.name}</b>
-              <div className="dim mono">{k.key_preview}</div>
-            </div>
-            <span>{k.realm ? <span className={'badge ' + k.realm}>{realmLabel[k.realm]}</span> : <span className="dim">跟随面板</span>}</span>
-            <span className="dim" title={k.models.join('\n')}>
-              {k.models.length ? `${k.models.length} 条模型规则` : '不限模型'}
-            </span>
-            <span className="dim">{k.concurrency_limit ? `并发 ≤ ${k.concurrency_limit}` : '并发不限'}</span>
-            <label className="toggle compact">
-              <input type="checkbox" checked={k.enabled} onChange={() => toggle.mutate(k)} aria-label={`${k.name} 启用`} />
-            </label>
-            <span className="actions">
-              <CopyButton label="复制 Key" text={async () => (await get<{ key: string }>(`/api/v2/keys/${k.id}/secret`)).key} />
-              <button className="btn sm" onClick={() => setEditing(k)}>
-                编辑
-              </button>
-              <button className="btn sm danger" onClick={() => setRemoving(k)}>
-                删除
-              </button>
-            </span>
+
+  const reveal = async (k: KeyView) => {
+    const r = await get<{ key: string }>(`/api/v2/keys/${k.id}/secret`)
+    setRevealed((cur) => ({ ...cur, [k.id]: r.key }))
+    try {
+      await navigator.clipboard.writeText(r.key)
+    } catch {
+      /* clipboard may be unavailable outside a secure context */
+    }
+  }
+
+  const columns: ColumnsType<KeyView> = [
+    {
+      title: '名称',
+      dataIndex: 'name',
+      render: (_, k) => (
+        <div>
+          <b>{k.name}</b>
+          <div className="mono dim" style={{ fontSize: 12 }}>
+            {revealed[k.id] ?? k.key_preview}
           </div>
-        ))}
-        {live.length === 0 && <div className="dim pad">暂无 Key</div>}
-      </div>
+        </div>
+      ),
+    },
+    {
+      title: '出口',
+      dataIndex: 'realm',
+      width: 110,
+      render: (r: KeyView['realm']) =>
+        r ? <Tag color={r === 'cn' ? 'volcano' : 'geekblue'}>{realmLabel[r]}</Tag> : <Typography.Text type="secondary">跟随面板</Typography.Text>,
+    },
+    {
+      title: '模型',
+      dataIndex: 'models',
+      render: (m: string[]) =>
+        m.length ? (
+          <Typography.Text ellipsis={{ tooltip: m.join('\n') }} style={{ maxWidth: 260 }}>
+            {m.length} 条规则
+          </Typography.Text>
+        ) : (
+          <Typography.Text type="secondary">不限模型</Typography.Text>
+        ),
+    },
+    {
+      title: '并发',
+      dataIndex: 'concurrency_limit',
+      width: 100,
+      render: (v: number) => (v ? `≤ ${v}` : '不限'),
+    },
+    {
+      title: '启用',
+      dataIndex: 'enabled',
+      width: 80,
+      render: (_, k) => <Switch size="small" checked={k.enabled} onChange={() => toggle.mutate(k)} aria-label={`${k.name} 启用`} />,
+    },
+    {
+      title: '',
+      width: 150,
+      render: (_, k) => (
+        <Space size={4}>
+          <Button type="text" size="small" icon={<Copy size={14} />} onClick={() => reveal(k)} aria-label="复制 Key" />
+          <Button type="text" size="small" icon={<Pencil size={14} />} onClick={() => setEditing(k)} aria-label="编辑" />
+          <Popconfirm title={`删除 Key「${k.name}」`} description="Key 立即失效，不可恢复；历史用量仍归属在这个名字下。" okText="删除" cancelText="取消" onConfirm={() => remove.mutate(k)}>
+            <Button type="text" size="small" danger icon={<Trash2 size={14} />} aria-label="删除" />
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
+
+  return (
+    <Card
+      title="API Key"
+      extra={
+        <Button type="primary" size="small" icon={<Plus size={14} />} onClick={() => setEditing('new')}>
+          新建 Key
+        </Button>
+      }
+      styles={{ body: { padding: 0 } }}
+    >
+      {live.length === 0 && (
+        <Typography.Paragraph type="warning" style={{ padding: 16, margin: 0 }}>
+          还没有 Key：网关此刻不校验调用方，任何能访问端口的客户端都能使用你的账号。建议先建一个。
+        </Typography.Paragraph>
+      )}
+      <Table<KeyView> rowKey="id" size="small" columns={columns} dataSource={live} pagination={false} />
       {gone.length > 0 && (
-        <details className="dim">
-          <summary>已删除的 Key（{gone.length}，保留以归属历史用量）</summary>
-          {gone.map((k) => (
-            <div key={k.id} className="mono">
-              {k.name} · {k.id} · 删除于 {k.deleted_at}
-            </div>
-          ))}
-        </details>
+        <Collapse
+          ghost
+          items={[
+            {
+              key: 'gone',
+              label: `已删除的 Key（${gone.length}，保留以归属历史用量）`,
+              children: gone.map((k) => (
+                <div key={k.id} className="mono dim">
+                  {k.name} · {k.id} · 删除于 {k.deleted_at}
+                </div>
+              )),
+            },
+          ]}
+        />
       )}
 
       {editing && (
@@ -91,27 +141,23 @@ export function KeysSection({ s }: { s: SettingsView }) {
           }}
         />
       )}
-      {created && (
-        <Modal title="新 Key 已创建" onCancel={() => setCreated(null)}>
-          <span className="dim">完整的 Key 只在这里显示一次（之后仍可在列表里"复制 Key"）。</span>
-          <div className="secret mono" data-testid="new-key">{created.key}</div>
-          <div className="row end">
-            <CopyButton text={created.key} />
-            <button className="btn primary" onClick={() => setCreated(null)}>
-              完成
-            </button>
-          </div>
-        </Modal>
-      )}
-      {removing && (
-        <Confirm
-          title={`删除 Key「${removing.name}」`}
-          text="Key 立即失效，不可恢复；历史用量仍归属在这个名字下。"
-          onCancel={() => setRemoving(null)}
-          onOk={() => remove.mutate(removing)}
-        />
-      )}
-    </section>
+      <Modal
+        title="新 Key 已创建"
+        open={!!created}
+        onCancel={() => setCreated(null)}
+        footer={[
+          created && <CopyButton key="copy" text={created.key} />,
+          <Button key="ok" type="primary" onClick={() => setCreated(null)}>
+            完成
+          </Button>,
+        ]}
+      >
+        <Typography.Paragraph type="secondary">完整的 Key 只在这里显示一次（之后仍可在列表里“复制 Key”）。</Typography.Paragraph>
+        <Typography.Paragraph copyable className="mono" data-testid="new-key">
+          {created?.key}
+        </Typography.Paragraph>
+      </Modal>
+    </Card>
   )
 }
 
@@ -120,12 +166,15 @@ function KeyEditor(props: { initial: KeyView | null; onClose: () => void; onSave
   const [name, setName] = useState(k?.name ?? '')
   const [realm, setRealm] = useState<string>(k?.realm ?? '')
   const [models, setModels] = useState((k?.models ?? []).join('\n'))
-  const [conc, setConc] = useState(String(k?.concurrency_limit ?? 0))
+  const [conc, setConc] = useState<number>(k?.concurrency_limit ?? 0)
   const [secret, setSecret] = useState('')
   const m = useMutation({
     mutationFn: async () => {
       const body: Record<string, unknown> = {
-        name, realm, models: models.split(/[\s,]+/).filter(Boolean), concurrency_limit: Number(conc || 0),
+        name,
+        realm,
+        models: models.split(/[\s,]+/).filter(Boolean),
+        concurrency_limit: conc || 0,
       }
       if (!k) {
         if (secret.trim()) body.key = secret.trim()
@@ -137,44 +186,49 @@ function KeyEditor(props: { initial: KeyView | null; onClose: () => void; onSave
     onSuccess: (r) => props.onSaved(r.created),
   })
   return (
-    <Modal title={k ? '编辑 Key' : '新建 Key'} onCancel={props.onClose} wide>
-      <div className="grid2">
-        <div className="field">
-          <label>名称</label>
-          <input className="input" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：cursor / ci" />
+    <Modal
+      title={k ? '编辑 Key' : '新建 Key'}
+      open
+      onCancel={props.onClose}
+      okText="保存"
+      cancelText="取消"
+      confirmLoading={m.isPending}
+      onOk={() => m.mutate()}
+    >
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        <div>
+          <Typography.Text type="secondary">名称</Typography.Text>
+          <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：cursor / ci" />
         </div>
-        <div className="field">
-          <label>绑定出口</label>
-          <select className="select" value={realm} onChange={(e) => setRealm(e.target.value)}>
-            <option value="">跟随面板切换</option>
-            <option value="intl">国际版</option>
-            <option value="cn">国内版</option>
-          </select>
+        <div>
+          <Typography.Text type="secondary">绑定出口</Typography.Text>
+          <Select
+            style={{ width: '100%' }}
+            value={realm}
+            onChange={setRealm}
+            options={[
+              { value: '', label: '跟随面板切换' },
+              { value: 'intl', label: '国际版' },
+              { value: 'cn', label: '国内版' },
+            ]}
+          />
         </div>
-        <div className="field">
-          <label>并发上限（0 = 不限）</label>
-          <input className="input" type="number" min={0} value={conc} onChange={(e) => setConc(e.target.value)} />
+        <div>
+          <Typography.Text type="secondary">并发上限（0 = 不限）</Typography.Text>
+          <InputNumber style={{ width: '100%' }} min={0} value={conc} onChange={(v) => setConc(v ?? 0)} />
         </div>
         {!k && (
-          <div className="field">
-            <label>自定义 Key（留空 = 自动生成）</label>
-            <input className="input mono" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="至少 4 个字符" />
+          <div>
+            <Typography.Text type="secondary">自定义 Key（留空 = 自动生成）</Typography.Text>
+            <Input.Password className="mono" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="至少 4 个字符" />
           </div>
         )}
-      </div>
-      <div className="field">
-        <label>允许的模型（每行一条，支持 * 通配；留空 = 不限）</label>
-        <textarea className="input mono" rows={4} value={models} onChange={(e) => setModels(e.target.value)} placeholder={'glm-*\ndeepseek-v4.1-flash'} />
-      </div>
-      {m.isError && <div className="err">{(m.error as Error).message}</div>}
-      <div className="row end">
-        <button className="btn" onClick={props.onClose}>
-          取消
-        </button>
-        <button className="btn primary" disabled={m.isPending} onClick={() => m.mutate()}>
-          保存
-        </button>
-      </div>
+        <div>
+          <Typography.Text type="secondary">允许的模型（每行一条，支持 * 通配；留空 = 不限）</Typography.Text>
+          <Input.TextArea className="mono" rows={4} value={models} onChange={(e) => setModels(e.target.value)} placeholder={'glm-*\ndeepseek-v4.1-flash'} />
+        </div>
+        {m.isError && <Typography.Text type="danger">{String(m.error)}</Typography.Text>}
+      </Space>
     </Modal>
   )
 }
