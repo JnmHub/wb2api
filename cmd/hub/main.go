@@ -37,6 +37,7 @@ import (
 	"wb2api/internal/ops"
 	"wb2api/internal/panelauth"
 	"wb2api/internal/pool"
+	"wb2api/internal/pricing"
 	"wb2api/internal/quota"
 	"wb2api/internal/realmswitch"
 	"wb2api/internal/refresh"
@@ -211,7 +212,9 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"current": realmSw.Get(), "options": []string{"intl", "cn"}})
 	})
-	(&api.Usage{DB: udb, Est: limits}).Register(mux, auth.Require)
+	pricingStore := pricing.Open(*accountsDir)
+	go refreshPricingLoop(pricingStore, log)
+	(&api.Usage{DB: udb, Est: limits, Pricing: pricingStore}).Register(mux, auth.Require)
 	bus := events.New(512)
 	jobMgr := &jobs.Manager{Workers: 4, OnProgress: func(j jobs.Job) { bus.Publish("job.progress", j) }}
 	accountsAPI := &api.Accounts{
@@ -298,4 +301,28 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+}
+
+// refreshPricingLoop keeps the OpenRouter pricing snapshot warm without doing
+// network work on the request path.
+func refreshPricingLoop(s *pricing.Store, log *slog.Logger) {
+	refresh := func() {
+		if stale, _ := s.Status()["stale"].(bool); !stale {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		n, err := s.Refresh(ctx)
+		if err != nil {
+			log.Warn("pricing refresh failed", "err", err)
+			return
+		}
+		log.Info("pricing catalogue refreshed", "models", n)
+	}
+	refresh()
+	ticker := time.NewTicker(12 * time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		refresh()
+	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"wb2api/internal/gateway/openai"
 	"wb2api/internal/pool"
+	"wb2api/internal/pricing"
 	"wb2api/internal/usage"
 	"wb2api/internal/usagedb"
 	"wb2api/internal/usageest"
@@ -60,6 +61,8 @@ type Usage struct {
 	Now func() time.Time
 	// Est is the remaining-usage estimate (nil = not available).
 	Est *usageest.Estimator
+	// Pricing estimates API-equivalent cost from OpenRouter's catalogue.
+	Pricing *pricing.Store
 }
 
 func (u *Usage) now() time.Time {
@@ -152,6 +155,11 @@ func (u *Usage) Register(mux *http.ServeMux, wrap func(http.Handler) http.Handle
 	mux.Handle("GET /api/v2/usage/series", wrap(http.HandlerFunc(u.series)))
 	mux.Handle("GET /api/v2/usage/recent", wrap(http.HandlerFunc(u.recent)))
 	mux.Handle("GET /api/v2/usage/remaining", wrap(http.HandlerFunc(u.remaining)))
+	mux.Handle("GET /api/v2/pricing", wrap(http.HandlerFunc(u.pricingGet)))
+	mux.Handle("POST /api/v2/pricing/refresh", wrap(http.HandlerFunc(u.pricingRefresh)))
+	mux.Handle("POST /api/v2/pricing/policy", wrap(http.HandlerFunc(u.pricingPolicy)))
+	mux.Handle("POST /api/v2/pricing/mapping", wrap(http.HandlerFunc(u.pricingPolicy)))
+	mux.Handle("GET /api/v2/pricing/cost", wrap(http.HandlerFunc(u.pricingCost)))
 }
 
 // remaining serves the 24h quota estimate; the ETag makes the panel's poll a

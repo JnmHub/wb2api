@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { get, type RemainingPayload, type SeriesPoint, type UsageAgg, type UsageSummary } from '../api'
 import { BarChart } from '../components/Chart'
 import { credit, ms, num, pct, span, tokens } from '../format'
+import { PricingCard } from './PricingCard'
 
 type Range = 'today' | 'week' | 'month' | 'all'
 const ranges: { key: Range; label: string }[] = [
@@ -67,6 +68,8 @@ export function UsagePage() {
         <b>{bucket === 'hour' ? '每小时 Token' : '每日 Token'}</b>
         <BarChart bars={bars} format={tokens} />
       </div>
+
+      <PricingCard range={range} realm={realm} />
 
       <div className="grid2">
         <Table title="按模型" rows={sum.data?.by_model} />

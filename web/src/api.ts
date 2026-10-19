@@ -424,3 +424,56 @@ export interface DesktopResult {
   files: DesktopFile[]
   imported?: { path: string; uid?: string; nickname?: string; realm?: string; ok?: boolean; error?: string }[]
 }
+
+export interface PricingPrice {
+  input: number
+  output: number
+  cache_read: number
+  cache_write: number
+}
+
+export interface PricingModel {
+  id: string
+  name: string
+  price: PricingPrice
+}
+
+export interface PricingPolicy {
+  mode: string
+  or_id?: string
+  input?: number
+  output?: number
+  cache_read?: number
+  cache_write?: number
+  note?: string
+}
+
+export interface PricingStatus {
+  fetched_at: string
+  usd_cny: number
+  source: string
+  models: number
+  catalogue: PricingModel[]
+  policies: Record<string, PricingPolicy>
+  error: string
+  stale: boolean
+}
+
+export interface PricingCostRow {
+  model: string
+  requests: number
+  prompt_tokens: number
+  completion_tokens: number
+  cached_tokens: number
+  cost_cny: number
+  cost_usd: number
+  priced: boolean
+  source: string
+}
+
+export interface PricingCost {
+  since: string
+  until: string
+  models: PricingCostRow[]
+  totals: { cost_cny: number; cost_usd: number; priced_models: number; unpriced_models: number }
+}

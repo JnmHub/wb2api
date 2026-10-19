@@ -53,6 +53,7 @@
 | `internal/webtools`（Responses 本地 web 工具） | 开关 `local_web_tools`：把客户端声明的 `web_search` / `web_fetch` 换成网关自己的 function，模型调用后本地执行——搜索按 DuckDuckGo → Wikipedia → Google News 链式回退，抓取只允许公网 http(s) 文本页（私网/重定向复检、4 MB 上限、10 万字符分页），结果作为 tool 消息喂回并多轮继续（默认 3 轮、上限 8）。流式发 `web_search_call` 卡片并隐藏内部 tool_call；非流式只返回最终答案。客户端原始工具声明仍回显 | 6 个 webtools 单测 + 2 个 Responses 集成测试 |
 | `internal/atrest`（桌面凭据导入） | AES-256-GCM 信封（AAD 逐字节对齐）、keyblob 解封自检、内存密钥缓存（换钥自动失效）、桌面 `*.info` 扫描、`accessToken`/`refreshToken`/昵称解密、按 token/域名判定区域后导入（国内版自动补签到）；支持手工 64 位 hex 保护密钥或 44 字符 base64 的 atRestSecretKey。`GET/POST /api/v2/accounts/desktop`，面板账号页新增“桌面导入”弹窗 | 6 个 atrest 单测 + 1 个 API 测试 |
 | `internal/ops/webchat.go`（国际版网页会话） | 国际版每日活跃补上真正计入积分的网页腿：`POST /console/as/conversations/` 建会话 → 取沙箱 `link/token` → 接 ACP SSE（`Acp-Connection-Id`）→ `initialize` / `session/load` / `session/set_model` / `session/prompt` → 轮询会话到 `completed`。失败按首轮 120s 起翻倍重试（默认 3 次，可在设置里改次数/首轮等待）；桌面腿与网页腿合并成一次活动记录，只有网页腿成功才算当天完成。开关 `daily_chat_web` / `daily_chat_web_retry`，账号抽屉新增“网页活跃”动作 | 3 个 ops 单测（ACP 全流程、慢会话重试、CN 拒绝）+ 设置默认值断言 |
+| `internal/pricing`（价格估算） | 从 OpenRouter `/api/v1/models` 拉快照（美元/百万 token，缓存读价），按固定 `usd_cny=7.1` 折算；模型解析顺序：手工策略 → 精确 OR id → provider 前缀别名（唯一才认）→ 去渠道后缀继承（唯一才认）；支持 `auto/manual/ignore` 策略、手工 OR id 映射与显式单价。快照/策略落盘到 `pricing.json` / `pricing_policies.json`，启动与每 12 小时自动刷新。`GET /api/v2/pricing`、`POST /pricing/refresh`、`POST /pricing/policy|mapping`、`GET /pricing/cost`（按模型汇总 prompt/completion/cached 后算等值 API 成本），用量页新增价格卡（总价、已定价/未定价、逐模型映射） | 5 个 pricing 单测 + 1 个 API 测试 |
 
 `go vet`、`gofmt` 干净；`go test ./...` 全绿。本机没有 C 编译器，`-race` 跑不了，需在 CI（Linux）补。
 
@@ -152,10 +153,11 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 14. **Responses 流里保留了旧版的一个小怪癖**：文本以 `<` 开头且疑似 DSML 时会先发一个空 `delta`。无害，保留是为了与旧版逐字节对拍。
 15. **本地 web 工具**：只实现 DuckDuckGo / Wikipedia / Google News 三个搜索后端（旧版还有 Bing、StackOverflow），也不往最终文本注入 `url_citation` 注解；搜索结果文本本身带 URL。`web_fetch` 只接受公网 http(s) 文本页，私网或重定向到私网直接拒绝。
 16. **桌面凭据的密钥回收未移植**：加密信封、keyblob 解封、凭据解密与导入都已实现，但没有旧版“扫 WorkBuddy 进程内存找 atRestSecretKey”的那一步；需要在面板里手工粘贴 64 位 hex 保护密钥或 44 字符 base64 的 atRestSecretKey。`hunt_supported=false`，接口会返回这条提示。
+17. **价格估算只保留平面价**：没有旧版的条件 bands（输入长度阈值、UTC 分时价）、policy timeline / 历史引用 / 清理；汇率固定 7.1；成本在读取时按当前目录计算，历史记录不会按当时价格重算。未定价模型仍显示 token 数，可在价格卡里手工映射 OpenRouter ID。
 
 ## 还没做
 
-- 没移植：价格估算、智能体配置。
+- 没移植：智能体配置。
 - 目录：`upstream_effort_of`（按目录钉死思考档位改写请求）、模型封锁表、`/u/<ref>/v1/models`（定址路由）。
 - TLS 指纹（JA3/JA4）：仍是 Go 标准 `crypto/tls`，与旧版 Python 的 OpenSSL 指纹不同（风险 R1）；**只在模拟上游上验证过，没连真实上游账号**，是否会被识别未验证。
 - 本机没有 C 编译器，`go test -race` 跑不了，需在 CI（Linux）补。
