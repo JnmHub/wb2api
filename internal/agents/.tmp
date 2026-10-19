@@ -1,0 +1,7 @@
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "k1",
+    "ANTHROPIC_BASE_URL": "http://a",
+    "KEEP": "1"
+  }
+}

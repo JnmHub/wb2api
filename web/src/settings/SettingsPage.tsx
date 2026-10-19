@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, get, patch, post, type SettingsView, type UpdateStatus } from '../api'
 import { Toggle } from '../components/Modal'
+import { AgentsSection } from './AgentsSection'
 import { KeysSection } from './KeysSection'
 import { ProxySection } from './ProxySection'
 
@@ -121,6 +122,7 @@ export function SettingsPage() {
       <UpstreamSection s={s} />
       <ProbeSection s={s} />
       <ModelsSection s={s} />
+      <AgentsSection />
       <UpdatesSection />
       <ProxySection s={s} />
     </div>

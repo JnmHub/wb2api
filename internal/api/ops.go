@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"wb2api/internal/activity"
+	"wb2api/internal/agents"
 	"wb2api/internal/atrest"
 	"wb2api/internal/gateway/openai"
 	"wb2api/internal/jobs"
@@ -97,6 +98,7 @@ type Operations struct {
 	Activity  *activity.Log
 	Scanner   *quota.Scanner
 	AtRest    *atrest.Keyring
+	Agents    *agents.Manager
 }
 
 func (o *Operations) account(w http.ResponseWriter, r *http.Request) *pool.Account {
@@ -301,4 +303,7 @@ func (o *Operations) Register(mux *http.ServeMux, wrap func(http.Handler) http.H
 	mux.Handle("POST /api/v2/quota-scan/run", h(o.quotaScanRun))
 	mux.Handle("GET /api/v2/accounts/desktop", h(o.desktopGet))
 	mux.Handle("POST /api/v2/accounts/desktop", h(o.desktopPost))
+	mux.Handle("GET /api/v2/agents", h(o.agentsGet))
+	mux.Handle("POST /api/v2/agents/apply", h(o.agentsApply))
+	mux.Handle("POST /api/v2/agents/restore", h(o.agentsRestore))
 }

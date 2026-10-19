@@ -2,7 +2,11 @@ module wb2api
 
 go 1.27.1
 
-require modernc.org/sqlite v1.60.1
+require (
+	github.com/pelletier/go-toml/v2 v2.2.4
+	gopkg.in/yaml.v3 v3.0.1
+	modernc.org/sqlite v1.60.1
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

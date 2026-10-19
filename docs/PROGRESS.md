@@ -54,6 +54,7 @@
 | `internal/atrest`（桌面凭据导入） | AES-256-GCM 信封（AAD 逐字节对齐）、keyblob 解封自检、内存密钥缓存（换钥自动失效）、桌面 `*.info` 扫描、`accessToken`/`refreshToken`/昵称解密、按 token/域名判定区域后导入（国内版自动补签到）；支持手工 64 位 hex 保护密钥或 44 字符 base64 的 atRestSecretKey。`GET/POST /api/v2/accounts/desktop`，面板账号页新增“桌面导入”弹窗 | 6 个 atrest 单测 + 1 个 API 测试 |
 | `internal/ops/webchat.go`（国际版网页会话） | 国际版每日活跃补上真正计入积分的网页腿：`POST /console/as/conversations/` 建会话 → 取沙箱 `link/token` → 接 ACP SSE（`Acp-Connection-Id`）→ `initialize` / `session/load` / `session/set_model` / `session/prompt` → 轮询会话到 `completed`。失败按首轮 120s 起翻倍重试（默认 3 次，可在设置里改次数/首轮等待）；桌面腿与网页腿合并成一次活动记录，只有网页腿成功才算当天完成。开关 `daily_chat_web` / `daily_chat_web_retry`，账号抽屉新增“网页活跃”动作 | 3 个 ops 单测（ACP 全流程、慢会话重试、CN 拒绝）+ 设置默认值断言 |
 | `internal/pricing`（价格估算） | 从 OpenRouter `/api/v1/models` 拉快照（美元/百万 token，缓存读价），按固定 `usd_cny=7.1` 折算；模型解析顺序：手工策略 → 精确 OR id → provider 前缀别名（唯一才认）→ 去渠道后缀继承（唯一才认）；支持 `auto/manual/ignore` 策略、手工 OR id 映射与显式单价。快照/策略落盘到 `pricing.json` / `pricing_policies.json`，启动与每 12 小时自动刷新。`GET /api/v2/pricing`、`POST /pricing/refresh`、`POST /pricing/policy|mapping`、`GET /pricing/cost`（按模型汇总 prompt/completion/cached 后算等值 API 成本），用量页新增价格卡（总价、已定价/未定价、逐模型映射） | 5 个 pricing 单测 + 1 个 API 测试 |
+| `internal/agents`（智能体配置） | 检测并接管 Claude Code（`settings.json` 的 env）、Codex（`config.toml` + `auth.json`）、OpenCode、DSH（`settings.yaml` + `.credentials.yaml`）、Crush、ZCode；首次接管备份每个文件（保留最早备份，最多 10 份），状态记 `agents.json`，可检测接管后的外部改动并一键恢复（原始字节 / 删除新建文件 / 清理空目录）。`GET /api/v2/agents`、`POST /agents/apply|restore`，仅 loopback + 面板登录，设置页新增配置卡片 | 4 个 agents 单测 + 1 个 API 测试 |
 
 `go vet`、`gofmt` 干净；`go test ./...` 全绿。本机没有 C 编译器，`-race` 跑不了，需在 CI（Linux）补。
 
@@ -154,12 +155,12 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 15. **本地 web 工具**：只实现 DuckDuckGo / Wikipedia / Google News 三个搜索后端（旧版还有 Bing、StackOverflow），也不往最终文本注入 `url_citation` 注解；搜索结果文本本身带 URL。`web_fetch` 只接受公网 http(s) 文本页，私网或重定向到私网直接拒绝。
 16. **桌面凭据的密钥回收未移植**：加密信封、keyblob 解封、凭据解密与导入都已实现，但没有旧版“扫 WorkBuddy 进程内存找 atRestSecretKey”的那一步；需要在面板里手工粘贴 64 位 hex 保护密钥或 44 字符 base64 的 atRestSecretKey。`hunt_supported=false`，接口会返回这条提示。
 17. **价格估算只保留平面价**：没有旧版的条件 bands（输入长度阈值、UTC 分时价）、policy timeline / 历史引用 / 清理；汇率固定 7.1；成本在读取时按当前目录计算，历史记录不会按当时价格重算。未定价模型仍显示 token 数，可在价格卡里手工映射 OpenRouter ID。
+18. **智能体配置的 YAML / TOML 会整份重写**：旧版是文本级 upsert，能保留注释和排版；Go 版用 yaml.v3 / go-toml 解析后重新序列化，注释会丢失（接管前的备份仍能完整恢复）。另外只写模型 id，不写上下文长度、最大输出和思考档位，所以 DSH 等客户端不会出现按模型的能力/档位选择器。
 
 ## 还没做
 
-- 没移植：智能体配置。
-- 目录：`upstream_effort_of`（按目录钉死思考档位改写请求）、模型封锁表、`/u/<ref>/v1/models`（定址路由）。
-- TLS 指纹（JA3/JA4）：仍是 Go 标准 `crypto/tls`，与旧版 Python 的 OpenSSL 指纹不同（风险 R1）；**只在模拟上游上验证过，没连真实上游账号**，是否会被识别未验证。
+- TLS 指纹（JA3/JA4）：仍是 Go 标准 `crypto/tls`，与旧版 Python 的 OpenSSL 指纹不同（风险 R1）；只在模拟上游上验证过，没连真实上游账号，是否会被识别未验证。
+- 浏览器逐页回归：本机没有浏览器自动化工具，目前用 HTTP/API 测试 + jsdom 渲染测试覆盖；UI 重构后会补截图与逐页检查。
 - 本机没有 C 编译器，`go test -race` 跑不了，需在 CI（Linux）补。
 - 90% 冷却时的选号仍是线性扫描（未改成就绪集合）。
 - 面板只做了页面渲染冒烟与 HTTP 级端到端；**没有像上一轮那样在真实浏览器里逐页点击回归**（设置页各区块、日志跟随/暂停、添加账号的 OAuth 轮询、导入文件选择）。

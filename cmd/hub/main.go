@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"wb2api/internal/activity"
+	"wb2api/internal/agents"
 	"wb2api/internal/api"
 	"wb2api/internal/atrest"
 	"wb2api/internal/catalog"
@@ -153,6 +154,7 @@ func main() {
 	h.Windows = windows
 	scanner := &quota.Scanner{Dir: *accountsDir, Models: st.QuotaScanModels, Prober: h, Windows: windows, Log: log}
 	keyring := &atrest.Keyring{}
+	agentMgr := agents.New(*accountsDir)
 	h.OnUsage = func(ev openai.UsageEvent) {
 		ue := api.EventFromGateway(ev, realmOf)
 		udb.Record(ue)
@@ -233,7 +235,7 @@ func main() {
 		Pool: p, Ops: opsClient, Refresher: refresher, Settings: st, Log: log, Windows: windows, Scan: scanner,
 		Hold: func(realm string) time.Duration { return h.RiskHold(realm) },
 	}
-	(&api.Operations{Ops: opsClient, Pool: p, Prober: h, Scheduler: sched, Activity: activityLog, Scanner: scanner, AtRest: keyring}).Register(mux, auth.Require)
+	(&api.Operations{Ops: opsClient, Pool: p, Prober: h, Scheduler: sched, Activity: activityLog, Scanner: scanner, AtRest: keyring, Agents: agentMgr}).Register(mux, auth.Require)
 	(&api.Settings{Store: st, Pool: p, Realm: realmSw, Guards: h.Guards, Catalog: cat}).Register(mux, auth.Require)
 	checker := &updates.Checker{Current: version, Enabled: st.UpdateCheckEnabled, Store: st, Log: log}
 	(&api.Updates{Checker: checker}).Register(mux, auth.Require)

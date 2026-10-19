@@ -477,3 +477,28 @@ export interface PricingCost {
   models: PricingCostRow[]
   totals: { cost_cny: number; cost_usd: number; priced_models: number; unpriced_models: number }
 }
+
+export interface AgentApplied {
+  at: string
+  base_url: string
+  model: string
+  files: number
+  external_change: boolean
+}
+
+export interface AgentClient {
+  id: string
+  label: string
+  desc: string
+  protocol: string
+  installed: boolean
+  configured: boolean
+  config_paths: string[]
+  applied?: AgentApplied
+}
+
+export interface AgentsView {
+  clients: AgentClient[]
+  loopback: boolean
+  base_url: string
+}
