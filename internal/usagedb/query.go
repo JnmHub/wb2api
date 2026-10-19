@@ -220,6 +220,39 @@ func (d *DB) Group(by string, f Filter) ([]GroupRow, error) {
 	return out, rows.Err()
 }
 
+// PairPoint is one request's contribution to its (account, model) pair.
+type PairPoint struct {
+	Account string
+	Model   string
+	At      float64
+	Total   int64
+}
+
+// PairPoints returns the per-request token rows in [since, until), oldest
+// first. The remaining-usage estimate folds these into a 24h window.
+func (d *DB) PairPoints(since, until time.Time) ([]PairPoint, error) {
+	rows, err := d.sql.Query(`SELECT account, model, at, total FROM requests
+		WHERE at >= ? AND at < ? AND account <> '' AND model <> ''
+		  AND outcome NOT IN ('client_aborted', 'error')
+		ORDER BY at`,
+		epoch(since), epoch(until))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PairPoint
+	for rows.Next() {
+		var p PairPoint
+		var total sql.NullInt64
+		if err := rows.Scan(&p.Account, &p.Model, &p.At, &total); err != nil {
+			return nil, err
+		}
+		p.Total = total.Int64
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // SeriesPoint is one time bucket.
 type SeriesPoint struct {
 	Bucket string // "2026-10-19 14" (hour) or "2026-10-19" (day), local time

@@ -44,6 +44,7 @@ import (
 	"wb2api/internal/store/settings"
 	"wb2api/internal/upstream"
 	"wb2api/internal/usagedb"
+	"wb2api/internal/usageest"
 	"wb2api/internal/webui"
 )
 
@@ -133,6 +134,8 @@ func main() {
 		os.Exit(1)
 	}
 	defer udb.Close()
+	limits := &usageest.Estimator{DB: udb, Pool: p, Dir: *usageDir, Log: log}
+	h.Limits = limits
 	realmOf := api.RealmOf(p)
 	trace := os.Getenv("WB_TRACE") == "1"
 	today := &api.Today{}
@@ -201,7 +204,7 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"current": realmSw.Get(), "options": []string{"intl", "cn"}})
 	})
-	(&api.Usage{DB: udb}).Register(mux, auth.Require)
+	(&api.Usage{DB: udb, Est: limits}).Register(mux, auth.Require)
 	bus := events.New(512)
 	jobMgr := &jobs.Manager{Workers: 4, OnProgress: func(j jobs.Job) { bus.Publish("job.progress", j) }}
 	accountsAPI := &api.Accounts{

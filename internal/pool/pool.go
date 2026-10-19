@@ -195,15 +195,17 @@ type Pool struct {
 	prefDirty atomic.Bool
 	expWindow atomic.Pointer[map[string]int] // realm -> expiring window in days
 	wrrMu     sync.Mutex
-	wrrManual map[string]int                    // smooth weighted round-robin state: manual weights
-	wrrExpire map[string]int                    // ... expiring-credits window
-	pageCur   sync.Map                          // pageKey -> *atomic.Uint64
-	slots     atomic.Pointer[map[string]string] // enabled proxy slot id -> URL
+	wrrManual map[string]int                            // smooth weighted round-robin state: manual weights
+	wrrExpire map[string]int                            // ... expiring-credits window
+	wrrRemain map[string]int                            // ... remaining-usage estimate
+	remainW   atomic.Pointer[map[string]map[string]int] // model -> uid -> weight
+	pageCur   sync.Map                                  // pageKey -> *atomic.Uint64
+	slots     atomic.Pointer[map[string]string]         // enabled proxy slot id -> URL
 }
 
 // New builds a pool from records.
 func New(recs []*accounts.Record) *Pool {
-	p := &Pool{affinity: NewSessionAffinity(), wrrManual: map[string]int{}, wrrExpire: map[string]int{}}
+	p := &Pool{affinity: NewSessionAffinity(), wrrManual: map[string]int{}, wrrExpire: map[string]int{}, wrrRemain: map[string]int{}}
 	list := make([]*Account, 0, len(recs))
 	for _, r := range recs {
 		list = append(list, NewAccount(r))

@@ -33,6 +33,7 @@ import (
 	"wb2api/internal/store/settings"
 	"wb2api/internal/upstream"
 	"wb2api/internal/upstream/identity"
+	"wb2api/internal/usageest"
 )
 
 // ChatPath is the upstream chat endpoint.
@@ -84,6 +85,8 @@ type Handler struct {
 	// Windows is the model-quota clock the 429 handler feeds and the scheduler
 	// probes (nil = no window tracking).
 	Windows *quota.Windows
+	// Limits estimates the remaining 24h quota per (account, model); nil = off.
+	Limits *usageest.Estimator
 
 	keyCache   atomic.Pointer[keyCache]
 	promptMu   sync.Mutex

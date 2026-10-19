@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { get, type SeriesPoint, type UsageAgg, type UsageSummary } from '../api'
+import { get, type RemainingPayload, type SeriesPoint, type UsageAgg, type UsageSummary } from '../api'
 import { BarChart } from '../components/Chart'
-import { credit, ms, num, pct, tokens } from '../format'
+import { credit, ms, num, pct, span, tokens } from '../format'
 
 type Range = 'today' | 'week' | 'month' | 'all'
 const ranges: { key: Range; label: string }[] = [
@@ -74,6 +74,93 @@ export function UsagePage() {
         <Table title="按 API Key" rows={sum.data?.by_key} blank="（未使用 Key）" />
         <Table title="按区域" rows={sum.data?.by_realm} blank="（未知）" />
       </div>
+
+      <RemainingCard />
+    </div>
+  )
+}
+
+function RemainingCard() {
+  const q = useQuery({
+    queryKey: ['remaining'],
+    queryFn: () => get<RemainingPayload>('/api/v2/usage/remaining'),
+    refetchInterval: 30_000,
+    retry: false,
+  })
+  const rows = q.data?.rows ?? []
+  const models = q.data?.models ?? []
+  return (
+    <div className="card sec">
+      <div className="row">
+        <h3>剩余用量估算</h3>
+        <span className="dim">按上游 24 小时窗口估算；预算来自真实撞线时的窗口用量样本（最近三天按 6/3/1 加权）</span>
+        <span className="spacer" />
+        {q.data && <span className="dim">更新于 {new Date(q.data.generated_at * 1000).toLocaleTimeString()}</span>}
+      </div>
+      {q.isError && <div className="dim">暂无估算：需要先有一次带重置时刻的 429 撞线记录。</div>}
+      {!q.isError && rows.length === 0 && <div className="dim">还没有可估算的「账号×模型」配额线。</div>}
+      {models.length > 0 && (
+        <div className="scroll" style={{ maxHeight: 180 }}>
+          <table className="t">
+            <thead>
+              <tr>
+                <th>模型</th>
+                <th className="num">预估预算</th>
+                <th className="num">总剩余</th>
+                <th className="num">组合</th>
+                <th className="num">冷却</th>
+                <th className="num">未知</th>
+              </tr>
+            </thead>
+            <tbody>
+              {models.map((m) => (
+                <tr key={m.realm + m.model}>
+                  <td title={m.model}>
+                    <span className={'badge ' + m.realm}>{m.realm === 'cn' ? '国内' : '国际'}</span> {m.model}
+                  </td>
+                  <td className="num">{m.budget == null ? '—' : tokens(m.budget)}</td>
+                  <td className="num">{m.total_remaining == null ? '—' : tokens(m.total_remaining)}</td>
+                  <td className="num">{m.pairs}</td>
+                  <td className="num">{m.cooling}</td>
+                  <td className="num">{m.unknown}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {rows.length > 0 && (
+        <div className="scroll" style={{ maxHeight: 320 }}>
+          <table className="t">
+            <thead>
+              <tr>
+                <th>账号</th>
+                <th>模型</th>
+                <th className="num">已用</th>
+                <th className="num">预算</th>
+                <th className="num">剩余</th>
+                <th className="num">占用</th>
+                <th>状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.uid + r.model}>
+                  <td title={r.uid}>{r.nickname || r.uid.slice(0, 8)}</td>
+                  <td className="mono" title={r.model}>{r.model}</td>
+                  <td className="num">{tokens(r.used)}</td>
+                  <td className="num">{r.budget == null ? '—' : tokens(r.budget)}</td>
+                  <td className="num">{r.remaining == null ? '—' : tokens(r.remaining)}</td>
+                  <td className="num">{r.used_pct == null ? '—' : pct(r.used_pct, 0)}</td>
+                  <td className="dim">
+                    {r.cooling ? `冷却中 · ${r.reset_at ? span(r.reset_at - Date.now() / 1000) + '后重置' : '待重置'}` : r.estimated ? '按 24h 估算' : '本窗口'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }

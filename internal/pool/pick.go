@@ -37,6 +37,37 @@ func (p *Pool) SetExpiringWindow(days map[string]int) {
 // credits refresh, say).
 func (p *Pool) MarkPrefsDirty() { p.prefDirty.Store(true) }
 
+// ApplyRemainingWeights installs the remaining-usage dispatch weights:
+// model -> uid -> weight. Only weights above 1 take part; an empty or nil map
+// removes the preference and restores plain rotation.
+func (p *Pool) ApplyRemainingWeights(w map[string]map[string]int) {
+	if len(w) == 0 {
+		if cur := p.remainW.Load(); cur == nil || len(*cur) == 0 {
+			return // already clear: the off path must stay allocation-free
+		}
+	}
+	cp := make(map[string]map[string]int, len(w))
+	for model, byUID := range w {
+		inner := make(map[string]int, len(byUID))
+		for uid, weight := range byUID {
+			if weight > 1 {
+				inner[uid] = weight
+			}
+		}
+		if len(inner) > 0 {
+			cp[model] = inner
+		}
+	}
+	p.remainW.Store(&cp)
+}
+
+func (p *Pool) remaining(model string) map[string]int {
+	if w := p.remainW.Load(); w != nil {
+		return (*w)[model]
+	}
+	return nil
+}
+
 // Affinity returns the session-affinity table.
 func (p *Pool) Affinity() *SessionAffinity { return p.affinity }
 
@@ -202,6 +233,20 @@ func (p *Pool) pick(realm, model string, exclude map[string]struct{}, page *Page
 				w := p.window(realm)
 				return smoothPick(&p.wrrMu, p.wrrExpire, ready, func(a *Account) int { return expiryWeight(a, w) })
 			}
+		}
+	}
+	// Remaining-usage priority (opt-in): accounts close to their estimated
+	// window limit take the traffic first, so the quota is spent before it
+	// resets. It is a preference like the others: nobody ready falls through.
+	if w := p.remaining(model); len(w) > 0 {
+		var cand []*Account
+		for _, a := range filter(list) {
+			if w[a.UID] > 1 {
+				cand = append(cand, a)
+			}
+		}
+		if ready := readyOf(cand, exclude, model, now); len(ready) > 0 {
+			return smoothPick(&p.wrrMu, p.wrrRemain, ready, func(a *Account) int { return w[a.UID] })
 		}
 	}
 	group := list

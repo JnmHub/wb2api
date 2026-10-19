@@ -156,6 +156,15 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	if h.Guards != nil {
 		h.Guards.Apply(false)
 	}
+	// Remaining-usage priority (opt-in): push the estimate's weights into the
+	// pool before the first pick; when off, clear any weights left behind.
+	if h.Limits != nil {
+		if h.Settings.RemainingPriority() {
+			h.Pool.ApplyRemainingWeights(h.Limits.ScheduleWeights())
+		} else {
+			h.Pool.ApplyRemainingWeights(nil)
+		}
+	}
 
 	if rem := h.guard().HoldRemaining(q.realm); rem > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(int(rem.Seconds())+1))
@@ -494,6 +503,10 @@ func (h *Handler) classify(q *request, acc *pool.Account, status int, body []byt
 		// scheduler can probe at that instant (legacy wb_window_probe).
 		if hasReset && h.Windows != nil {
 			h.Windows.Schedule(acc.UID, q.model, reset)
+		}
+		// ...and a budget sample for the remaining-usage estimate.
+		if hasReset && h.Limits != nil {
+			h.Limits.NoteLimit(acc.UID, q.model, acc.Record().Realm, reset, now)
 		}
 		if hasReset && ratelimit.IsCap(detail) {
 			// only the quota-cap answer (6004) is a quota verdict worth persisting

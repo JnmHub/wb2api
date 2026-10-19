@@ -338,3 +338,35 @@ export interface GrowthRun {
   msg?: string
   accounts_count?: number
 }
+
+export interface RemainingRow {
+  uid: string
+  nickname: string
+  realm: string
+  model: string
+  used: number
+  budget: number | null
+  remaining: number | null
+  used_pct: number | null
+  reset_at?: number
+  cooling: boolean
+  estimated: boolean
+}
+
+export interface RemainingModel {
+  realm: string
+  model: string
+  budget: number | null
+  total_remaining: number | null
+  pairs: number
+  cooling: number
+  unknown: number
+}
+
+export interface RemainingPayload {
+  window_seconds: number
+  generated_at: number
+  rows: RemainingRow[]
+  models: RemainingModel[]
+  etag: string
+}

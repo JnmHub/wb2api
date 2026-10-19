@@ -30,6 +30,7 @@ const switchInfo: { key: string; label: string; hint: string }[] = [
   { key: 'auto_switch_product', label: '429 时自动切换出站身份', hint: '同一账号在 桌面端 → VSCode → CLI 之间换身份重试，等于换一条配额线；会占用重试次数。' },
   { key: 'egress_backoff_enabled', label: '出口级瞬时失败退避', hint: '502/503/504 与连接抖动记在出口上做秒级退避，而不是让每个账号吃 30 分钟熔断。' },
   { key: 'free_model_credit_fallback', label: '免费模型用尽后回退到付费同款', hint: '仅国际版 deepseek-v4.1-flash → -sg：所有账号的免费窗口都用尽后才会触发一次，会真实消耗积分。' },
+  { key: 'remaining_priority_enabled', label: '剩余用量优先调度', hint: '估计剩余越接近耗尽的「账号×模型」分到越多请求，先把快用完的额度用掉；默认关闭，需要先真实撞过限额才有预算样本。' },
   { key: 'enable_anthropic_messages', label: '启用 Anthropic Messages（/v1/messages）', hint: '网关会忽略 cache_control，可能多耗积分，默认关闭。' },
   { key: 'auth_disabled', label: '关闭 API Key 校验', hint: '危险：任何能访问端口的人都能使用你的账号。仅限可信内网。' },
 ]

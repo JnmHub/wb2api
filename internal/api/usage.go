@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"wb2api/internal/gateway/openai"
 	"wb2api/internal/pool"
 	"wb2api/internal/usage"
 	"wb2api/internal/usagedb"
+	"wb2api/internal/usageest"
 )
 
 // EventFromGateway converts a finished gateway request into a usage row.
@@ -56,6 +58,8 @@ func RealmOf(p *pool.Pool) func(string) string {
 type Usage struct {
 	DB  *usagedb.DB
 	Now func() time.Time
+	// Est is the remaining-usage estimate (nil = not available).
+	Est *usageest.Estimator
 }
 
 func (u *Usage) now() time.Time {
@@ -147,6 +151,25 @@ func (u *Usage) Register(mux *http.ServeMux, wrap func(http.Handler) http.Handle
 	mux.Handle("GET /api/v2/usage/summary", wrap(http.HandlerFunc(u.summary)))
 	mux.Handle("GET /api/v2/usage/series", wrap(http.HandlerFunc(u.series)))
 	mux.Handle("GET /api/v2/usage/recent", wrap(http.HandlerFunc(u.recent)))
+	mux.Handle("GET /api/v2/usage/remaining", wrap(http.HandlerFunc(u.remaining)))
+}
+
+// remaining serves the 24h quota estimate; the ETag makes the panel's poll a
+// 304 while nothing changed.
+func (u *Usage) remaining(w http.ResponseWriter, r *http.Request) {
+	if u.Est == nil {
+		writeErr(w, http.StatusServiceUnavailable, "剩余用量估算不可用")
+		return
+	}
+	p := u.Est.Payload()
+	tag := `"` + p.ETag + `"`
+	inm := strings.TrimSpace(r.Header.Get("If-None-Match"))
+	if inm == "*" || inm == tag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("ETag", tag)
+	writeJSON(w, http.StatusOK, p)
 }
 
 func (u *Usage) summary(w http.ResponseWriter, r *http.Request) {
