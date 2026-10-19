@@ -1,0 +1,51 @@
+[
+ {
+  "api_keys": [
+   {
+    "id": "k1",
+    "name": "main",
+    "key": "sk-aaa",
+    "realm": "CN",
+    "models": "deepseek*, GPT-5.5;glm-5.3",
+    "concurrency_limit": 4,
+    "created_at": "2026/10/01 10:00"
+   },
+   {
+    "id": "k2",
+    "name": "",
+    "key": "sk-bbb",
+    "realm": "weird",
+    "models": [
+     "a",
+     "A",
+     "b"
+    ],
+    "max_concurrency": "7",
+    "enabled": false
+   },
+   {
+    "id": "k1",
+    "name": "dupid",
+    "key": "sk-ccc",
+    "models": 5
+   },
+   {
+    "id": "k4",
+    "name": "dupkey",
+    "key": "sk-aaa"
+   },
+   {
+    "id": "gone",
+    "name": "old",
+    "key": "",
+    "deleted_at": "2026/09/01 00:00",
+    "realm": "intl"
+   },
+   {
+    "id": "empty",
+    "key": ""
+   },
+   "not-a-dict"
+  ]
+ }
+]

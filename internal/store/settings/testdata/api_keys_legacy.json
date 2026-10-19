@@ -1,0 +1,12 @@
+[
+ {
+  "id": "legacy",
+  "name": "默认（跟随面板切换）",
+  "key": "legacy-k",
+  "realm": "",
+  "models": [],
+  "enabled": true,
+  "created_at": "",
+  "deleted_at": ""
+ }
+]

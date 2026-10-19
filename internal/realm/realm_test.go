@@ -126,3 +126,20 @@ func TestCNChatBase(t *testing.T) {
 		t.Fatalf("invalid: %q %q", b, ig)
 	}
 }
+
+func TestDetectModelRealmGolden(t *testing.T) {
+	var vs []struct {
+		Model, Current, Out string
+	}
+	var raw []map[string]string
+	load(t, "model_realm.json", &raw)
+	_ = vs
+	for _, m := range raw {
+		if got := DetectModelRealm(m["model"], m["current"]); got != m["out"] {
+			t.Errorf("DetectModelRealm(%q,%q)=%q want %q", m["model"], m["current"], got, m["out"])
+		}
+	}
+	if len(raw) == 0 {
+		t.Fatal("no vectors")
+	}
+}

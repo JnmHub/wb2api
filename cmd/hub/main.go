@@ -1,0 +1,125 @@
+// Command hub is the WorkBuddy2API gateway (Go rewrite).
+//
+// STATUS: Phase 0/1 vertical slice. It serves /v1/chat/completions through the
+// real account pool, per-account transports and leak filter; panel, models
+// catalog, token refresh and the rest of the legacy surface are not ported yet.
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/pprof"
+	"os"
+	"os/signal"
+	"runtime"
+	"strconv"
+	"syscall"
+	"time"
+
+	"wb2api/internal/gateway/leak"
+	"wb2api/internal/gateway/openai"
+	"wb2api/internal/pool"
+	"wb2api/internal/store/accounts"
+	"wb2api/internal/store/settings"
+	"wb2api/internal/upstream"
+)
+
+func envOr(name, def string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return def
+}
+
+func main() {
+	host := flag.String("host", envOr("HOST", "127.0.0.1"), "listen host")
+	port := flag.Int("port", func() int { p, _ := strconv.Atoi(envOr("PORT", "8788")); return p }(), "listen port")
+	lan := flag.Bool("lan", false, "listen on all interfaces")
+	accountsDir := flag.String("accounts-dir", envOr("WB_ACCOUNTS_DIR", "accounts"), "directory with account credential files and settings.json")
+	upstreamOverride := flag.String("upstream-override", os.Getenv("WB_UPSTREAM_OVERRIDE"), "send every realm to this base URL (testing)")
+	legacyFilter := flag.Bool("legacy-leak-filter", os.Getenv("WB_LEGACY_LEAK_FILTER") == "1", "use the legacy hold policy of the tool-call leak filter")
+	maxAttempts := flag.Int("max-attempts", 5, "account failover attempts per request")
+	perAccount := flag.Int("per-account-inflight", 0, "max concurrent requests per account (0 = unlimited)")
+	debug := flag.Bool("debug", os.Getenv("WB_DEBUG") == "1", "expose /debug/runtime")
+	flag.Parse()
+
+	if *lan && *host == "127.0.0.1" {
+		*host = "0.0.0.0"
+	}
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	recs, errs := accounts.Load(*accountsDir, time.Now())
+	for _, e := range errs {
+		log.Warn("skipping unreadable account file", "err", e)
+	}
+	p := pool.New(recs)
+	if *perAccount > 0 {
+		for _, a := range p.All() {
+			a.SetMaxInflight(*perAccount)
+		}
+	}
+	st := settings.Open(*accountsDir)
+
+	mode := leak.Precise
+	if *legacyFilter {
+		mode = leak.Legacy
+	}
+	h := &openai.Handler{
+		Pool: p, Up: upstream.NewManager(upstream.DefaultTimeouts()), Settings: st, Log: log,
+		UpstreamOverride: *upstreamOverride, MaxAttempts: *maxAttempts, FilterMode: mode,
+	}
+	if os.Getenv("WB_TRACE") == "1" {
+		h.OnUsage = func(ev openai.UsageEvent) {
+			log.Info("usage", "ttft_ms", ev.TTFT.Milliseconds(), "elapsed_ms", ev.Elapsed.Milliseconds(), "chunks", ev.Chunks, "outcome", ev.Outcome)
+		}
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/v1/chat/completions", h)
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "accounts": p.Len()})
+	})
+	if *debug {
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/heap", pprof.Handler("heap").ServeHTTP)
+		mux.HandleFunc("/debug/runtime", func(w http.ResponseWriter, r *http.Request) {
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"goroutines": runtime.NumGoroutine(), "heap_alloc": m.HeapAlloc, "sys": m.Sys,
+				"num_gc": m.NumGC, "pause_total_ns": m.PauseTotalNs,
+			})
+		})
+	}
+
+	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
+	srv := &http.Server{
+		Addr: addr, Handler: mux,
+		ReadHeaderTimeout: 15 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	go func() {
+		log.Info("listening", "addr", addr, "accounts", p.Len(), "dir", *accountsDir, "leak_filter", map[leak.Mode]string{leak.Precise: "precise", leak.Legacy: "legacy"}[mode])
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Fprintln(os.Stderr, "listen failed:", err)
+			os.Exit(1)
+		}
+	}()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	<-stop
+	log.Info("shutting down")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(ctx)
+}

@@ -1,0 +1,182 @@
+[
+ {
+  "model": "",
+  "current": "intl",
+  "out": "intl"
+ },
+ {
+  "model": "gpt-6-astra",
+  "current": "intl",
+  "out": "intl"
+ },
+ {
+  "model": "GPT-5.5",
+  "current": "intl",
+  "out": "intl"
+ },
+ {
+  "model": "gpt-anything",
+  "current": "intl",
+  "out": "intl"
+ },
+ {
+  "model": "gemini-x",
+  "current": "intl",
+  "out": "intl"
+ },
+ {
+  "model": "grok-4.7",
+  "current": "intl",
+  "out": "intl"
+ },
+ {
+  "model": "deepseek-v4-pro",
+  "current": "intl",
+  "out": "cn"
+ },
+ {
+  "model": "deepseek-v4-pro-max",
+  "current": "intl",
+  "out": "cn"
+ },
+ {
+  "model": "minimax-m3",
+  "current": "intl",
+  "out": "cn"
+ },
+ {
+  "model": "minimax-zzz",
+  "current": "intl",
+  "out": "cn"
+ },
+ {
+  "model": "glm-5.1",
+  "current": "intl",
+  "out": "cn"
+ },
+ {
+  "model": "glm-5.3",
+  "current": "intl",
+  "out": "intl"
+ },
+ {
+  "model": "kimi-k3-1",
+  "current": "intl",
+  "out": "cn"
+ },
+ {
+  "model": "kimi-k2.6",
+  "current": "intl",
+  "out": "intl"
+ },
+ {
+  "model": "hy3",
+  "current": "intl",
+  "out": "intl"
+ },
+ {
+  "model": "hy3-x",
+  "current": "intl",
+  "out": "cn"
+ },
+ {
+  "model": "deepseek-v4.1-flash",
+  "current": "intl",
+  "out": "intl"
+ },
+ {
+  "model": "unknown-model",
+  "current": "intl",
+  "out": "intl"
+ },
+ {
+  "model": "",
+  "current": "cn",
+  "out": "cn"
+ },
+ {
+  "model": "gpt-6-astra",
+  "current": "cn",
+  "out": "intl"
+ },
+ {
+  "model": "GPT-5.5",
+  "current": "cn",
+  "out": "intl"
+ },
+ {
+  "model": "gpt-anything",
+  "current": "cn",
+  "out": "intl"
+ },
+ {
+  "model": "gemini-x",
+  "current": "cn",
+  "out": "intl"
+ },
+ {
+  "model": "grok-4.7",
+  "current": "cn",
+  "out": "intl"
+ },
+ {
+  "model": "deepseek-v4-pro",
+  "current": "cn",
+  "out": "cn"
+ },
+ {
+  "model": "deepseek-v4-pro-max",
+  "current": "cn",
+  "out": "cn"
+ },
+ {
+  "model": "minimax-m3",
+  "current": "cn",
+  "out": "cn"
+ },
+ {
+  "model": "minimax-zzz",
+  "current": "cn",
+  "out": "cn"
+ },
+ {
+  "model": "glm-5.1",
+  "current": "cn",
+  "out": "cn"
+ },
+ {
+  "model": "glm-5.3",
+  "current": "cn",
+  "out": "cn"
+ },
+ {
+  "model": "kimi-k3-1",
+  "current": "cn",
+  "out": "cn"
+ },
+ {
+  "model": "kimi-k2.6",
+  "current": "cn",
+  "out": "cn"
+ },
+ {
+  "model": "hy3",
+  "current": "cn",
+  "out": "cn"
+ },
+ {
+  "model": "hy3-x",
+  "current": "cn",
+  "out": "cn"
+ },
+ {
+  "model": "deepseek-v4.1-flash",
+  "current": "cn",
+  "out": "cn"
+ },
+ {
+  "model": "unknown-model",
+  "current": "cn",
+  "out": "cn"
+ }
+]

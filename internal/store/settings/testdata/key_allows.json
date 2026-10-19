@@ -1,0 +1,162 @@
+[
+ {
+  "key_id": "k1",
+  "model": "deepseek-v4.1-flash",
+  "out": true
+ },
+ {
+  "key_id": "k1",
+  "model": "gpt-5.5",
+  "out": true
+ },
+ {
+  "key_id": "k1",
+  "model": "GPT-5.5",
+  "out": true
+ },
+ {
+  "key_id": "k1",
+  "model": "glm-5.3",
+  "out": true
+ },
+ {
+  "key_id": "k1",
+  "model": "kimi",
+  "out": false
+ },
+ {
+  "key_id": "k1",
+  "model": "",
+  "out": false
+ },
+ {
+  "key_id": "k1",
+  "model": "a",
+  "out": false
+ },
+ {
+  "key_id": "k1",
+  "model": "b",
+  "out": false
+ },
+ {
+  "key_id": "k2",
+  "model": "deepseek-v4.1-flash",
+  "out": false
+ },
+ {
+  "key_id": "k2",
+  "model": "gpt-5.5",
+  "out": false
+ },
+ {
+  "key_id": "k2",
+  "model": "GPT-5.5",
+  "out": false
+ },
+ {
+  "key_id": "k2",
+  "model": "glm-5.3",
+  "out": false
+ },
+ {
+  "key_id": "k2",
+  "model": "kimi",
+  "out": false
+ },
+ {
+  "key_id": "k2",
+  "model": "",
+  "out": false
+ },
+ {
+  "key_id": "k2",
+  "model": "a",
+  "out": true
+ },
+ {
+  "key_id": "k2",
+  "model": "b",
+  "out": true
+ },
+ {
+  "key_id": "k1-2",
+  "model": "deepseek-v4.1-flash",
+  "out": true
+ },
+ {
+  "key_id": "k1-2",
+  "model": "gpt-5.5",
+  "out": true
+ },
+ {
+  "key_id": "k1-2",
+  "model": "GPT-5.5",
+  "out": true
+ },
+ {
+  "key_id": "k1-2",
+  "model": "glm-5.3",
+  "out": true
+ },
+ {
+  "key_id": "k1-2",
+  "model": "kimi",
+  "out": true
+ },
+ {
+  "key_id": "k1-2",
+  "model": "",
+  "out": true
+ },
+ {
+  "key_id": "k1-2",
+  "model": "a",
+  "out": true
+ },
+ {
+  "key_id": "k1-2",
+  "model": "b",
+  "out": true
+ },
+ {
+  "key_id": "gone",
+  "model": "deepseek-v4.1-flash",
+  "out": true
+ },
+ {
+  "key_id": "gone",
+  "model": "gpt-5.5",
+  "out": true
+ },
+ {
+  "key_id": "gone",
+  "model": "GPT-5.5",
+  "out": true
+ },
+ {
+  "key_id": "gone",
+  "model": "glm-5.3",
+  "out": true
+ },
+ {
+  "key_id": "gone",
+  "model": "kimi",
+  "out": true
+ },
+ {
+  "key_id": "gone",
+  "model": "",
+  "out": true
+ },
+ {
+  "key_id": "gone",
+  "model": "a",
+  "out": true
+ },
+ {
+  "key_id": "gone",
+  "model": "b",
+  "out": true
+ }
+]

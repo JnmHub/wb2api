@@ -1,0 +1,662 @@
+[
+ {
+  "pattern": "gpt-*",
+  "name": "gpt-5.5",
+  "out": true
+ },
+ {
+  "pattern": "gpt-*",
+  "name": "gpt-6-astra",
+  "out": true
+ },
+ {
+  "pattern": "gpt-*",
+  "name": "deepseek/r1",
+  "out": false
+ },
+ {
+  "pattern": "gpt-*",
+  "name": "deepseek-v4.1-flash",
+  "out": false
+ },
+ {
+  "pattern": "gpt-*",
+  "name": "glm-5.3",
+  "out": false
+ },
+ {
+  "pattern": "gpt-*",
+  "name": "kimi-k3",
+  "out": false
+ },
+ {
+  "pattern": "gpt-*",
+  "name": "a[",
+  "out": false
+ },
+ {
+  "pattern": "gpt-*",
+  "name": "x]y",
+  "out": false
+ },
+ {
+  "pattern": "gpt-*",
+  "name": "",
+  "out": false
+ },
+ {
+  "pattern": "gpt-*",
+  "name": "hy3",
+  "out": false
+ },
+ {
+  "pattern": "gpt-*",
+  "name": "gpt/x",
+  "out": false
+ },
+ {
+  "pattern": "deepseek/*",
+  "name": "gpt-5.5",
+  "out": false
+ },
+ {
+  "pattern": "deepseek/*",
+  "name": "gpt-6-astra",
+  "out": false
+ },
+ {
+  "pattern": "deepseek/*",
+  "name": "deepseek/r1",
+  "out": true
+ },
+ {
+  "pattern": "deepseek/*",
+  "name": "deepseek-v4.1-flash",
+  "out": false
+ },
+ {
+  "pattern": "deepseek/*",
+  "name": "glm-5.3",
+  "out": false
+ },
+ {
+  "pattern": "deepseek/*",
+  "name": "kimi-k3",
+  "out": false
+ },
+ {
+  "pattern": "deepseek/*",
+  "name": "a[",
+  "out": false
+ },
+ {
+  "pattern": "deepseek/*",
+  "name": "x]y",
+  "out": false
+ },
+ {
+  "pattern": "deepseek/*",
+  "name": "",
+  "out": false
+ },
+ {
+  "pattern": "deepseek/*",
+  "name": "hy3",
+  "out": false
+ },
+ {
+  "pattern": "deepseek/*",
+  "name": "gpt/x",
+  "out": false
+ },
+ {
+  "pattern": "*",
+  "name": "gpt-5.5",
+  "out": true
+ },
+ {
+  "pattern": "*",
+  "name": "gpt-6-astra",
+  "out": true
+ },
+ {
+  "pattern": "*",
+  "name": "deepseek/r1",
+  "out": true
+ },
+ {
+  "pattern": "*",
+  "name": "deepseek-v4.1-flash",
+  "out": true
+ },
+ {
+  "pattern": "*",
+  "name": "glm-5.3",
+  "out": true
+ },
+ {
+  "pattern": "*",
+  "name": "kimi-k3",
+  "out": true
+ },
+ {
+  "pattern": "*",
+  "name": "a[",
+  "out": true
+ },
+ {
+  "pattern": "*",
+  "name": "x]y",
+  "out": true
+ },
+ {
+  "pattern": "*",
+  "name": "",
+  "out": true
+ },
+ {
+  "pattern": "*",
+  "name": "hy3",
+  "out": true
+ },
+ {
+  "pattern": "*",
+  "name": "gpt/x",
+  "out": true
+ },
+ {
+  "pattern": "glm-5.?",
+  "name": "gpt-5.5",
+  "out": false
+ },
+ {
+  "pattern": "glm-5.?",
+  "name": "gpt-6-astra",
+  "out": false
+ },
+ {
+  "pattern": "glm-5.?",
+  "name": "deepseek/r1",
+  "out": false
+ },
+ {
+  "pattern": "glm-5.?",
+  "name": "deepseek-v4.1-flash",
+  "out": false
+ },
+ {
+  "pattern": "glm-5.?",
+  "name": "glm-5.3",
+  "out": true
+ },
+ {
+  "pattern": "glm-5.?",
+  "name": "kimi-k3",
+  "out": false
+ },
+ {
+  "pattern": "glm-5.?",
+  "name": "a[",
+  "out": false
+ },
+ {
+  "pattern": "glm-5.?",
+  "name": "x]y",
+  "out": false
+ },
+ {
+  "pattern": "glm-5.?",
+  "name": "",
+  "out": false
+ },
+ {
+  "pattern": "glm-5.?",
+  "name": "hy3",
+  "out": false
+ },
+ {
+  "pattern": "glm-5.?",
+  "name": "gpt/x",
+  "out": false
+ },
+ {
+  "pattern": "[gk]*",
+  "name": "gpt-5.5",
+  "out": true
+ },
+ {
+  "pattern": "[gk]*",
+  "name": "gpt-6-astra",
+  "out": true
+ },
+ {
+  "pattern": "[gk]*",
+  "name": "deepseek/r1",
+  "out": false
+ },
+ {
+  "pattern": "[gk]*",
+  "name": "deepseek-v4.1-flash",
+  "out": false
+ },
+ {
+  "pattern": "[gk]*",
+  "name": "glm-5.3",
+  "out": true
+ },
+ {
+  "pattern": "[gk]*",
+  "name": "kimi-k3",
+  "out": true
+ },
+ {
+  "pattern": "[gk]*",
+  "name": "a[",
+  "out": false
+ },
+ {
+  "pattern": "[gk]*",
+  "name": "x]y",
+  "out": false
+ },
+ {
+  "pattern": "[gk]*",
+  "name": "",
+  "out": false
+ },
+ {
+  "pattern": "[gk]*",
+  "name": "hy3",
+  "out": false
+ },
+ {
+  "pattern": "[gk]*",
+  "name": "gpt/x",
+  "out": true
+ },
+ {
+  "pattern": "[!g]*",
+  "name": "gpt-5.5",
+  "out": false
+ },
+ {
+  "pattern": "[!g]*",
+  "name": "gpt-6-astra",
+  "out": false
+ },
+ {
+  "pattern": "[!g]*",
+  "name": "deepseek/r1",
+  "out": true
+ },
+ {
+  "pattern": "[!g]*",
+  "name": "deepseek-v4.1-flash",
+  "out": true
+ },
+ {
+  "pattern": "[!g]*",
+  "name": "glm-5.3",
+  "out": false
+ },
+ {
+  "pattern": "[!g]*",
+  "name": "kimi-k3",
+  "out": true
+ },
+ {
+  "pattern": "[!g]*",
+  "name": "a[",
+  "out": true
+ },
+ {
+  "pattern": "[!g]*",
+  "name": "x]y",
+  "out": true
+ },
+ {
+  "pattern": "[!g]*",
+  "name": "",
+  "out": false
+ },
+ {
+  "pattern": "[!g]*",
+  "name": "hy3",
+  "out": true
+ },
+ {
+  "pattern": "[!g]*",
+  "name": "gpt/x",
+  "out": false
+ },
+ {
+  "pattern": "a[",
+  "name": "gpt-5.5",
+  "out": false
+ },
+ {
+  "pattern": "a[",
+  "name": "gpt-6-astra",
+  "out": false
+ },
+ {
+  "pattern": "a[",
+  "name": "deepseek/r1",
+  "out": false
+ },
+ {
+  "pattern": "a[",
+  "name": "deepseek-v4.1-flash",
+  "out": false
+ },
+ {
+  "pattern": "a[",
+  "name": "glm-5.3",
+  "out": false
+ },
+ {
+  "pattern": "a[",
+  "name": "kimi-k3",
+  "out": false
+ },
+ {
+  "pattern": "a[",
+  "name": "a[",
+  "out": true
+ },
+ {
+  "pattern": "a[",
+  "name": "x]y",
+  "out": false
+ },
+ {
+  "pattern": "a[",
+  "name": "",
+  "out": false
+ },
+ {
+  "pattern": "a[",
+  "name": "hy3",
+  "out": false
+ },
+ {
+  "pattern": "a[",
+  "name": "gpt/x",
+  "out": false
+ },
+ {
+  "pattern": "x[]]y",
+  "name": "gpt-5.5",
+  "out": false
+ },
+ {
+  "pattern": "x[]]y",
+  "name": "gpt-6-astra",
+  "out": false
+ },
+ {
+  "pattern": "x[]]y",
+  "name": "deepseek/r1",
+  "out": false
+ },
+ {
+  "pattern": "x[]]y",
+  "name": "deepseek-v4.1-flash",
+  "out": false
+ },
+ {
+  "pattern": "x[]]y",
+  "name": "glm-5.3",
+  "out": false
+ },
+ {
+  "pattern": "x[]]y",
+  "name": "kimi-k3",
+  "out": false
+ },
+ {
+  "pattern": "x[]]y",
+  "name": "a[",
+  "out": false
+ },
+ {
+  "pattern": "x[]]y",
+  "name": "x]y",
+  "out": true
+ },
+ {
+  "pattern": "x[]]y",
+  "name": "",
+  "out": false
+ },
+ {
+  "pattern": "x[]]y",
+  "name": "hy3",
+  "out": false
+ },
+ {
+  "pattern": "x[]]y",
+  "name": "gpt/x",
+  "out": false
+ },
+ {
+  "pattern": "gpt-5.5",
+  "name": "gpt-5.5",
+  "out": true
+ },
+ {
+  "pattern": "gpt-5.5",
+  "name": "gpt-6-astra",
+  "out": false
+ },
+ {
+  "pattern": "gpt-5.5",
+  "name": "deepseek/r1",
+  "out": false
+ },
+ {
+  "pattern": "gpt-5.5",
+  "name": "deepseek-v4.1-flash",
+  "out": false
+ },
+ {
+  "pattern": "gpt-5.5",
+  "name": "glm-5.3",
+  "out": false
+ },
+ {
+  "pattern": "gpt-5.5",
+  "name": "kimi-k3",
+  "out": false
+ },
+ {
+  "pattern": "gpt-5.5",
+  "name": "a[",
+  "out": false
+ },
+ {
+  "pattern": "gpt-5.5",
+  "name": "x]y",
+  "out": false
+ },
+ {
+  "pattern": "gpt-5.5",
+  "name": "",
+  "out": false
+ },
+ {
+  "pattern": "gpt-5.5",
+  "name": "hy3",
+  "out": false
+ },
+ {
+  "pattern": "gpt-5.5",
+  "name": "gpt/x",
+  "out": false
+ },
+ {
+  "pattern": "",
+  "name": "gpt-5.5",
+  "out": false
+ },
+ {
+  "pattern": "",
+  "name": "gpt-6-astra",
+  "out": false
+ },
+ {
+  "pattern": "",
+  "name": "deepseek/r1",
+  "out": false
+ },
+ {
+  "pattern": "",
+  "name": "deepseek-v4.1-flash",
+  "out": false
+ },
+ {
+  "pattern": "",
+  "name": "glm-5.3",
+  "out": false
+ },
+ {
+  "pattern": "",
+  "name": "kimi-k3",
+  "out": false
+ },
+ {
+  "pattern": "",
+  "name": "a[",
+  "out": false
+ },
+ {
+  "pattern": "",
+  "name": "x]y",
+  "out": false
+ },
+ {
+  "pattern": "",
+  "name": "",
+  "out": true
+ },
+ {
+  "pattern": "",
+  "name": "hy3",
+  "out": false
+ },
+ {
+  "pattern": "",
+  "name": "gpt/x",
+  "out": false
+ },
+ {
+  "pattern": "*-flash",
+  "name": "gpt-5.5",
+  "out": false
+ },
+ {
+  "pattern": "*-flash",
+  "name": "gpt-6-astra",
+  "out": false
+ },
+ {
+  "pattern": "*-flash",
+  "name": "deepseek/r1",
+  "out": false
+ },
+ {
+  "pattern": "*-flash",
+  "name": "deepseek-v4.1-flash",
+  "out": true
+ },
+ {
+  "pattern": "*-flash",
+  "name": "glm-5.3",
+  "out": false
+ },
+ {
+  "pattern": "*-flash",
+  "name": "kimi-k3",
+  "out": false
+ },
+ {
+  "pattern": "*-flash",
+  "name": "a[",
+  "out": false
+ },
+ {
+  "pattern": "*-flash",
+  "name": "x]y",
+  "out": false
+ },
+ {
+  "pattern": "*-flash",
+  "name": "",
+  "out": false
+ },
+ {
+  "pattern": "*-flash",
+  "name": "hy3",
+  "out": false
+ },
+ {
+  "pattern": "*-flash",
+  "name": "gpt/x",
+  "out": false
+ },
+ {
+  "pattern": "GPT*",
+  "name": "gpt-5.5",
+  "out": false
+ },
+ {
+  "pattern": "GPT*",
+  "name": "gpt-6-astra",
+  "out": false
+ },
+ {
+  "pattern": "GPT*",
+  "name": "deepseek/r1",
+  "out": false
+ },
+ {
+  "pattern": "GPT*",
+  "name": "deepseek-v4.1-flash",
+  "out": false
+ },
+ {
+  "pattern": "GPT*",
+  "name": "glm-5.3",
+  "out": false
+ },
+ {
+  "pattern": "GPT*",
+  "name": "kimi-k3",
+  "out": false
+ },
+ {
+  "pattern": "GPT*",
+  "name": "a[",
+  "out": false
+ },
+ {
+  "pattern": "GPT*",
+  "name": "x]y",
+  "out": false
+ },
+ {
+  "pattern": "GPT*",
+  "name": "",
+  "out": false
+ },
+ {
+  "pattern": "GPT*",
+  "name": "hy3",
+  "out": false
+ },
+ {
+  "pattern": "GPT*",
+  "name": "gpt/x",
+  "out": false
+ }
+]

@@ -170,3 +170,31 @@ func NormaliseDisabledModels(raw any) []string {
 	}
 	return out
 }
+
+var intlOnly = map[string]bool{
+	"gpt-6-astra": true, "gpt-5.6-sol": true, "gpt-5.6-terra": true, "gpt-5.6-luna": true,
+	"gpt-5.5": true, "gpt-5.4": true, "gpt-5.3-codex": true, "gemini-3.5-flash": true, "grok-4.7": true,
+}
+
+var cnOnly = map[string]bool{
+	"deepseek-v4-pro": true, "minimax-m3": true, "minimax-m2.7": true, "minimax-m2.5": true,
+	"glm-5.1": true, "glm-5.0-turbo": true, "glm-4.6v": true,
+	"kimi-k3-1": true, "kimi-k2.7": true, "kimi-k2-thinking": true,
+	"hy3-x": true, "hy4-preview-dev": true, "hy4-preview-x": true,
+}
+
+// DetectModelRealm maps a model id to the exit that serves it; models served by
+// both exits resolve to current (the default / key-bound realm).
+func DetectModelRealm(model, current string) string {
+	if model == "" {
+		return current
+	}
+	m := strings.ToLower(model)
+	if intlOnly[m] || strings.HasPrefix(m, "gpt-") || strings.HasPrefix(m, "gemini-") {
+		return Intl
+	}
+	if cnOnly[m] || strings.HasPrefix(m, "minimax-") || strings.HasPrefix(m, "deepseek-v4-pro") {
+		return CN
+	}
+	return current
+}

@@ -1,0 +1,53 @@
+[
+ {
+  "id": "k1",
+  "name": "main",
+  "key": "sk-aaa",
+  "realm": "cn",
+  "models": [
+   "deepseek*",
+   "gpt-5.5",
+   "glm-5.3"
+  ],
+  "concurrency_limit": 4,
+  "enabled": true,
+  "created_at": "2026/10/01 10:00",
+  "deleted_at": ""
+ },
+ {
+  "id": "k2",
+  "name": "未命名",
+  "key": "sk-bbb",
+  "realm": "",
+  "models": [
+   "a",
+   "b"
+  ],
+  "concurrency_limit": 7,
+  "enabled": false,
+  "created_at": "2026/10/19 19:33",
+  "deleted_at": ""
+ },
+ {
+  "id": "k1-2",
+  "name": "dupid",
+  "key": "sk-ccc",
+  "realm": "",
+  "models": [],
+  "concurrency_limit": 0,
+  "enabled": true,
+  "created_at": "2026/10/19 19:33",
+  "deleted_at": ""
+ },
+ {
+  "id": "gone",
+  "name": "old",
+  "key": "",
+  "realm": "intl",
+  "models": [],
+  "concurrency_limit": 0,
+  "enabled": false,
+  "created_at": "2026/10/19 19:33",
+  "deleted_at": "2026/09/01 00:00"
+ }
+]

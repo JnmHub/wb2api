@@ -1,0 +1,26 @@
+[
+ {
+  "password": "admin2",
+  "salt": "00000000000000000000000000000000",
+  "rounds": 120000,
+  "digest": "4e6e09bff941493b4273839cb5e68803275d69d8c7abc440bc148af5e7891556"
+ },
+ {
+  "password": "pässwörd-中文",
+  "salt": "abababababababababababababababab",
+  "rounds": 120000,
+  "digest": "c32a48143330ba4fc61029dd8af185d4af1a73384283c7fac2954e8e34e044a4"
+ },
+ {
+  "password": "x",
+  "salt": "0123456789abcdef0123456789abcdef",
+  "rounds": 1000,
+  "digest": "35954b13342aea4267ef9729041dc43616ee99cd870b9b945350d461b7954c38"
+ },
+ {
+  "password": "",
+  "salt": "ffffffffffffffffffffffffffffffff",
+  "rounds": 5000,
+  "digest": "d5889935e43f4bccbd9270ff2d6d62907a64df8bd432377c4bc75e056b8e7624"
+ }
+]

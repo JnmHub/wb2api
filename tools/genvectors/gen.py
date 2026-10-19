@@ -92,3 +92,100 @@ for d in inputs:
 open(os.path.join(acc_dir, "settings.json"), "w").write('{"x":1}')
 open(os.path.join(acc_dir, "broken.json"), "w").write('{not json')
 w("internal/store/accounts/testdata/py_expected.json", expected)
+
+# ---- panel password digests (PBKDF2-SHA256) ----
+import wb_settings as S
+cases = []
+for pw, salt, rounds in [("admin2", "00" * 16, 120000), ("pässwörd-中文", "ab" * 16, 120000),
+                         ("x", "0123456789abcdef0123456789abcdef", 1000), ("", "ff" * 16, 5000)]:
+    cases.append({"password": pw, "salt": salt, "rounds": rounds, "digest": S._digest(pw, salt, rounds)})
+w("internal/store/settings/testdata/pbkdf2.json", cases)
+
+# ---- fnmatch + api key entries ----
+import fnmatch
+pats = ["gpt-*", "deepseek/*", "*", "glm-5.?", "[gk]*", "[!g]*", "a[", "x[]]y", "gpt-5.5", "", "*-flash", "GPT*"]
+names = ["gpt-5.5", "gpt-6-astra", "deepseek/r1", "deepseek-v4.1-flash", "glm-5.3", "kimi-k3", "a[", "x]y", "", "hy3", "gpt/x"]
+w("internal/store/settings/testdata/fnmatch.json",
+  [{"pattern": p, "name": n, "out": fnmatch.fnmatchcase(n, p)} for p in pats for n in names])
+import tempfile
+sd = tempfile.mkdtemp()
+settings_doc = {"api_keys": [
+    {"id": "k1", "name": "main", "key": "sk-aaa", "realm": "CN", "models": "deepseek*, GPT-5.5;glm-5.3", "concurrency_limit": 4, "created_at": "2026/10/01 10:00"},
+    {"id": "k2", "name": "", "key": "sk-bbb", "realm": "weird", "models": ["a", "A", "b"], "max_concurrency": "7", "enabled": False},
+    {"id": "k1", "name": "dupid", "key": "sk-ccc", "models": 5},
+    {"id": "k4", "name": "dupkey", "key": "sk-aaa"},
+    {"id": "gone", "name": "old", "key": "", "deleted_at": "2026/09/01 00:00", "realm": "intl"},
+    {"id": "empty", "key": ""}, "not-a-dict",
+]}
+json.dump(settings_doc, open(os.path.join(sd, "settings.json"), "w"))
+ak = S.api_keys(sd, include_deleted=True)
+w("internal/store/settings/testdata/api_keys_doc.json", [settings_doc])
+w("internal/store/settings/testdata/api_keys_expected.json", ak)
+w("internal/store/settings/testdata/key_allows.json",
+  [{"key_id": e["id"], "model": m, "out": S.key_allows_model(e, m)} for e in ak for m in ["deepseek-v4.1-flash", "gpt-5.5", "GPT-5.5", "glm-5.3", "kimi", "", "a", "b"]])
+legacy_dir = tempfile.mkdtemp()
+json.dump({"api_key_set": True, "api_key": " legacy-k "}, open(os.path.join(legacy_dir, "settings.json"), "w"))
+w("internal/store/settings/testdata/api_keys_legacy.json", S.api_keys(legacy_dir))
+
+# ---- leaked tool call parser + stream filter (legacy wb_proxy) ----
+import random
+os.environ.setdefault("WB_USAGE_CACHE", "0")
+import wb_proxy as P
+BAR = "｜｜"
+FRAGS = ["<run_code>", "</run_code>", "<run_shell>", "<invoke name=\"x\">", "</invoke>", "<parameter name=\"code\">",
+         "<parameter name=\"description\">", "</parameter>", "<param name=\"p\">v</param>", "<arg name=\"a\">1</arg>",
+         "<%sDSML%s calls>" % (BAR, BAR), "</%sDSML%s calls>" % (BAR, BAR),
+         "<%sDSML%s invoke name=\"t\">" % (BAR, BAR), "<%sDSML%s parameter name=\"k\" string=\"true\">" % (BAR, BAR),
+         "</%sDSML%s parameter>" % (BAR, BAR), "</%sDSML%s invoke>" % (BAR, BAR),
+         "<|DSML| calls>", "</|DSML| parameter>", "<think>", "</think>", "<thinking>", "<args>", "<params>", "<div>", "</div>",
+         "List<String>", "a < b", "x<y>z", "<", ">", "<di", "<run", "<para", "print(1)", "hello ", " world", "\n", "  ",
+         "中文", "<tool_calls>", "</tool_calls>", "<function_call>", "<function_calls>", "ls -l", "\"quoted\"", "<br/>"]
+rng = random.Random(7)
+texts = []
+for _ in range(400):
+    texts.append("".join(rng.choice(FRAGS) for _ in range(rng.randint(1, 14))))
+texts += ["just a normal answer", "use a <parameter>less approach", "", "<", "<run_code><parameter name=\"code\">print(1)",
+          "<run_code><parameter name=\"code\">print(1)</parameter>\n<parameter name=\"description\">say hi</%sDSML%s parameter>\n</run_code></invoke></%sDSML%s parameter></%sDSML%s invoke></%sDSML%s calls>" % ((BAR,)*8),
+          "<%sDSML%s calls><%sDSML%s invoke name=\"run_shell\"><%sDSML%s parameter name=\"command\" string=\"true\">ls -l</%sDSML%s parameter></%sDSML%s invoke></%sDSML%s calls>" % ((BAR,)*12)]
+def norm_calls(c):
+    return None if c is None else [{"name": x["name"], "arguments": x["arguments"]} for x in c]
+parse_cases = []
+for tx in texts:
+    c, cl = P.parse_leaked_tool_calls(tx)
+    d, dcl = P.parse_dsml_tool_calls(tx)
+    msg = {"role": "assistant", "content": tx}
+    changed = P.repair_leaked_tool_calls(msg)
+    parse_cases.append({"text": tx, "leaked": norm_calls(c), "leaked_clean": cl, "dsml": norm_calls(d), "dsml_clean": dcl,
+                        "repair_changed": changed, "repair_content": msg["content"],
+                        "repair_calls": [{"name": t["function"]["name"], "arguments": t["function"]["arguments"]} for t in msg.get("tool_calls", [])]})
+w("internal/gateway/leak/testdata/parse.json", parse_cases)
+
+def run_filter(chunks):
+    f = P.LeakedToolCallStreamFilter()
+    steps = []
+    for ch in chunks:
+        acts = f.feed(ch)
+        steps.append([("text", a[1]) if a[0] == "text" else ("calls", norm_calls(a[1])) for a in acts])
+    fl = f.flush()
+    steps.append([("text", a[1]) if a[0] == "text" else ("calls", norm_calls(a[1])) for a in fl])
+    return [[{"k": k, "v": v} for k, v in st] for st in steps]
+filter_cases = []
+for tx in texts:
+    whole = [tx]
+    pieces = []
+    i = 0
+    while i < len(tx):
+        n = rng.randint(1, 7); pieces.append(tx[i:i + n]); i += n
+    for chunks in (whole, pieces):
+        filter_cases.append({"chunks": chunks, "steps": run_filter(chunks)})
+w("internal/gateway/leak/testdata/filter.json", filter_cases)
+
+# ---- model realm detection ----
+ms = ["", "gpt-6-astra", "GPT-5.5", "gpt-anything", "gemini-x", "grok-4.7", "deepseek-v4-pro", "deepseek-v4-pro-max", "minimax-m3",
+      "minimax-zzz", "glm-5.1", "glm-5.3", "kimi-k3-1", "kimi-k2.6", "hy3", "hy3-x", "deepseek-v4.1-flash", "unknown-model"]
+out = []
+for cur in ("intl", "cn"):
+    P.CURRENT_REALM = cur
+    for m in ms:
+        out.append({"model": m, "current": cur, "out": P.detect_model_realm(m)})
+w("internal/realm/testdata/model_realm.json", out)
