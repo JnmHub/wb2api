@@ -13,6 +13,7 @@ import (
 	"wb2api/internal/jobs"
 	"wb2api/internal/ops"
 	"wb2api/internal/pool"
+	"wb2api/internal/quota"
 	"wb2api/internal/scheduler"
 )
 
@@ -91,6 +92,7 @@ type Operations struct {
 	Prober    Prober
 	Scheduler *scheduler.Scheduler
 	Activity  *activity.Log
+	Scanner   *quota.Scanner
 }
 
 func (o *Operations) account(w http.ResponseWriter, r *http.Request) *pool.Account {
@@ -285,4 +287,6 @@ func (o *Operations) Register(mux *http.ServeMux, wrap func(http.Handler) http.H
 	mux.Handle("POST /api/v2/tasks/run", h(o.tasksRun))
 	mux.Handle("POST /api/v2/tasks/travel", h(o.tasksTravel))
 	mux.Handle("POST /api/v2/tasks/streak-bonus", h(o.tasksStreak))
+	mux.Handle("GET /api/v2/quota-scan", h(o.quotaScanGet))
+	mux.Handle("POST /api/v2/quota-scan/run", h(o.quotaScanRun))
 }

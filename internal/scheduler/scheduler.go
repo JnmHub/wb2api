@@ -40,6 +40,8 @@ type Scheduler struct {
 	Hold func(realm string) time.Duration
 	// Windows is the model-quota window probe (nil = disabled).
 	Windows *quota.Windows
+	// Scan is the active quota scan (nil = disabled).
+	Scan *quota.Scanner
 	// Stagger is the pause between accounts (default 2–5 s random).
 	Stagger func() time.Duration
 	// Pause replaces the one-second spacing between one account's chores (tests).
@@ -54,6 +56,7 @@ type Scheduler struct {
 	parked   map[string]time.Time // accounts whose balance refresh failed, until when
 	credits  CreditsRefreshState
 	probing  atomic.Bool
+	scanning atomic.Bool
 }
 
 func (s *Scheduler) now() time.Time {
@@ -308,6 +311,21 @@ func (s *Scheduler) runWindows(ctx context.Context) {
 	}()
 }
 
+// runScans starts one active quota-scan pass in the background, independent of
+// the unattended cycle for the same reason as the window probe.
+func (s *Scheduler) runScans(ctx context.Context) {
+	if s.Scan == nil {
+		return
+	}
+	if !s.scanning.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer s.scanning.Store(false)
+		s.Scan.RunDue(ctx, s.Pool, false)
+	}()
+}
+
 // Run blocks until ctx ends: after a short settle time it does one start-up
 // pass, then fires the cycle on the configured hours. Window probes run on
 // their own clock every tick, whether or not the unattended cycle is enabled.
@@ -318,6 +336,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		return
 	}
 	s.runWindows(ctx)
+	s.runScans(ctx)
 	if s.Settings.SchedulerEnabled() {
 		s.Cycle(ctx, "启动初次初始化巡检")
 	}
@@ -331,6 +350,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		case <-t.C:
 		}
 		s.runWindows(ctx)
+		s.runScans(ctx)
 		now := s.now()
 		if !s.Settings.SchedulerEnabled() || now.Minute() != 0 || now.Sub(lastFired) < 2*time.Minute {
 			continue

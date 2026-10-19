@@ -49,6 +49,7 @@
 | 剩余用量优先调度 | 估算剩余/预算 ≤30% / ≤15% / ≤5% 分别加权 2/3/4，作为池的第三层偏好（手动权重 → 临期积分 → 剩余用量 → 轮转）；冷却、无预算、剩余为 0 的组合不参与；设置页 `remaining_priority_enabled` 开关（默认关） | 3 个 pool 测试 |
 | 模型封锁表 | 精确名单 + 封锁子串 + 白名单/前缀（`allowed_models` / `allowed_prefixes`，默认全空）；命中的模型在网关本机 400、不发上游，并从 `/v1/models` 隐藏；设置页可维护名单 | 1 个 settings 单测 + 2 个网关测试 |
 | `internal/updates`（更新检查） | GitHub Releases 查询 + `releases/latest` 302 回退、版本比较、只读不下载；每天最多一次（`update_check_enabled` 默认关）+ 手动立即检查；状态（上次检查/最新版本）落盘；设置页显示当前/最新版本与发行页链接 | 5 个单测 + 1 个 API 测试 |
+| `internal/quota`（额度主动查询） | `quota_scan_models` 勾选的模型每 6 小时为每个「账号×模型」发一个最小请求体检：通了清该模型冷却；429 带重置时刻则记冷却并把这条配额线交给窗口探针；失败按 15 分钟重试、6 次后顺延一个完整周期；已有 429 窗口或冷却中的线跳过。调度器独立执行；`GET/POST /api/v2/quota-scan*`，设置页可维护模型并立即查询 | 4 个单测 + 1 个 API 测试 |
 
 `go vet`、`gofmt` 干净；`go test ./...` 全绿。本机没有 C 编译器，`-race` 跑不了，需在 CI（Linux）补。
 
@@ -149,7 +150,7 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 
 ## 还没做
 
-- 没移植：国际网页会话那一路、`web_search` / `web_fetch` 代跑工具（`wb_webtools`）、桌面凭据解密导入、价格估算、智能体配置、额度主动查询（quota scan）。
+- 没移植：国际网页会话那一路、`web_search` / `web_fetch` 代跑工具（`wb_webtools`）、桌面凭据解密导入、价格估算、智能体配置。
 - 目录：`upstream_effort_of`（按目录钉死思考档位改写请求）、模型封锁表、`/u/<ref>/v1/models`（定址路由）。
 - TLS 指纹（JA3/JA4）：仍是 Go 标准 `crypto/tls`，与旧版 Python 的 OpenSSL 指纹不同（风险 R1）；**只在模拟上游上验证过，没连真实上游账号**，是否会被识别未验证。
 - 本机没有 C 编译器，`go test -race` 跑不了，需在 CI（Linux）补。

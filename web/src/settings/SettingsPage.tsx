@@ -197,6 +197,11 @@ function CatalogSection({ s }: { s: SettingsView }) {
 
 function ProbeSection({ s }: { s: SettingsView }) {
   const save = useSaveSettings()
+  const [models, setModels] = useState(s.quota_scan_models.join(', '))
+  const dirty = models !== s.quota_scan_models.join(', ')
+  const run = useMutation({
+    mutationFn: () => post<{ ok: boolean; sent: number; msg: string }>('/api/v2/quota-scan/run', {}),
+  })
   return (
     <section className="card sec">
       <h3>额度窗口探针</h3>
@@ -209,6 +214,32 @@ function ProbeSection({ s }: { s: SettingsView }) {
         checked={s.window_probe}
         onChange={(v) => save.mutate({ window_probe: v })}
       />
+      <div className="field">
+        <label>主动查询的模型（每 6 小时体检一次，逗号分隔；留空 = 关闭）</label>
+        <input
+          className="input mono"
+          value={models}
+          onChange={(e) => setModels(e.target.value)}
+          placeholder="hy3, deepseek-v4.1-flash"
+        />
+        <div className="dim hint">
+          只查勾选的模型；已有 429 窗口的配额线交给上面的窗口探针，不重复查询。每次查询会消耗该账号极少量额度。
+        </div>
+      </div>
+      <div className="row end">
+        <button className="btn sm" disabled={run.isPending} onClick={() => run.mutate()}>
+          {run.isPending ? '查询中…' : '立即查询'}
+        </button>
+        <button
+          className="btn primary sm"
+          disabled={!dirty || save.isPending}
+          onClick={() => save.mutate({ quota_scan_models: models.split(/[\s,]+/).filter(Boolean) })}
+        >
+          保存查询模型
+        </button>
+      </div>
+      {run.data && <div className="dim">{run.data.msg}</div>}
+      {run.isError && <div className="err">{(run.error as Error).message}</div>}
     </section>
   )
 }

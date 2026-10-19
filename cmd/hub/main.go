@@ -149,6 +149,7 @@ func main() {
 	h.Guards = &guards.Scanner{Pool: p, Settings: st, Usage: udb, FreeModels: cat.FreeModels, Log: log}
 	windows := &quota.Windows{Dir: *accountsDir, Gate: st.WindowProbe, Prober: h, Log: log}
 	h.Windows = windows
+	scanner := &quota.Scanner{Dir: *accountsDir, Models: st.QuotaScanModels, Prober: h, Windows: windows, Log: log}
 	h.OnUsage = func(ev openai.UsageEvent) {
 		ue := api.EventFromGateway(ev, realmOf)
 		udb.Record(ue)
@@ -224,10 +225,10 @@ func main() {
 	accountsAPI.Register(mux, auth.Require)
 	accountsAPI.StartEvents(bg, time.Second)
 	sched := &scheduler.Scheduler{
-		Pool: p, Ops: opsClient, Refresher: refresher, Settings: st, Log: log, Windows: windows,
+		Pool: p, Ops: opsClient, Refresher: refresher, Settings: st, Log: log, Windows: windows, Scan: scanner,
 		Hold: func(realm string) time.Duration { return h.RiskHold(realm) },
 	}
-	(&api.Operations{Ops: opsClient, Pool: p, Prober: h, Scheduler: sched, Activity: activityLog}).Register(mux, auth.Require)
+	(&api.Operations{Ops: opsClient, Pool: p, Prober: h, Scheduler: sched, Activity: activityLog, Scanner: scanner}).Register(mux, auth.Require)
 	(&api.Settings{Store: st, Pool: p, Realm: realmSw, Guards: h.Guards, Catalog: cat}).Register(mux, auth.Require)
 	checker := &updates.Checker{Current: version, Enabled: st.UpdateCheckEnabled, Store: st, Log: log}
 	(&api.Updates{Checker: checker}).Register(mux, auth.Require)
