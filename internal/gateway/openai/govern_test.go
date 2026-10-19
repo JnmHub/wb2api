@@ -3,7 +3,10 @@ package openai
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"wb2api/internal/catalog"
 	"wb2api/internal/pool"
 	"wb2api/internal/store/settings"
 )
@@ -287,5 +291,104 @@ func TestDailyTokenGuardParksThePool(t *testing.T) {
 	}
 	if !strings.Contains(body, "今日 Token 额度用尽") && !strings.Contains(body, "token limit") {
 		t.Errorf("the reason must be named: %s (retry-after %q)", body, hdr.Get("Retry-After"))
+	}
+}
+
+func TestPinnedRouteUsesExactlyThatAccount(t *testing.T) {
+	var seen []string
+	up := newRawUpstream(t, func(i int, r rawReq, c net.Conn) { seen = append(seen, tokOf(r)); sseOK(c) })
+	f := newFixture(t, up, accSpec{"nickname": "alpha"}, accSpec{"nickname": "beta"})
+	srv := httptest.NewServer(PinnedRoutes(f.pool, f.h))
+	defer srv.Close()
+	post := func(path string) (int, string) {
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(conv(7)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	for i := 0; i < 4; i++ {
+		if code, body := post("/u/beta/v1/chat/completions"); code != 200 {
+			t.Fatalf("%d %s", code, body)
+		}
+	}
+	for _, s := range seen {
+		if s != "Bearer tok-1" {
+			t.Fatalf("pinned to beta but %s served", s)
+		}
+	}
+	if code, _ := post("/u/acct-0/x"); code != 200 {
+		t.Errorf("exact uid: %d", code)
+	}
+	if code, body := post("/u/nobody/v1/chat/completions"); code != 404 || !strings.Contains(body, "was not found") {
+		t.Errorf("unknown ref: %d %s", code, body)
+	}
+	if code, body := post("/u/acct-/v1/chat/completions"); code != 409 || !strings.Contains(body, "ambiguous") {
+		t.Errorf("a prefix matching two accounts is ambiguous: %d %s", code, body)
+	}
+	if code, _ := post("/u/beta"); code != 404 {
+		t.Errorf("malformed pinned route: %d", code)
+	}
+	// a pinned account that cannot serve is an error, not a silent failover
+	f.pool.All()[1].CoolDown(time.Now().Add(time.Hour))
+	if code, body := post("/u/beta/v1/chat/completions"); code != 503 || !strings.Contains(body, "not usable") {
+		t.Errorf("pinned but cooling: %d %s", code, body)
+	}
+}
+
+func TestCrossRealmModelIsExplained(t *testing.T) {
+	up := newRawUpstream(t, func(i int, r rawReq, c net.Conn) { sseOK(c) })
+	f := newFixture(t, up, accSpec{})
+	code, body, _ := f.post(t, `{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"x"}]}`, nil)
+	if code != 400 || !strings.Contains(body, "只在国内版提供") {
+		t.Fatalf("%d %s", code, body)
+	}
+	if len(up.requests()) != 0 {
+		t.Error("a doomed request must not reach the upstream")
+	}
+}
+
+func TestBackgroundModelIsRewrittenToAFreeOne(t *testing.T) {
+	up := newRawUpstream(t, func(i int, r rawReq, c net.Conn) { sseOK(c) })
+	f := newFixture(t, up, accSpec{})
+	f.post(t, `{"model":"gpt-5.6-luna","messages":[{"role":"user","content":"x"}]}`, nil)
+	if got := up.requests()[0].jsonBody(t).Get("model"); got != "deepseek-v4.1-flash" {
+		t.Fatalf("upstream saw %v", got)
+	}
+}
+
+func TestKeyConcurrencyLimit(t *testing.T) {
+	release := make(chan struct{})
+	up := newRawUpstream(t, func(i int, r rawReq, c net.Conn) { <-release; sseOK(c) })
+	f := newFixture(t, up, accSpec{}, accSpec{})
+	f.setSettings(t, `{"api_keys":[{"id":"k1","name":"limited","key":"sk-1","enabled":true,"concurrency_limit":1}]}`)
+	hdr := map[string]string{"Authorization": "Bearer sk-1"}
+	first := make(chan int, 1)
+	go func() { code, _, _ := f.post(t, conv(1), hdr); first <- code }()
+	time.Sleep(300 * time.Millisecond)
+	code, body, _ := f.post(t, conv(2), hdr)
+	if code != 429 || !strings.Contains(body, "concurrency limit") {
+		t.Fatalf("%d %s", code, body)
+	}
+	close(release)
+	if c := <-first; c != 200 {
+		t.Fatalf("the first request still completes: %d", c)
+	}
+	if code, _, _ := f.post(t, conv(3), hdr); code != 200 {
+		t.Errorf("the slot is released afterwards: %d", code)
+	}
+}
+
+func TestEffortIsRecordedOnTheUsageEvent(t *testing.T) {
+	up := newRawUpstream(t, func(i int, r rawReq, c net.Conn) { sseOK(c) })
+	f := newFixture(t, up, accSpec{})
+	f.h.Catalog = &catalog.Service{}
+	ch := make(chan UsageEvent, 1)
+	f.h.OnUsage = func(ev UsageEvent) { ch <- ev }
+	f.post(t, `{"model":"glm-5.3","reasoning_effort":"high","stream":true,"messages":[{"role":"user","content":"x"}]}`, nil)
+	if ev := <-ch; ev.Effort != "high" {
+		t.Fatalf("effort %q", ev.Effort)
 	}
 }

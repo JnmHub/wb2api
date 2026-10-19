@@ -19,7 +19,7 @@ import (
 func EventFromGateway(ev openai.UsageEvent, realmOf func(uid string) string) usagedb.Event {
 	e := usagedb.Event{
 		At: ev.At, Model: ev.Model, Account: ev.Account, KeyID: ev.KeyID, Stream: ev.Stream, Outcome: ev.Outcome,
-		Status: ev.Status, ElapsedMs: ev.Elapsed.Milliseconds(), HeldMs: ev.HeldFor.Milliseconds(), Estimated: ev.Estimated,
+		Status: ev.Status, ElapsedMs: ev.Elapsed.Milliseconds(), HeldMs: ev.HeldFor.Milliseconds(), Estimated: ev.Estimated, Effort: ev.Effort,
 	}
 	if realmOf != nil && ev.Account != "" {
 		e.Realm = realmOf(ev.Account)

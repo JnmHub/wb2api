@@ -103,7 +103,7 @@ func (h *Handler) responsesWhole(q *request, acc *pool.Account, cancel context.C
 	body io.Reader, model string, info responses.Info) {
 
 	res := h.collect(q.r, cancel, idle, body, model, false)
-	ev := res.usageEvent(acc, model, q.keyID, q.start)
+	ev := res.usageEvent(acc, model, q.keyID, q.effort(h), q.start)
 	if res.err != nil {
 		ev.Outcome, ev.Status = "upstream_aborted", http.StatusBadGateway
 		h.emit(ev)
@@ -257,7 +257,7 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 		outcome, status = "upstream_aborted", http.StatusBadGateway
 	}
 	ev := UsageEvent{At: q.start, Model: model, Account: acc.UID, KeyID: q.keyID, Stream: true, Outcome: outcome,
-		Status: status, Elapsed: time.Since(q.start), Usage: usageJSON(s.Usage()), Estimated: s.Estimated(), Chunks: nChunks}
+		Status: status, Elapsed: time.Since(q.start), Usage: usageJSON(s.Usage()), Estimated: s.Estimated(), Chunks: nChunks, Effort: q.effort(h)}
 	if !firstAt.IsZero() {
 		ev.TTFT, ev.Gen = firstAt.Sub(q.start), lastAt.Sub(firstAt)
 	}

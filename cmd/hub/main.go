@@ -27,12 +27,13 @@ import (
 	"wb2api/internal/api"
 	"wb2api/internal/catalog"
 	"wb2api/internal/events"
-	"wb2api/internal/guards"
 	"wb2api/internal/gateway/leak"
 	"wb2api/internal/gateway/openai"
+	"wb2api/internal/guards"
 	"wb2api/internal/jobs"
 	"wb2api/internal/panelauth"
 	"wb2api/internal/pool"
+	"wb2api/internal/realmswitch"
 	"wb2api/internal/refresh"
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/store/settings"
@@ -98,6 +99,8 @@ func main() {
 		Pool: p, Up: up, Settings: st, Log: log, Refresher: refresher, Persist: persist,
 		UpstreamOverride: *upstreamOverride, MaxAttempts: *maxAttempts, FilterMode: mode,
 	}
+	realmSw := realmswitch.Open(*accountsDir, "intl")
+	h.CurrentRealm = realmSw.Get
 	cat := &catalog.Service{
 		Pool: p, Up: up, Dir: *accountsDir, CacheDir: *catalogDir, Log: log,
 		UpstreamOverride: *upstreamOverride, ModelsDev: !*noModelsDev,
@@ -173,6 +176,10 @@ func main() {
 	mux.Handle("/v1/responses", responsesH)
 	mux.Handle("/responses", responsesH)
 	(&openai.Info{Chat: h, Pool: p, Catalog: cat}).Register(mux)
+	mux.HandleFunc("GET /realm", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"current": realmSw.Get(), "options": []string{"intl", "cn"}})
+	})
 	(&api.Usage{DB: udb}).Register(mux, auth.Require)
 	bus := events.New(512)
 	jobMgr := &jobs.Manager{Workers: 4, OnProgress: func(j jobs.Job) { bus.Publish("job.progress", j) }}
@@ -205,7 +212,7 @@ func main() {
 
 	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
 	srv := &http.Server{
-		Addr: addr, Handler: mux,
+		Addr: addr, Handler: openai.PinnedRoutes(p, mux),
 		ReadHeaderTimeout: 15 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}

@@ -15,7 +15,6 @@ import (
 	"wb2api/internal/gateway/ratelimit"
 	"wb2api/internal/jsonx"
 	"wb2api/internal/pool"
-	"wb2api/internal/realm"
 	"wb2api/internal/risk"
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/store/settings"
@@ -80,26 +79,47 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	q := &request{r: r, w: w, start: start, payload: payload, refreshed: map[string]bool{}}
 	q.at.tried = map[string]struct{}{}
 	q.at.charged = map[string]bool{}
+	applyBackgroundAlias(payload, h.logger())
 	q.model, _ = payload.Get("model").(string)
 	q.stream = jsonx.Truthy(payload.Get("stream"))
 	if opts.forceStream {
 		q.stream = opts.stream
 	}
 	q.sink = opts.sink
-	rl := h.DefaultRealm
-	if rl == "" {
-		rl = realm.Intl
+	explicit := requestRealm(r, key)
+	pinned := PinnedFrom(r.Context())
+	switch {
+	case explicit != "":
+		q.realm = explicit
+	case pinned != nil:
+		q.realm = pinned.Realm
+	default:
+		q.realm = h.activeRealm()
 	}
-	q.realm = realm.DetectModelRealm(q.model, rl)
 	if key != nil {
 		q.keyID = key.ID
-		if key.Realm != "" {
-			q.realm = key.Realm
-		}
-		if !key.AllowsModel(q.model) {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("model %q is not allowed for this API key", q.model), "invalid_request_error")
+		if msg := crossRealmMessage(q.model, q.realm, key); msg != "" {
+			writeError(w, http.StatusBadRequest, msg, "invalid_request_error")
 			return
 		}
+		if !key.AllowsModel(q.model) {
+			writeError(w, http.StatusBadRequest, keyModelMessage(key, q.model), "invalid_request_error")
+			return
+		}
+	} else if msg := crossRealmMessage(q.model, q.realm, nil); msg != "" {
+		writeError(w, http.StatusBadRequest, msg, "invalid_request_error")
+		return
+	}
+	if ok, release, limit := acquireKey(key); !ok {
+		name := key.Name
+		if name == "" {
+			name = key.ID
+		}
+		h.emit(UsageEvent{At: start, Model: q.model, KeyID: q.keyID, Stream: q.stream, Outcome: "failed", Status: http.StatusTooManyRequests, Elapsed: time.Since(start)})
+		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("Rate limit reached: API key '%s' reached its concurrency limit (%d in flight); retry shortly", name, limit), "rate_limit_error")
+		return
+	} else {
+		defer release()
 	}
 	q.sessionKey = extractSessionKey(r, payload)
 	if opts.sessionKey != "" {
@@ -126,10 +146,23 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 		return
 	}
 
-	autoSwitch := h.Settings.AutoSwitchProduct()
+	autoSwitch := h.Settings.AutoSwitchProduct() && pinned == nil
 	max := h.maxAttempts()
 	if autoSwitch {
 		max += maxProductSwitches
+	}
+	if pinned != nil {
+		// a pinned route is served by that one account alone, with no failover
+		ref := pinnedRef(r)
+		if pinned.Realm != q.realm {
+			writeError(w, http.StatusConflict, fmt.Sprintf("pinned account '%s' belongs to realm %s, request targets %s", ref, pinned.Realm, q.realm), "invalid_request_error")
+			return
+		}
+		if !pinned.Ready(q.model, time.Now()) {
+			writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("pinned account '%s' is not usable right now: %s", ref, pinned.UnavailableReason(q.model, time.Now())), "invalid_request_error")
+			return
+		}
+		max = 1
 	}
 	var forced *pool.Account // retry the same account (after refresh / prompt degrade)
 	for attempt := 0; attempt < max+2; attempt++ {
@@ -142,7 +175,12 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 			if len(q.at.tried) >= max {
 				break
 			}
-			if acc = h.Pool.PickForSession(q.realm, q.sessionKey, q.at.tried, q.model, q.page); acc == nil {
+			if pinned != nil {
+				acc = pinned
+			} else {
+				acc = h.Pool.PickForSession(q.realm, q.sessionKey, q.at.tried, q.model, q.page)
+			}
+			if acc == nil {
 				// transient trouble: give the pool a moment and go round again
 				if q.at.transient > 0 && attempt < max+1 {
 					clear(q.at.tried)
@@ -299,9 +337,9 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 	if q.sink != nil {
 		q.sink(q, acc, cancel, idle, resp.Body)
 	} else if q.stream {
-		h.pipeStream(q.w, q.r, cancel, idle, resp.Body, acc, q.model, q.keyID, q.start)
+		h.pipeStream(q.w, q.r, cancel, idle, resp.Body, acc, q.model, q.keyID, q.effort(h), q.start)
 	} else {
-		h.aggregate(q.w, q.r, cancel, idle, resp.Body, acc, q.model, q.keyID, q.start)
+		h.aggregate(q.w, q.r, cancel, idle, resp.Body, acc, q.model, q.keyID, q.effort(h), q.start)
 	}
 	return result{kind: done}
 }

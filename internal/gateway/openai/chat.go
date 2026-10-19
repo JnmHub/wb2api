@@ -72,8 +72,11 @@ type Handler struct {
 	MaxHoldTime time.Duration
 	// OnUsage receives one event per request; must not block.
 	OnUsage func(UsageEvent)
-	// DefaultRealm is used when neither the key nor the model decides (intl).
+	// DefaultRealm is the fallback when CurrentRealm gives none (intl).
 	DefaultRealm string
+	// CurrentRealm returns the panel's active realm, used when neither the API
+	// key, X-Realm nor ?realm= picks one (nil = DefaultRealm).
+	CurrentRealm func() string
 	// Guards refreshes the daily / reserve limits before each pick and explains
 	// a fully parked pool (nil = no limits).
 	Guards *guards.Scanner
@@ -253,6 +256,8 @@ type request struct {
 	sink       sinkFunc // renders the upstream stream (nil = chat completions)
 	page       *pool.Page
 	at         attemptState
+	effortVal  string
+	effortDone bool
 
 	refreshed       map[string]bool
 	degradedRetried bool

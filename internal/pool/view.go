@@ -2,6 +2,7 @@ package pool
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	"wb2api/internal/store/accounts"
@@ -185,4 +186,44 @@ func (a *Account) ClearCooldowns(includeRestriction bool) *accounts.Record {
 	}
 	a.touch()
 	return rec
+}
+
+// FindUnique resolves a pinned-route ref to exactly one account: an exact uid,
+// else a unique nickname, else a unique uid prefix. A tier with more than one
+// match is ambiguous and reported as such — it never guesses. why is "" on
+// success, else "was not found" / "is ambiguous".
+func (p *Pool) FindUnique(ref string) (a *Account, why string) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil, "was not found"
+	}
+	all := p.snap.Load().all
+	tiers := []func(*Account) bool{
+		func(x *Account) bool { return x.UID == ref },
+		func(x *Account) bool { return strings.TrimSpace(x.Record().Nickname) == ref },
+		func(x *Account) bool { return strings.HasPrefix(x.UID, ref) },
+	}
+	for _, match := range tiers {
+		var hits []*Account
+		for _, x := range all {
+			if match(x) {
+				hits = append(hits, x)
+			}
+		}
+		switch len(hits) {
+		case 1:
+			return hits[0], ""
+		case 0:
+		default:
+			return nil, "is ambiguous"
+		}
+	}
+	return nil, "was not found"
+}
+
+// ModelDisabled reports whether the operator denied this model on the account.
+func (a *Account) ModelDisabled(model string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return model != "" && a.disabledMd[strings.ToLower(strings.TrimSpace(model))]
 }

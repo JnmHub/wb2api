@@ -21,4 +21,5 @@ type UsageEvent struct {
 	Usage     json.RawMessage
 	Estimated bool // usage was estimated locally (not reported by upstream)
 	Chunks    int
+	Effort    string // reasoning effort the request ran at ("" = unknown)
 }

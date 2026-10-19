@@ -153,7 +153,7 @@ func usageTotal(u json.RawMessage) int64 {
 
 // pipeStream relays an upstream SSE stream to the client.
 func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp func(), idleD time.Duration, body io.Reader,
-	acc *pool.Account, model, keyID string, start time.Time) {
+	acc *pool.Account, model, keyID, effort string, start time.Time) {
 
 	hdr := w.Header()
 	hdr.Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -372,7 +372,7 @@ loop:
 	}
 
 	ev := UsageEvent{At: start, Model: model, Account: acc.UID, KeyID: keyID, Stream: true,
-		Outcome: outcome, Status: status, Elapsed: time.Since(start), HeldFor: heldTotal, Usage: lastUsage, Chunks: nChunks}
+		Outcome: outcome, Status: status, Elapsed: time.Since(start), HeldFor: heldTotal, Usage: lastUsage, Chunks: nChunks, Effort: effort}
 	if !firstAt.IsZero() {
 		ev.TTFT = firstAt.Sub(start)
 		ev.Gen = lastAt.Sub(firstAt)
@@ -531,9 +531,9 @@ func (h *Handler) collect(r *http.Request, cancelUp func(), idleD time.Duration,
 }
 
 // usageEvent fills the common fields of the usage record of a collected stream.
-func (c *collected) usageEvent(acc *pool.Account, model, keyID string, start time.Time) UsageEvent {
+func (c *collected) usageEvent(acc *pool.Account, model, keyID, effort string, start time.Time) UsageEvent {
 	ev := UsageEvent{At: start, Model: model, Account: acc.UID, KeyID: keyID, Outcome: "completed", Status: http.StatusOK,
-		Elapsed: time.Since(start), Usage: c.usage, Estimated: c.estimated, Chunks: c.nChunks}
+		Elapsed: time.Since(start), Usage: c.usage, Estimated: c.estimated, Chunks: c.nChunks, Effort: effort}
 	if !c.firstAt.IsZero() {
 		ev.TTFT, ev.Gen = c.firstAt.Sub(start), c.lastAt.Sub(c.firstAt)
 	}
@@ -542,10 +542,10 @@ func (c *collected) usageEvent(acc *pool.Account, model, keyID string, start tim
 
 // aggregate folds the upstream stream into one chat.completion response.
 func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp func(), idleD time.Duration, body io.Reader,
-	acc *pool.Account, model, keyID string, start time.Time) {
+	acc *pool.Account, model, keyID, effort string, start time.Time) {
 
 	res := h.collect(r, cancelUp, idleD, body, model, true)
-	ev := res.usageEvent(acc, model, keyID, start)
+	ev := res.usageEvent(acc, model, keyID, effort, start)
 	if res.err != nil {
 		ev.Outcome, ev.Status = "upstream_aborted", http.StatusBadGateway
 		h.emit(ev)

@@ -198,3 +198,31 @@ func DetectModelRealm(model, current string) string {
 	}
 	return current
 }
+
+var intlExclusive = map[string]bool{
+	"gpt-6-astra": true, "gpt-5.6-sol": true, "gpt-5.6-terra": true, "gpt-5.6-luna": true,
+	"gpt-5.5": true, "gpt-5.4": true, "gpt-5.3-codex": true, "gemini-3.5-flash": true, "grok-4.7": true,
+}
+
+var cnExclusive = map[string]bool{
+	"deepseek-v4-pro": true, "glm-5.1": true, "glm-5v-turbo": true,
+	"kimi-k3-1": true, "kimi-k2.7": true, "minimax-m3": true,
+	"hy3-x": true, "hy4-preview-dev": true, "hy4-preview-x": true,
+}
+
+// ExclusiveRealm is the exit that alone serves a model ("" when both do).
+// Sending gpt-6-astra to the domestic exit (or deepseek-v4-pro to the
+// international one) earns an opaque 403, so callers reject it up front.
+func ExclusiveRealm(model string) string {
+	if model == "" {
+		return ""
+	}
+	m := strings.ToLower(model)
+	if intlExclusive[m] || strings.HasPrefix(m, "gpt-") || strings.HasPrefix(m, "gemini-") {
+		return Intl
+	}
+	if cnExclusive[m] || strings.HasPrefix(m, "minimax-") || strings.HasPrefix(m, "deepseek-v4-pro") {
+		return CN
+	}
+	return ""
+}

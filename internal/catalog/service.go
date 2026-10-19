@@ -358,3 +358,21 @@ func (s *Service) FreeModels(r string) map[string]bool {
 	}
 	return out
 }
+
+// FixedEffort is the reasoning level the catalogue pins a model to ("" when the
+// model's effort is selectable): reasoning.effort without supportedEfforts means
+// the model always runs at that level.
+func (s *Service) FixedEffort(model string) string {
+	m := s.metaOf(model)
+	if m == nil {
+		return ""
+	}
+	r, ok := m.Obj("reasoning")
+	if !ok || jsonx.Truthy(r.Get("supportedEfforts")) {
+		return ""
+	}
+	if e, ok := r.Str("effort"); ok {
+		return strings.TrimSpace(e)
+	}
+	return ""
+}

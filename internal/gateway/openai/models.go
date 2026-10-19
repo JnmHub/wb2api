@@ -31,22 +31,21 @@ func (i *Info) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/health", i.health)
 }
 
-func (i *Info) defaultRealm() string {
-	if i.Chat != nil && i.Chat.DefaultRealm != "" {
-		return i.Chat.DefaultRealm
-	}
-	return realm.Intl
-}
+func (i *Info) defaultRealm() string { return i.Chat.activeRealm() }
 
-// requestRealm mirrors the legacy priority: the realm bound to the API key,
-// then X-Realm, then ?realm=, then the default. Unknown values fall back to
-// the default so a client cannot grow the per-realm cache.
+// requestRealm mirrors the chat path: the realm bound to the API key, then
+// X-Realm, then ?realm=, then the pinned account's realm, then the active one.
+// "all" is accepted for listings. Unknown values fall back so a client cannot
+// grow the per-realm cache.
 func (i *Info) requestRealm(r *http.Request, key string) string {
 	for _, c := range []string{key, r.Header.Get("X-Realm"), r.URL.Query().Get("realm")} {
 		switch c {
 		case realm.Intl, realm.CN, "all":
 			return c
 		}
+	}
+	if p := PinnedFrom(r.Context()); p != nil {
+		return p.Realm
 	}
 	return i.defaultRealm()
 }
@@ -103,9 +102,14 @@ func (i *Info) models(w http.ResponseWriter, r *http.Request) {
 	}
 	rl := i.requestRealm(r, boundRealm)
 	data, meta := i.Catalog.Entries(r.Context(), rl)
-	list := make([]any, len(data))
-	for n, d := range data {
-		list[n] = d
+	list := make([]any, 0, len(data))
+	pinned := PinnedFrom(r.Context())
+	for _, d := range data {
+		// a pinned route lists what that account can actually take
+		if id, _ := d.Get("id").(string); pinned != nil && pinned.ModelDisabled(id) {
+			continue
+		}
+		list = append(list, d)
 	}
 	out := jsonx.NewObj()
 	out.Set("object", "list")
