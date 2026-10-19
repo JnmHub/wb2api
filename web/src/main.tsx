@@ -2,7 +2,9 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { App } from './App'
+import 'antd/dist/reset.css'
 import './styles.css'
+import './ui/ui.css'
 
 export const queryClient = new QueryClient({
   defaultOptions: {

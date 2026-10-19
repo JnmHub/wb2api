@@ -1,0 +1,219 @@
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.app-sider {
+  position: sticky !important;
+  top: 0;
+  height: 100vh;
+  border-right: 1px solid var(--ant-color-border-secondary, #ececf0);
+}
+
+.app-brand {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--ant-color-border-secondary, #ececf0);
+}
+
+.app-brand-mark {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 700;
+  font-size: 13px;
+  background: linear-gradient(135deg, #00a2fb, #005d8f);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+}
+
+.app-brand-name {
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+}
+
+.app-brand-tag {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--ant-color-border, #e4e4e7);
+  color: var(--ant-color-text-tertiary, #71717a);
+}
+
+.app-nav {
+  padding: 8px 0;
+  overflow-y: auto;
+  height: calc(100vh - 56px - 44px);
+}
+
+.app-nav .ant-menu {
+  border-inline-end: none !important;
+}
+
+.app-nav .ant-menu-item-group-title {
+  padding: 12px 18px 4px;
+  letter-spacing: 0.08em;
+}
+
+.app-sider-foot {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  font-size: 11px;
+  color: var(--ant-color-text-tertiary, #71717a);
+  border-top: 1px solid var(--ant-color-border-secondary, #ececf0);
+}
+
+.app-header {
+  height: 56px;
+  line-height: 56px;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid var(--ant-color-border-secondary, #ececf0);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.app-content {
+  padding: 20px;
+  overflow: auto;
+  height: calc(100vh - 56px);
+}
+
+.app-page {
+  max-width: 1500px;
+  margin: 0 auto;
+}
+
+/* The old page components keep their own layout; in the antd shell they must
+   not add a second scroll container or their own padding. */
+.app-page > .page,
+.app-page > .page.settings,
+.app-page > .page.logs {
+  padding: 0;
+  overflow: visible;
+  min-height: 0;
+  flex: initial;
+  max-width: none;
+}
+
+.login-screen {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 24px;
+  background:
+    radial-gradient(900px 480px at 15% 0%, rgba(0, 162, 251, 0.12), transparent 60%),
+    radial-gradient(700px 420px at 100% 100%, rgba(0, 93, 143, 0.1), transparent 55%),
+    var(--ant-color-bg-layout, #f6f6f8);
+}
+
+.login-card {
+  width: min(380px, 100%);
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.12);
+  border-radius: 10px;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.login-foot {
+  font-size: 11px;
+}
+
+@media (max-width: 768px) {
+  .app-content {
+    padding: 12px;
+  }
+  .app-header {
+    padding: 0 12px;
+  }
+}
+
+/* Dark compatibility for the not-yet-migrated page internals. The old pages were
+   written against a light-only palette; these overrides keep the shell usable in
+   dark mode until each page is rebuilt on antd. */
+[data-theme='dark'] .card,
+[data-theme='dark'] .panel {
+  background: #1c1c1f;
+  border-color: #2c2c30;
+  color: #f4f4f6;
+}
+
+[data-theme='dark'] .chip,
+[data-theme='dark'] .btn,
+[data-theme='dark'] .input,
+[data-theme='dark'] .select,
+[data-theme='dark'] select,
+[data-theme='dark'] input,
+[data-theme='dark'] textarea {
+  background: #222226;
+  border-color: #2c2c30;
+  color: #f4f4f6;
+}
+
+[data-theme='dark'] .chip[aria-pressed='true'] {
+  background: #0b3a52;
+  border-color: #00a2fb;
+  color: #9fdcff;
+}
+
+[data-theme='dark'] .btn.primary {
+  background: #005d8f;
+  border-color: #0077b6;
+  color: #fff;
+}
+
+[data-theme='dark'] .table th,
+[data-theme='dark'] .tables th,
+[data-theme='dark'] table th {
+  background: #1c1c1f;
+  color: #a1a1aa;
+  border-color: #2c2c30;
+}
+
+[data-theme='dark'] .table td,
+[data-theme='dark'] .tables td,
+[data-theme='dark'] table td {
+  border-color: #26262a;
+  color: #e4e4e7;
+}
+
+[data-theme='dark'] .table tr:hover td {
+  background: #222226;
+}
+
+[data-theme='dark'] .dim {
+  color: #a1a1aa;
+}
+
+[data-theme='dark'] .mono {
+  color: inherit;
+}

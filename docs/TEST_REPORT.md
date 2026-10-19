@@ -123,6 +123,7 @@
 - 模拟基准证明网关在 200 并发流、8k TPS 量级下无错误、无 503；数字受同机 mock pacing 限制，不能当作网关上限。
 - 真实账号测试会消耗积分/额度并可能触发上游风控，`account-ops.ps1` 的 `-FullGrowth` 与高并发请按需使用。
 - **本地 web 工具已在真实上游上跑通一次**：开启 `local_web_tools`、`tool_choice:"required"` + `web_search` 时，模型发出搜索调用，网关执行本地搜索并把结果喂回，最终回答明确提到“搜索没有返回官方信息”。结果质量受本机到各搜索后端的影响（本机 DuckDuckGo 返回 202 反爬，自动回退到 Wikipedia / Google News）；每次是否愿意调用仍取决于模型。
+- **TLS 指纹已用真实账号验证可用**：默认的 OpenSSL 形状 ClientHello（`internal/upstream/tlsfp`）对真实上游发 `glm-5.3-flash` 请求返回 200（约 1.9s）；本机抓包显示 cipher/extension/point-format 与 Python 3.13 / OpenSSL 3.5.9 完全一致，supported_groups 少了 uTLS 无法握手的几个组。`WB_TLS_PROFILE=go` 可切回标准库。
 
 ## 8. 复现
 

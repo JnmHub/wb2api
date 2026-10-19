@@ -55,6 +55,7 @@
 | `internal/ops/webchat.go`（国际版网页会话） | 国际版每日活跃补上真正计入积分的网页腿：`POST /console/as/conversations/` 建会话 → 取沙箱 `link/token` → 接 ACP SSE（`Acp-Connection-Id`）→ `initialize` / `session/load` / `session/set_model` / `session/prompt` → 轮询会话到 `completed`。失败按首轮 120s 起翻倍重试（默认 3 次，可在设置里改次数/首轮等待）；桌面腿与网页腿合并成一次活动记录，只有网页腿成功才算当天完成。开关 `daily_chat_web` / `daily_chat_web_retry`，账号抽屉新增“网页活跃”动作 | 3 个 ops 单测（ACP 全流程、慢会话重试、CN 拒绝）+ 设置默认值断言 |
 | `internal/pricing`（价格估算） | 从 OpenRouter `/api/v1/models` 拉快照（美元/百万 token，缓存读价），按固定 `usd_cny=7.1` 折算；模型解析顺序：手工策略 → 精确 OR id → provider 前缀别名（唯一才认）→ 去渠道后缀继承（唯一才认）；支持 `auto/manual/ignore` 策略、手工 OR id 映射与显式单价。快照/策略落盘到 `pricing.json` / `pricing_policies.json`，启动与每 12 小时自动刷新。`GET /api/v2/pricing`、`POST /pricing/refresh`、`POST /pricing/policy|mapping`、`GET /pricing/cost`（按模型汇总 prompt/completion/cached 后算等值 API 成本），用量页新增价格卡（总价、已定价/未定价、逐模型映射） | 5 个 pricing 单测 + 1 个 API 测试 |
 | `internal/agents`（智能体配置） | 检测并接管 Claude Code（`settings.json` 的 env）、Codex（`config.toml` + `auth.json`）、OpenCode、DSH（`settings.yaml` + `.credentials.yaml`）、Crush、ZCode；首次接管备份每个文件（保留最早备份，最多 10 份），状态记 `agents.json`，可检测接管后的外部改动并一键恢复（原始字节 / 删除新建文件 / 清理空目录）。`GET /api/v2/agents`、`POST /agents/apply|restore`，仅 loopback + 面板登录，设置页新增配置卡片 | 4 个 agents 单测 + 1 个 API 测试 |
+| `internal/upstream/tlsfp`（TLS 指纹） | 用 uTLS 自定义 ClientHello，按本机抓到的 Python 3.13 / OpenSSL 3.5.9 逐项复刻：cipher 顺序、extension 顺序（含 renegotiation_info 首项、encrypt-then-MAC、无 ALPN）、点格式；JA3 只差 supported_groups（去掉了 uTLS 无法完成握手的 X25519MLKEM768 / secp192r1 / FFDHE）。默认启用，`WB_TLS_PROFILE=go` 退回标准库；`Wire` 的直连、代理 TLS、CONNECT 隧道三条路径统一走它 | JA3 抓包单测（对拍 Python 的 cipher/extension 顺序）+ 完整握手测试 + Wire 集成测试（服务端看到的 cipher 顺序）+ 真实账号请求成功 |
 
 `go vet`、`gofmt` 干净；`go test ./...` 全绿。本机没有 C 编译器，`-race` 跑不了，需在 CI（Linux）补。
 
@@ -156,10 +157,16 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 16. **桌面凭据的密钥回收未移植**：加密信封、keyblob 解封、凭据解密与导入都已实现，但没有旧版“扫 WorkBuddy 进程内存找 atRestSecretKey”的那一步；需要在面板里手工粘贴 64 位 hex 保护密钥或 44 字符 base64 的 atRestSecretKey。`hunt_supported=false`，接口会返回这条提示。
 17. **价格估算只保留平面价**：没有旧版的条件 bands（输入长度阈值、UTC 分时价）、policy timeline / 历史引用 / 清理；汇率固定 7.1；成本在读取时按当前目录计算，历史记录不会按当时价格重算。未定价模型仍显示 token 数，可在价格卡里手工映射 OpenRouter ID。
 18. **智能体配置的 YAML / TOML 会整份重写**：旧版是文本级 upsert，能保留注释和排版；Go 版用 yaml.v3 / go-toml 解析后重新序列化，注释会丢失（接管前的备份仍能完整恢复）。另外只写模型 id，不写上下文长度、最大输出和思考档位，所以 DSH 等客户端不会出现按模型的能力/档位选择器。
+19. **TLS 指纹的 supported_groups 与 Python 不完全一致**：cipher 列表、extension 顺序、点格式逐字节对齐（JA3 的四个字段相同），但 uTLS 在宣告 X25519MLKEM768 / secp192r1 / FFDHE2048/3072 时无法完成握手，因此这三类组被去掉，JA3 的曲线字段不同。默认使用该 profile；`WB_TLS_PROFILE=go` 可退回 Go 标准库（用于排查）。
+
+## 前端 UI 重构（进行中，参考 oh-my-cpa）
+
+- **P0/P1 已完成**：前端换成 Ant Design 6 外壳（`web/src/ui/theme.tsx`、`AppShell.tsx`）；分组侧栏（运行 / 观测 / 控制）、顶栏面包屑、主题切换、登录/改密页、品牌字标；浅色 / 深色两套 token 对齐参考的 OMC Light / Dark；`antd/dist/reset.css` + 旧样式兼容层。已用 headless Edge 截图验证登录页、浅色外壳、深色外壳。
+- 页面内部仍是旧组件：账号 / 用量 / 设置 / 日志 / 任务的表格、按钮、筛选器尚未换成 antd 组件，深色模式下由 `ui.css` 的兼容层兜底。
+- 接下来：P2 基础组件（StatTiles / Panel / Tag / Switch / TimeRangePicker / 抽屉），P3 账号页，P4 用量页与图表，P5 设置 / 日志 / 任务，P6 手机端、逐页截图回归与许可归属。
 
 ## 还没做
 
-- TLS 指纹（JA3/JA4）：仍是 Go 标准 `crypto/tls`，与旧版 Python 的 OpenSSL 指纹不同（风险 R1）；只在模拟上游上验证过，没连真实上游账号，是否会被识别未验证。
 - 浏览器逐页回归：本机没有浏览器自动化工具，目前用 HTTP/API 测试 + jsdom 渲染测试覆盖；UI 重构后会补截图与逐页检查。
 - 本机没有 C 编译器，`go test -race` 跑不了，需在 CI（Linux）补。
 - 90% 冷却时的选号仍是线性扫描（未改成就绪集合）。

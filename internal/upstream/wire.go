@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"wb2api/internal/upstream/identity"
+	"wb2api/internal/upstream/tlsfp"
 )
 
 // Request is one outbound call with an explicit, ordered header list. Names are
@@ -40,6 +41,8 @@ type Request struct {
 type Wire struct {
 	T     Timeouts
 	Proxy *url.URL
+	// Roots overrides the trust store (tests); nil uses the system pool.
+	Roots *x509.CertPool
 
 	mu   sync.Mutex
 	idle map[string][]*wireConn
@@ -214,15 +217,32 @@ func (w *Wire) maybeTLS(ctx context.Context, raw net.Conn, scheme, host string) 
 	if scheme != "https" {
 		return raw, nil
 	}
-	cfg := &tls.Config{ServerName: host, NextProtos: []string{"http/1.1"}, RootCAs: rootPool(), MinVersion: tls.VersionTLS12}
-	tc := tls.Client(raw, cfg)
 	hctx, cancel := context.WithTimeout(ctx, w.T.TLS)
 	defer cancel()
+	if tlsfp.Enabled() {
+		// Match the Python/OpenSSL ClientHello the legacy gateway sent; see
+		// package tlsfp. WB_TLS_PROFILE=go restores crypto/tls.
+		conn, err := tlsfp.Handshake(hctx, raw, host, w.roots())
+		if err != nil {
+			raw.Close()
+			return nil, err
+		}
+		return conn, nil
+	}
+	cfg := &tls.Config{ServerName: host, NextProtos: []string{"http/1.1"}, RootCAs: w.roots(), MinVersion: tls.VersionTLS12}
+	tc := tls.Client(raw, cfg)
 	if err := tc.HandshakeContext(hctx); err != nil {
 		raw.Close()
 		return nil, err
 	}
 	return tc, nil
+}
+
+func (w *Wire) roots() *x509.CertPool {
+	if w.Roots != nil {
+		return w.Roots
+	}
+	return rootPool()
 }
 
 // staleErr reports an error that can only mean "the pooled connection was
