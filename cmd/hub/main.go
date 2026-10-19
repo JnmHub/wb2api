@@ -17,11 +17,13 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"syscall"
 	"time"
 
+	"wb2api/internal/api"
 	"wb2api/internal/gateway/leak"
 	"wb2api/internal/gateway/openai"
 	"wb2api/internal/panelauth"
@@ -30,6 +32,7 @@ import (
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/store/settings"
 	"wb2api/internal/upstream"
+	"wb2api/internal/usagedb"
 )
 
 func envOr(name, def string) string {
@@ -48,6 +51,7 @@ func main() {
 	legacyFilter := flag.Bool("legacy-leak-filter", os.Getenv("WB_LEGACY_LEAK_FILTER") == "1", "use the legacy hold policy of the tool-call leak filter")
 	maxAttempts := flag.Int("max-attempts", 5, "account failover attempts per request")
 	perAccount := flag.Int("per-account-inflight", 0, "max concurrent requests per account (0 = unlimited)")
+	usageDir := flag.String("usage-dir", envOr("WB_PROXY_USAGE_DIR", "usage"), "directory for usage.db (and the legacy usage.jsonl to import)")
 	panelPassword := flag.String("panel-password", os.Getenv("WB_PANEL_PASSWORD"), "set the dashboard password at start-up")
 	debug := flag.Bool("debug", os.Getenv("WB_DEBUG") == "1", "expose /debug/runtime")
 	flag.Parse()
@@ -86,11 +90,37 @@ func main() {
 		Pool: p, Up: up, Settings: st, Log: log, Refresher: refresher, Persist: persist,
 		UpstreamOverride: *upstreamOverride, MaxAttempts: *maxAttempts, FilterMode: mode,
 	}
-	if os.Getenv("WB_TRACE") == "1" {
-		h.OnUsage = func(ev openai.UsageEvent) {
+	if err := os.MkdirAll(*usageDir, 0o755); err != nil {
+		log.Error("cannot create the usage directory", "dir", *usageDir, "err", err)
+		os.Exit(1)
+	}
+	udb, err := usagedb.Open(filepath.Join(*usageDir, "usage.db"), 0)
+	if err != nil {
+		log.Error("cannot open the usage database", "err", err)
+		os.Exit(1)
+	}
+	defer udb.Close()
+	realmOf := api.RealmOf(p)
+	trace := os.Getenv("WB_TRACE") == "1"
+	h.OnUsage = func(ev openai.UsageEvent) {
+		udb.Record(api.EventFromGateway(ev, realmOf))
+		if trace {
 			log.Info("usage", "ttft_ms", ev.TTFT.Milliseconds(), "elapsed_ms", ev.Elapsed.Milliseconds(), "chunks", ev.Chunks, "outcome", ev.Outcome)
 		}
 	}
+	// History written by the Python gateway is imported in the background; the
+	// gateway serves requests while it runs and the import resumes where it
+	// stopped if the process restarts.
+	go func() {
+		legacy := filepath.Join(*usageDir, "usage.jsonl")
+		n, err := udb.ImportJSONL(context.Background(), legacy, nil)
+		switch {
+		case err != nil:
+			log.Warn("usage.jsonl import stopped", "err", err, "imported", n)
+		case n > 0:
+			log.Info("usage.jsonl imported", "rows", n)
+		}
+	}()
 
 	if *panelPassword != "" {
 		if err := st.SetPanelPassword(*panelPassword); err != nil {
@@ -112,6 +142,7 @@ func main() {
 	mux := http.NewServeMux()
 	auth.Register(mux, "/api/v2/session")
 	mux.Handle("/v1/chat/completions", h)
+	(&api.Usage{DB: udb}).Register(mux, auth.Require)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "accounts": p.Len()})

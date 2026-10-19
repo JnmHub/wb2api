@@ -21,7 +21,10 @@
 | `internal/refresh` | token 后台刷新：提前量+抖动、有界并发、同账号单飞、失败指数退避、401/无 token 标记需重新登录 | 9 个测试；`Pick` 在刷新进行中不被阻塞 |
 | `internal/risk` | 风控连坐保护：11140 识别、账号停放、窗口内多账号受限则整区域暂停 | 单测 |
 | `internal/panelauth` | **面板登录持久化**：HttpOnly+SameSite=Lax Cookie（HTTPS/可信反代下加 Secure）、服务端会话落盘且只存令牌哈希、滑动续期（记住我 30 天 / 否则 12 小时空闲）、CSRF 头、JSON-only 写请求、登录限流（可信反代下按真实客户端 IP 分桶，伪造头无效）、已登录设备列表/撤销、改密撤销其他设备、默认密码强制先改 | 14 个测试 + **真实二进制重启验证**：登录→杀进程→重启→同一 Cookie 仍是 200 |
-| `cmd/hub` `cmd/mockup` `cmd/loadtest` | 网关、模拟上游、压测器 | 手动跑通 |
+| `internal/usage` | 用量块解析（`prompt/completion/reasoning/cached/total/credit`，缓存命中取各别名里第一个正值） | 单测 |
+| `internal/usagedb` | **SQLite 用量库**：异步批写（请求路径只入队，队满丢弃并计数，绝不阻塞）、写入时增量维护日/时预聚合、`usage.jsonl` 断点续导、按范围/模型/账号/Key 聚合、按小时/天序列、游标分页的请求流水、当日计数（限额护栏的输入） | 与 Python 对 496 行样本日志**独立算术**的合计/分模型/分账号逐项一致；预聚合与精确扫描两条路径互相校验；断点续导、半行不导、并发读写、队满丢弃均有测试 |
+| `internal/api` | `/api/v2/usage/{summary,series,recent}`（`today/week/month/all/custom`，周一为一周起点，均走面板鉴权） | 8 个测试 |
+| `cmd/hub` `cmd/mockup` `cmd/loadtest` | 网关、模拟上游、压测器 | 手动跑通；**端到端实测**：200 个请求→用量库恰好 200 行、8000 completion tokens、TPS≈192（模拟上游 200/s），重启后同一 Cookie、同一数据 |
 
 `go vet`、`gofmt` 干净；`go test ./...` 全绿。本机没有 C 编译器，`-race` 跑不了，需在 CI（Linux）补。
 
@@ -60,6 +63,18 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 
 网关自身 CPU 很低：500 流时 8 秒窗口内只用了约 26% 个核，其中 57% 是 Windows 套接字写调用。
 
+**用量统计冷启动**（合成 20 万行 / 88 MB 日志、同一台机器；旧 Python 在关闭落盘缓存的最坏情况下为 snapshot 16.9 s、analytics 19.4 s、时序 3.3 s、分账号 1.2 s，且同步占用 HTTP 线程）：
+
+| 查询 | Go + SQLite 预聚合 |
+|---|---|
+| 总计 | 19 ms |
+| 按模型 / 按账号 | 31 ms / 31 ms |
+| 小时序列 | 24 ms |
+| 今日各账号计数 | 2 ms |
+| 一次性导入 20 万行旧日志 | ≈ 22 s（约 9k 行/s，后台进行，可断点续导） |
+
+第一版把预聚合键做成"小时×账号×模型×Key"，结果每个请求几乎独占一行，查询仍要扫 20 万行（分账号 0.9 s、序列 1.6 s）。改成"按本地日的完整维度表 + 只含模型维度的小时表"后才降到上面的数字——**预聚合必须按"压缩比"设计，不是随便加一层表**。非整日边界的范围会自动退回精确扫描请求表，两条路径有测试互相校验。
+
 ### 这些数字**不能**证明什么
 - **TTFT（首字延迟）这次没有测准。** 压测器、模拟上游、网关同机运行，Windows 回环上瞬间建立几百条新连接本身就要几百毫秒（压测器直连模拟上游、不经过网关，在无 ramp 的 100 并发下也是 ~280 ms）。网关内部从进入处理到首个上游 chunk 的耗时（hub 侧）是 p50 ≈ 258 ms，其中大部分是网关→上游新建连接。需要在 Linux 上、用连接复用或独立机器重测。
 - 2000 并发时压测器自身和模拟上游已接近饱和（直连模拟上游时 p1 也只有 39.6），所以 2000 档的"每流速率"主要反映测试环境，不是网关上限。
@@ -86,7 +101,8 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 - 模型目录（`wb_catalog`/`wb_modelsdev`）：`shape.Catalog` 目前是接口，没有真实实现——`max_tokens` 缺省值与 DeepSeek 默认思考档位要等目录移植后才与旧版一致（对拍时用旧版导出的小表）。`upstream_effort_of`、`/v1/models`、`/v1/balance-summary` 同理。
 - **账号失败治理状态机**：软限流阶梯（600 s→2 h）、无作用域 429 的 60 s 阶梯、连续失败熔断（30 min→6 h）、降级窗口、`fails` 计数衰减（`WB_FAIL_WINDOW`）、402 停放到本地 04:00、`model_caps`（6004 落盘）、窗口探针。**目前 429 一律冷却该模型 60 s、5xx 冷却账号 5 s，是占位策略。**
 - 调度偏好：手动权重 / 临期积分 / 剩余用量加权轮询、会话亲和（`SessionAffinity`、`affinity_route`）、`apply_daily_guards` 四条限额护栏、`WB_BACKGROUND_MODEL_*` 后台模型重定向、模型封锁表、`/u/<ref>/v1/*` 定址调用。
-- `usage` 持久化（SQLite 单写协程）与内存滚动计数；`normalize_usage_cache_aliases`；Responses API / Anthropic Messages。
+- 限额护栏接入用量库（`usagedb.Day` 已提供当日计数，调度侧尚未使用）；`normalize_usage_cache_aliases`；Responses API / Anthropic Messages。
+- 账号管理 API（`/api/v2/accounts`：分页/筛选/批量）、设置 API、SSE 事件总线、OAuth 登录流程；新前端。
 - TLS 指纹（JA3/JA4）：现在用 Go 标准 `crypto/tls`，与旧版 Python 的 OpenSSL 指纹不同（风险 R1，Phase 0 的真实上游验证仍未做）。
 - 90% 冷却时的选号从线性扫描改为就绪集合。
 

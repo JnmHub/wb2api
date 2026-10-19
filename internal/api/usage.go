@@ -1,0 +1,256 @@
+// Package api holds the dashboard's JSON endpoints (/api/v2/...). Every handler
+// here sits behind panelauth.Auth.Require.
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"strconv"
+	"time"
+
+	"wb2api/internal/gateway/openai"
+	"wb2api/internal/pool"
+	"wb2api/internal/usage"
+	"wb2api/internal/usagedb"
+)
+
+// EventFromGateway converts a finished gateway request into a usage row.
+// realmOf maps an account uid to its realm (nil = unknown).
+func EventFromGateway(ev openai.UsageEvent, realmOf func(uid string) string) usagedb.Event {
+	e := usagedb.Event{
+		At: ev.At, Model: ev.Model, Account: ev.Account, KeyID: ev.KeyID, Stream: ev.Stream, Outcome: ev.Outcome,
+		Status: ev.Status, ElapsedMs: ev.Elapsed.Milliseconds(), HeldMs: ev.HeldFor.Milliseconds(), Estimated: ev.Estimated,
+	}
+	if realmOf != nil && ev.Account != "" {
+		e.Realm = realmOf(ev.Account)
+	}
+	if ev.TTFT > 0 {
+		v := ev.TTFT.Milliseconds()
+		e.TTFTMs = &v
+	}
+	if ev.Gen > 0 {
+		v := ev.Gen.Milliseconds()
+		e.GenMs = &v
+	}
+	if t, ok := usage.Extract(ev.Usage); ok {
+		e.Prompt, e.Completion, e.Reasoning, e.Cached, e.Total, e.Credit = t.Prompt, t.Completion, t.Reasoning, t.Cached, t.Total, t.Credit
+	}
+	if ev.Outcome == "failed" && ev.Status >= 400 {
+		e.Error = http.StatusText(ev.Status)
+	}
+	return e
+}
+
+// RealmOf returns a lookup suitable for EventFromGateway.
+func RealmOf(p *pool.Pool) func(string) string {
+	return func(uid string) string {
+		if a := p.Get(uid); a != nil {
+			return a.Realm
+		}
+		return ""
+	}
+}
+
+// Usage serves the usage endpoints.
+type Usage struct {
+	DB  *usagedb.DB
+	Now func() time.Time
+}
+
+func (u *Usage) now() time.Time {
+	if u.Now != nil {
+		return u.Now()
+	}
+	return time.Now()
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(v)
+}
+
+func writeErr(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]any{"error": map[string]string{"message": msg, "type": "invalid_request_error"}})
+}
+
+// FilterFromQuery turns ?range=today|week|month|all (or since/until as
+// YYYY-MM-DD or RFC3339) plus ?realm= ?model= ?account= ?key= into a Filter.
+// Week starts on Monday, month on the 1st, both at local midnight.
+func (u *Usage) FilterFromQuery(r *http.Request) (usagedb.Filter, error) {
+	q := r.URL.Query()
+	now := u.now()
+	mid := usagedb.LocalMidnight(now)
+	f := usagedb.Filter{Realm: q.Get("realm"), Model: q.Get("model"), Account: q.Get("account"), KeyID: q.Get("key")}
+	if f.Realm == "all" {
+		f.Realm = ""
+	}
+	switch q.Get("range") {
+	case "", "today":
+		f.Since = mid
+	case "week":
+		back := (int(mid.Weekday()) + 6) % 7
+		f.Since = mid.AddDate(0, 0, -back)
+	case "month":
+		f.Since = time.Date(mid.Year(), mid.Month(), 1, 0, 0, 0, 0, mid.Location())
+	case "all":
+	case "custom":
+	default:
+		return f, errBadRange
+	}
+	parse := func(s string, endOfDay bool) (time.Time, error) {
+		if t, err := time.ParseInLocation("2006-01-02", s, time.Local); err == nil {
+			if endOfDay {
+				t = t.AddDate(0, 0, 1)
+			}
+			return t, nil
+		}
+		return time.Parse(time.RFC3339, s)
+	}
+	if s := q.Get("since"); s != "" {
+		t, err := parse(s, false)
+		if err != nil {
+			return f, errBadRange
+		}
+		f.Since = t
+	}
+	if s := q.Get("until"); s != "" {
+		t, err := parse(s, true)
+		if err != nil {
+			return f, errBadRange
+		}
+		f.Until = t
+	}
+	return f, nil
+}
+
+type rangeError string
+
+func (e rangeError) Error() string { return string(e) }
+
+const errBadRange = rangeError("range must be today, week, month, all or custom; since/until must be YYYY-MM-DD or RFC3339")
+
+func aggJSON(a usagedb.Agg) map[string]any {
+	return map[string]any{
+		"requests": a.Requests, "ok": a.OK, "aborted": a.Aborted, "failed": a.Failed,
+		"prompt_tokens": a.Prompt, "completion_tokens": a.Completion, "reasoning_tokens": a.Reasoning,
+		"cached_tokens": a.Cached, "total_tokens": a.Total, "credit": a.Credit,
+		"avg_elapsed_ms": a.AvgElapsedMs, "avg_ttft_ms": a.AvgTTFTMs, "tokens_per_sec": a.TPS, "cache_hit_pct": a.CacheHitPct,
+	}
+}
+
+// Register mounts the endpoints; wrap is panelauth.Auth.Require.
+func (u *Usage) Register(mux *http.ServeMux, wrap func(http.Handler) http.Handler) {
+	mux.Handle("GET /api/v2/usage/summary", wrap(http.HandlerFunc(u.summary)))
+	mux.Handle("GET /api/v2/usage/series", wrap(http.HandlerFunc(u.series)))
+	mux.Handle("GET /api/v2/usage/recent", wrap(http.HandlerFunc(u.recent)))
+}
+
+func (u *Usage) summary(w http.ResponseWriter, r *http.Request) {
+	f, err := u.FilterFromQuery(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	top := 50
+	if n, err := strconv.Atoi(r.URL.Query().Get("top")); err == nil && n > 0 && n <= 1000 {
+		top = n
+	}
+	total, err := u.DB.Totals(f)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := map[string]any{"totals": aggJSON(total)}
+	for _, by := range []string{"model", "account", "key", "realm"} {
+		rows, err := u.DB.Group(by, f)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		truncated := len(rows) > top
+		if truncated {
+			rows = rows[:top]
+		}
+		list := make([]map[string]any, 0, len(rows))
+		for _, g := range rows {
+			m := aggJSON(g.Agg)
+			m["key"] = g.Key
+			list = append(list, m)
+		}
+		out["by_"+by] = list
+		out["by_"+by+"_truncated"] = truncated
+	}
+	out["queue"] = map[string]any{"written": u.DB.Written(), "dropped": u.DB.Dropped(), "last_error": u.DB.LastError()}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (u *Usage) series(w http.ResponseWriter, r *http.Request) {
+	f, err := u.FilterFromQuery(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	bucket := r.URL.Query().Get("bucket")
+	if bucket == "" {
+		bucket = "hour"
+	}
+	pts, err := u.DB.Series(bucket, f)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	list := make([]map[string]any, 0, len(pts))
+	for _, p := range pts {
+		m := aggJSON(p.Agg)
+		m["bucket"] = p.Bucket
+		list = append(list, m)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"bucket": bucket, "points": list})
+}
+
+func (u *Usage) recent(w http.ResponseWriter, r *http.Request) {
+	f, err := u.FilterFromQuery(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	f.Since = timeZeroIfDefault(r, f.Since)
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	before, _ := strconv.ParseInt(r.URL.Query().Get("before"), 10, 64)
+	rows, err := u.DB.Recent(limit, before, f)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	list := make([]map[string]any, 0, len(rows))
+	var next int64
+	for _, q := range rows {
+		m := map[string]any{
+			"id": q.ID, "at": q.At.UnixMilli(), "model": q.Model, "account": q.Account, "realm": q.Realm, "key": q.KeyID,
+			"stream": q.Stream, "outcome": q.Outcome, "status": q.Status, "elapsed_ms": q.ElapsedMs,
+			"prompt_tokens": q.Prompt, "completion_tokens": q.Completion, "reasoning_tokens": q.Reasoning,
+			"cached_tokens": q.Cached, "total_tokens": q.Total, "credit": q.Credit, "reasoning_effort": q.Effort,
+			"usage_estimated": q.Estimated, "error": q.Error, "tokens_per_sec": q.TPS, "held_ms": q.HeldMs,
+		}
+		if q.TTFTMs != nil {
+			m["ttft_ms"] = *q.TTFTMs
+		}
+		if q.GenMs != nil {
+			m["gen_ms"] = *q.GenMs
+		}
+		list = append(list, m)
+		next = q.ID
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"requests": list, "next_before": next})
+}
+
+// timeZeroIfDefault: the request list is not limited to today unless asked.
+func timeZeroIfDefault(r *http.Request, t time.Time) time.Time {
+	if r.URL.Query().Get("range") == "" && r.URL.Query().Get("since") == "" {
+		return time.Time{}
+	}
+	return t
+}
