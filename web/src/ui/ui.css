@@ -261,6 +261,39 @@ body {
   border-top: 0;
 }
 
+.batchbar {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 900;
+  max-width: calc(100vw - 24px);
+  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.18);
+  border: 1px solid var(--ant-color-border, #e4e4e7);
+}
+
+.jobtoast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  width: 360px;
+  max-width: calc(100vw - 24px);
+  z-index: 950;
+  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.18);
+}
+
+@media (max-width: 768px) {
+  .batchbar {
+    width: calc(100vw - 24px);
+  }
+  .jobtoast {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    width: auto;
+  }
+}
+
 /* The old page components keep their own layout; in the antd shell they must
    not add a second scroll container or their own padding. */
 .app-page > .page,

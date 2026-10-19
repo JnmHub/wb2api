@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Card, Col, Input, InputNumber, Row, Segmented, Select, Space, Tag, Typography } from 'antd'
+import { Button, Card, Checkbox, Col, Input, InputNumber, Row, Segmented, Select, Space, Tag, Typography } from 'antd'
 import { ApiError, get, patch, post, type SettingsView, type UpdateStatus } from '../api'
 import { Toggle } from '../components/Modal'
 import { AgentsSection } from './AgentsSection'
@@ -59,9 +59,10 @@ export function SettingsPage() {
       </div>
       {save.isError && <div className="err" role="alert">{(save.error as Error).message}</div>}
 
-      <section className="card sec">
-        <h3>出口</h3>
-        <p className="dim">未绑定出口的 Key、也没有 X-Realm / ?realm= 的请求，走这里选的出口。只在国内版提供的模型（如 deepseek-v4-pro）必须选国内版或使用绑定国内版的 Key。</p>
+      <Card title="出口">
+        <Typography.Paragraph type="secondary">
+          未绑定出口的 Key、也没有 X-Realm / ?realm= 的请求，走这里选的出口。只在国内版提供的模型（如 deepseek-v4-pro）必须选国内版或使用绑定国内版的 Key。
+        </Typography.Paragraph>
         <Segmented
           value={s.realm.current}
           onChange={(r) => save.mutate({ realm: String(r) })}
@@ -70,14 +71,13 @@ export function SettingsPage() {
             { value: 'cn', label: '国内版 (China)' },
           ]}
         />
-      </section>
+      </Card>
 
       <CatalogSection s={s} />
       <KeysSection s={s} />
 
-      <section className="card sec">
-        <h3>限额与调度偏好</h3>
-        <p className="dim">每项有一个全局值和可选的区域覆盖（留空 = 继承全局）。修改立即生效。</p>
+      <Card title="限额与调度偏好">
+        <Typography.Paragraph type="secondary">每项有一个全局值和可选的区域覆盖（留空 = 继承全局）。修改立即生效。</Typography.Paragraph>
         <div className="limits">
           <div className="lhead">
             <span />
@@ -91,10 +91,9 @@ export function SettingsPage() {
               <LimitRow key={key} name={key} info={info} entry={s.limits[key]} onSave={(body) => save.mutate({ limits: { [key]: body } })} />
             ))}
         </div>
-      </section>
+      </Card>
 
-      <section className="card sec">
-        <h3>开关</h3>
+      <Card title="开关">
         <div className="switches">
           {switchInfo.map((sw) => (
             <Toggle
@@ -107,26 +106,18 @@ export function SettingsPage() {
           ))}
         </div>
         {s.switches.auto_switch_product && (
-          <div className="field">
-            <label>允许切换到的身份</label>
-            <div className="chips">
-              {['workbuddy', 'vscode', 'cli'].map((p) => {
-                const on = s.auto_switch_products.includes(p)
-                return (
-                  <button
-                    key={p}
-                    className="chip"
-                    aria-pressed={on}
-                    onClick={() => save.mutate({ auto_switch_products: on ? s.auto_switch_products.filter((x) => x !== p) : [...s.auto_switch_products, p] })}
-                  >
-                    {p}
-                  </button>
-                )
-              })}
+          <div style={{ marginTop: 12 }}>
+            <Typography.Text type="secondary">允许切换到的身份</Typography.Text>
+            <div>
+              <Checkbox.Group
+                value={s.auto_switch_products}
+                options={['workbuddy', 'vscode', 'cli']}
+                onChange={(vals) => save.mutate({ auto_switch_products: vals as string[] })}
+              />
             </div>
           </div>
         )}
-      </section>
+      </Card>
 
       <DailyChatSection s={s} />
       <UpstreamSection s={s} />
@@ -219,7 +210,7 @@ function CatalogSection({ s }: { s: SettingsView }) {
       qc.invalidateQueries({ queryKey: ['settings'] })
     },
   })
-  const label: Record<string, string> = { remote: '上游 API 实时', cache: '本机桌面缓存文件', legacy: '桌面缓存（宽松解析）', bundled: '内置快照' }
+  const label: Record<string, string> = { remote: '上游 API 实时', cache: '本机桌面缓存文件', legacy: '桌面缓存（宽松解析）', bundled: '内置快照', 'not built yet': '尚未加载' }
   return (
     <Card title="模型清单" extra={<Typography.Text type="secondary">同一出口 30 秒冷却</Typography.Text>}>
       <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>

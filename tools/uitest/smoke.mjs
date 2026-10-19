@@ -176,6 +176,23 @@ async function main() {
   if (!theme) failures.push('theme toggle did not set data-theme')
   await shot('theme-' + theme)
 
+  // Row selection / batch bar.
+  await evaluate(`location.hash = '#/accounts'`)
+  await sleep(800)
+  const selected = await evaluate(`(() => {
+    const box = document.querySelector('.ant-table-tbody .ant-checkbox-input');
+    if (!box) return false; box.click(); return true;
+  })()`)
+  if (selected) {
+    await sleep(500)
+    if (!(await text()).includes('已选')) failures.push('batch bar did not appear after selecting a row')
+    await shot('batch-bar')
+    if (!(await clickText('button', '取消选择'))) failures.push('batch bar clear button missing')
+    await sleep(200)
+  } else {
+    failures.push('no row-selection checkbox')
+  }
+
   // Account drawer.
   await evaluate(`location.hash = '#/accounts'`)
   await sleep(1000)

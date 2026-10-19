@@ -166,8 +166,8 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 - **P4 已完成（用量页）**：8 张统计卡（请求/成功率/总 Token/输出/缓存/首字/速度/积分）、`@ant-design/charts` 的 Token 趋势图（浅/深主题）、价格估算卡（总价、逐模型成本、未定价映射）、按模型/账号/Key/区域的明细表、剩余用量估算表（Progress 占用条）。浅色 / 深色截图均已核对。
 - 页面内部其余部分仍是旧组件：账号抽屉与添加/导入/导出/桌面导入弹窗、设置 / 日志 / 任务页。
 - **P5 完成**：所有页面、详情抽屉与弹窗均为 antd：账号、用量、设置、日志、任务、添加账号、导入、导出、桌面导入、Key 编辑、账号详情。用量页新增 antd `DatePicker.RangePicker`（对应后端 `range=custom&since&until`），预设区间与自定义日期可切换，趋势粒度按跨度自动选择小时/天。
-- **P6 进行中**：五个页面路由级 `React.lazy` 分包；Sarasa Mono SC 核心分片已打包；新增 `tools/uitest/smoke.mjs`（`npm run uitest`）通过 CDP 驱动 headless Edge 做真实浏览器回归：登录、五个页面、浅/深主题、账号抽屉、添加账号 / 导入 / 导出 / 桌面导入弹窗、新建 Key 弹窗、日志暂停，并逐页截图。当前全部通过。
-- 仍差：批量操作条（BatchBar）仍是旧标记；手机端逐页截图已做但还缺与参考的并排细节核对；`uitest` 未逐字段提交表单。
+- **P6 完成**：五个页面路由级 `React.lazy` 分包；Sarasa Mono SC 核心分片已打包；批量操作条、JobToast、全部弹窗/抽屉均为 antd；`tools/uitest/smoke.mjs`（`npm run uitest`）通过 CDP 驱动 headless Edge 完成真实浏览器逐页回归：登录、五个页面、浅/深主题、行选择/批量条、账号抽屉、添加/导入/导出/桌面导入、新建 Key、日志暂停，全部通过并逐页截图。
+- 已知偏差：视觉是按参考的 token/组件语言复刻，不是逐像素克隆（品牌字标、页面文案、功能菜单按本项目实际能力调整）；`uitest` 覆盖主要路径，未逐字段提交每个表单。
 
 ## 还没做
 
