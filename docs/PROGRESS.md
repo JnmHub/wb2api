@@ -41,6 +41,8 @@
 | `internal/activity` `internal/logbuf` | 签到/活跃历史（JSONL，90 天 / 5000 条裁剪）与内存日志环（级别/模块/文本筛选、游标追加、导出） | 各 1–2 个测试 |
 | `internal/api`（设置/Key/代理槽/日志/运维） | 设置快照与 PATCH（出口、开关、限额、超时、提示词、积分刷新间隔）、API Key 增删改与一次性展示、代理槽、日志查询/清空/导出、活动历史、调度器状态/时间表/立即巡检、导入/导出、单账号操作、模型清单刷新；`auth_disabled` 现在真正关闭鉴权 | 22 个 API 测试 |
 | `internal/realmswitch` | 面板出口（国际/国内）持久化并热切换 | 单测 |
+| 免费模型积分回退（`openai`） | 国际版 `deepseek-v4.1-flash` 的 24h 窗口在**所有**可用账号上都用尽（落盘的 6004 窗口）后，自动改打付费同款 `deepseek-v4.1-flash-sg` 一次；开关 `free_model_credit_fallback`（默认关）或 `WB_ENABLE_FREE_MODEL_CREDIT_FALLBACK`，用量记在付费模型上，不再二次回退 | 2 个网关测试（回退成功、开关关闭不回退） |
+| `internal/quota`（额度窗口探针） | 429 带重置时刻时，把「账号 × 模型」窗口落盘到 `accounts/model_windows.json`；到点发一个最小请求（`max_tokens=16`、`reasoning_effort=none`）：通了就清该模型冷却，仍 429 且给了新时刻就重排，否则 15 s 后重试、最多 20 次；设置页 `window_probe` 开关（默认开），调度器每 30 s 检查且不受定时任务开关影响 | 7 个单测 + 1 个网关测试 |
 
 `go vet`、`gofmt` 干净；`go test ./...` 全绿。本机没有 C 编译器，`-race` 跑不了，需在 CI（Linux）补。
 
@@ -139,8 +141,7 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 
 ## 还没做
 
-- **免费模型积分回退开关**（`free_model_credit_fallback`）仍只存了值，网关没有实现，设置页已暂时不显示；`auth_disabled` 已经真正生效。
-- 没移植：国内猫猫旅行 / 连登任务、国际网页会话那一路、`web_search` / `web_fetch` 代跑工具（`wb_webtools`）、剩余用量优先调度、窗口探针、桌面凭据解密导入、价格估算、智能体配置、更新检查。
+- 没移植：国内猫猫旅行 / 连登任务、国际网页会话那一路、`web_search` / `web_fetch` 代跑工具（`wb_webtools`）、剩余用量优先调度、桌面凭据解密导入、价格估算、智能体配置、更新检查。
 - 目录：`upstream_effort_of`（按目录钉死思考档位改写请求）、模型封锁表、`/u/<ref>/v1/models`（定址路由）。
 - TLS 指纹（JA3/JA4）：仍是 Go 标准 `crypto/tls`，与旧版 Python 的 OpenSSL 指纹不同（风险 R1）；**只在模拟上游上验证过，没连真实上游账号**，是否会被识别未验证。
 - 本机没有 C 编译器，`go test -race` 跑不了，需在 CI（Linux）补。

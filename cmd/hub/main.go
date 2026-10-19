@@ -36,6 +36,7 @@ import (
 	"wb2api/internal/ops"
 	"wb2api/internal/panelauth"
 	"wb2api/internal/pool"
+	"wb2api/internal/quota"
 	"wb2api/internal/realmswitch"
 	"wb2api/internal/refresh"
 	"wb2api/internal/scheduler"
@@ -139,6 +140,8 @@ func main() {
 		log.Warn("could not seed today's counters", "err", err)
 	}
 	h.Guards = &guards.Scanner{Pool: p, Settings: st, Usage: udb, FreeModels: cat.FreeModels, Log: log}
+	windows := &quota.Windows{Dir: *accountsDir, Gate: st.WindowProbe, Prober: h, Log: log}
+	h.Windows = windows
 	h.OnUsage = func(ev openai.UsageEvent) {
 		ue := api.EventFromGateway(ev, realmOf)
 		udb.Record(ue)
@@ -214,7 +217,7 @@ func main() {
 	accountsAPI.Register(mux, auth.Require)
 	accountsAPI.StartEvents(bg, time.Second)
 	sched := &scheduler.Scheduler{
-		Pool: p, Ops: opsClient, Refresher: refresher, Settings: st, Log: log,
+		Pool: p, Ops: opsClient, Refresher: refresher, Settings: st, Log: log, Windows: windows,
 		Hold: func(realm string) time.Duration { return h.RiskHold(realm) },
 	}
 	(&api.Operations{Ops: opsClient, Pool: p, Prober: h, Scheduler: sched, Activity: activityLog}).Register(mux, auth.Require)

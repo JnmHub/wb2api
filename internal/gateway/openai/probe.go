@@ -13,6 +13,7 @@ import (
 	"wb2api/internal/gateway/shape"
 	"wb2api/internal/jsonx"
 	"wb2api/internal/pool"
+	"wb2api/internal/quota"
 	"wb2api/internal/risk"
 	"wb2api/internal/upstream"
 	"wb2api/internal/upstream/identity"
@@ -20,6 +21,61 @@ import (
 
 // TestModelDefault is the cheapest model every exit has.
 const TestModelDefault = "deepseek-v4.1-flash"
+
+// ProbeModel sends the quota-window probe: one minimal request through the
+// account's own transport and identity. It reports whether the line serves
+// again (ok) or when the upstream says it resets (zero = no clock given).
+// It is intentionally state-light: a successful probe only clears that model's
+// cooldown; a failing one is handled by the caller's retry ladder.
+func (h *Handler) ProbeModel(ctx context.Context, acc *pool.Account, model string) (bool, time.Time, string) {
+	rec := acc.Record()
+	if exp := acc.ExpiresAt(); exp != 0 && time.Until(time.Unix(exp, 0)) < 120*time.Second && h.Refresher != nil {
+		rctx, cancel := context.WithTimeout(ctx, 35*time.Second)
+		_ = h.Refresher.Refresh(rctx, acc)
+		cancel()
+		rec = acc.Record()
+	}
+
+	payload := jsonx.NewObj()
+	payload.Set("model", model)
+	m := jsonx.NewObj()
+	m.Set("role", "user")
+	m.Set("content", quota.ProbePrompt)
+	payload.Set("messages", []any{m})
+	payload.Set("stream", true)
+	payload.Set("max_tokens", quota.ProbeMaxTokens)
+	payload.Set("reasoning_effort", "none")
+
+	q := &request{r: (&http.Request{}).WithContext(ctx), payload: payload, model: model, realm: rec.Realm,
+		refreshed: map[string]bool{}, turnID: identity.NewTurnRequestID(), vscodeConv: identity.NewMessageID()}
+	q.shaped = shape.Build(payload, shape.Options{Catalog: h.Catalog})
+	q.enc = map[string]*encoded{}
+	product := identity.NormalizeProduct(rec.Product)
+	enc, gz := q.bodyFor(product)
+	hdrs := h.chatHeaders(q, rec, product, gz)
+
+	cctx, cancel := context.WithTimeout(ctx, quota.ProbeTimeout)
+	defer cancel()
+	target := h.chatURL(acc, product)
+	resp, err := h.Up.Wire(acc.UID, acc.Proxy()).Do(cctx, upstream.Request{
+		Method: http.MethodPost, URL: target, Headers: hdrs, Body: enc.wire(gz)})
+	if err != nil {
+		return false, time.Time{}, truncate(err.Error(), 200)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		return true, time.Time{}, ""
+	}
+	eb, _ := io.ReadAll(io.LimitReader(resp.Body, 400))
+	detail := string(eb)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		if reset, ok := ratelimit.ParseReset(detail); ok {
+			return false, reset, detail
+		}
+	}
+	return false, time.Time{}, "HTTP " + itoa(resp.StatusCode) + ": " + truncate(detail, 150)
+}
 
 // ProbeResult is one account test, shaped for the panel.
 type ProbeResult struct {

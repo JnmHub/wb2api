@@ -215,6 +215,8 @@ export interface SettingsView {
   upstream: { header_timeout_seconds: number; idle_timeout_seconds: number; device_token_set: boolean; device_token_file: string }
   prompt: { mode: 'passthrough' | 'custom' | 'append'; file: string }
   credits_refresh_hours: number
+  window_probe: boolean
+  quota_scan_models: string[]
   proxy_slots: ProxySlot[]
   catalog?: CatalogStatus[]
 }

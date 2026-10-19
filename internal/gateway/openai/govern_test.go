@@ -16,6 +16,7 @@ import (
 
 	"wb2api/internal/catalog"
 	"wb2api/internal/pool"
+	"wb2api/internal/quota"
 	"wb2api/internal/store/settings"
 )
 
@@ -112,6 +113,58 @@ func TestQuotaCap6004IsPersistedForFreeModels(t *testing.T) {
 	defer f.pmu.Unlock()
 	if len(f.persisted) == 0 || f.persisted[len(f.persisted)-1].ModelCaps["hy3"].Reset == 0 {
 		t.Fatalf("the 6004 window must be written to the account file: %v", f.persisted)
+	}
+}
+
+func TestModel429RegistersAWindowProbe(t *testing.T) {
+	reset := time.Now().Add(2 * time.Hour).In(time.FixedZone("x", 8*3600))
+	body := fmt.Sprintf(`{"code":6004,"msg":"your usage will reset at %s UTC+8"}`, reset.Format("2006-01-02 15:04:05"))
+	up := newRawUpstream(t, func(i int, r rawReq, c net.Conn) { status(c, 429, body) })
+	f := newFixture(t, up, accSpec{})
+	w := &quota.Windows{Dir: t.TempDir()}
+	f.h.Windows = w
+	if code, _, _ := f.post(t, `{"model":"hy3","messages":[{"role":"user","content":"x"}]}`, nil); code != 429 {
+		t.Fatalf("status %d", code)
+	}
+	if !w.Has("acct-0", "hy3") {
+		t.Fatal("a model-scoped 429 with a reset clock must register a window")
+	}
+	if got := w.Snapshot(); len(got) != 1 || got[0].Attempts != 0 {
+		t.Fatalf("window row %+v", got)
+	}
+}
+
+func TestFreeModelFallsBackToPaidSiblingWhenEveryAccountIsCapped(t *testing.T) {
+	reset := time.Now().Add(2 * time.Hour).In(time.FixedZone("x", 8*3600))
+	freeBody := fmt.Sprintf(`{"code":6004,"msg":"your usage will reset at %s UTC+8"}`, reset.Format("2006-01-02 15:04:05"))
+	var paid atomic.Int32
+	up := newRawUpstream(t, func(n int, r rawReq, c net.Conn) {
+		if strings.Contains(string(r.body), "deepseek-v4.1-flash-sg") {
+			paid.Add(1)
+			sseOK(c)
+			return
+		}
+		status(c, 429, freeBody)
+	})
+	f := newFixture(t, up, accSpec{}, accSpec{})
+	f.setSettings(t, `{"free_model_credit_fallback":true}`)
+	code, body, _ := f.post(t, `{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"x"}]}`, nil)
+	if code != 200 {
+		t.Fatalf("paid fallback should serve: %d %s", code, body)
+	}
+	if paid.Load() == 0 {
+		t.Fatal("the paid sibling was never requested")
+	}
+	reqs := up.requests()
+	if len(reqs) < 3 {
+		t.Fatalf("expected two free-model attempts then the paid one, got %d", len(reqs))
+	}
+	if !strings.Contains(string(reqs[0].body), `"deepseek-v4.1-flash"`) {
+		t.Fatalf("first attempt should target the free model: %s", reqs[0].body)
+	}
+	last := reqs[len(reqs)-1]
+	if !strings.Contains(string(last.body), `"deepseek-v4.1-flash-sg"`) {
+		t.Fatalf("last attempt should target the paid sibling: %s", last.body)
 	}
 }
 

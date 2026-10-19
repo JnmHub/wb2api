@@ -93,6 +93,8 @@ func (s *Settings) snapshot() map[string]any {
 		"prompt":                map[string]any{"mode": s.Store.PromptConfig().Mode, "file": s.Store.PromptConfig().File},
 		"credits_refresh_hours": s.Store.CreditsRefreshHours(),
 		"proxy_slots":           slots,
+		"window_probe":          s.Store.WindowProbe(),
+		"quota_scan_models":     s.Store.QuotaScanModels(),
 	}
 	if s.Catalog != nil {
 		out["catalog"] = s.Catalog.Status()
@@ -124,6 +126,8 @@ type settingsPatch struct {
 	Prompt              map[string]any         `json:"prompt"`
 	CreditsRefreshHours *float64               `json:"credits_refresh_hours"`
 	Limits              map[string]limitChange `json:"limits"`
+	WindowProbe         *bool                  `json:"window_probe"`
+	QuotaScanModels     *[]string              `json:"quota_scan_models"`
 }
 
 type limitChange struct {
@@ -177,6 +181,18 @@ func (s *Settings) patch(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.CreditsRefreshHours != nil {
 		if err := s.Store.SetCreditsRefreshHours(*p.CreditsRefreshHours); err != nil {
+			fail(err)
+			return
+		}
+	}
+	if p.WindowProbe != nil {
+		if err := s.Store.SetWindowProbe(*p.WindowProbe); err != nil {
+			fail(err)
+			return
+		}
+	}
+	if p.QuotaScanModels != nil {
+		if _, err := s.Store.SetQuotaScanModels(*p.QuotaScanModels); err != nil {
 			fail(err)
 			return
 		}

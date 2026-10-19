@@ -29,6 +29,7 @@ const limitInfo: Record<string, { label: string; hint: string; unit: string }> =
 const switchInfo: { key: string; label: string; hint: string }[] = [
   { key: 'auto_switch_product', label: '429 时自动切换出站身份', hint: '同一账号在 桌面端 → VSCode → CLI 之间换身份重试，等于换一条配额线；会占用重试次数。' },
   { key: 'egress_backoff_enabled', label: '出口级瞬时失败退避', hint: '502/503/504 与连接抖动记在出口上做秒级退避，而不是让每个账号吃 30 分钟熔断。' },
+  { key: 'free_model_credit_fallback', label: '免费模型用尽后回退到付费同款', hint: '仅国际版 deepseek-v4.1-flash → -sg：所有账号的免费窗口都用尽后才会触发一次，会真实消耗积分。' },
   { key: 'enable_anthropic_messages', label: '启用 Anthropic Messages（/v1/messages）', hint: '网关会忽略 cache_control，可能多耗积分，默认关闭。' },
   { key: 'auth_disabled', label: '关闭 API Key 校验', hint: '危险：任何能访问端口的人都能使用你的账号。仅限可信内网。' },
 ]
@@ -112,6 +113,7 @@ export function SettingsPage() {
       </section>
 
       <UpstreamSection s={s} />
+      <ProbeSection s={s} />
       <ProxySection s={s} />
     </div>
   )
@@ -185,6 +187,24 @@ function CatalogSection({ s }: { s: SettingsView }) {
           </div>
         ))}
       </div>
+    </section>
+  )
+}
+
+function ProbeSection({ s }: { s: SettingsView }) {
+  const save = useSaveSettings()
+  return (
+    <section className="card sec">
+      <h3>额度窗口探针</h3>
+      <p className="dim" style={{ margin: 0 }}>
+        上游按 24 小时窗口给「账号 × 模型」配额，撞到 429 时会给一个重置时刻。网关会在那一刻发一个最小请求：通了就说明这条配额线已经重新开始计时，仍然 429 就按 15 秒重试（最多 20 次）。它只影响已经限额的配额线，不额外消耗正常请求的额度。
+      </p>
+      <Toggle
+        label="启用额度窗口探针"
+        hint="默认开启。关掉后不再自动探测，已限额的模型要等下一次真实请求命中才会重新计时。"
+        checked={s.window_probe}
+        onChange={(v) => save.mutate({ window_probe: v })}
+      />
     </section>
   )
 }

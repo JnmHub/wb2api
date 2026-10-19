@@ -183,52 +183,66 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 		max = 1
 	}
 	var forced *pool.Account // retry the same account (after refresh / prompt degrade)
-	for attempt := 0; attempt < max+2; attempt++ {
-		if r.Context().Err() != nil {
-			return
-		}
-		acc := forced
-		forced = nil
-		if acc == nil {
-			if len(q.at.tried) >= max {
-				break
+	fallbackTried := false
+	for {
+		aborted := false
+		for attempt := 0; attempt < max+2; attempt++ {
+			if r.Context().Err() != nil {
+				return
 			}
-			if pinned != nil {
-				acc = pinned
-			} else {
-				acc = h.Pool.PickForSession(q.realm, q.sessionKey, q.at.tried, q.model, q.page)
-			}
+			acc := forced
+			forced = nil
 			if acc == nil {
-				// transient trouble: give the pool a moment and go round again
-				if q.at.transient > 0 && attempt < max+1 {
-					clear(q.at.tried)
-					if !sleepCtx(r.Context(), minDur(time.Duration(1500*q.at.transient)*time.Millisecond, 3*time.Second)) {
-						return
-					}
-					continue
+				if len(q.at.tried) >= max {
+					break
 				}
+				if pinned != nil {
+					acc = pinned
+				} else {
+					acc = h.Pool.PickForSession(q.realm, q.sessionKey, q.at.tried, q.model, q.page)
+				}
+				if acc == nil {
+					// transient trouble: give the pool a moment and go round again
+					if q.at.transient > 0 && attempt < max+1 {
+						clear(q.at.tried)
+						if !sleepCtx(r.Context(), minDur(time.Duration(1500*q.at.transient)*time.Millisecond, 3*time.Second)) {
+							return
+						}
+						continue
+					}
+					break
+				}
+			}
+			q.at.tried[acc.UID] = struct{}{}
+			q.at.lastUID = acc.UID
+			res := h.try(q, acc)
+			switch res.kind {
+			case done:
+				return
+			case retrySame:
+				delete(q.at.tried, acc.UID)
+				forced = acc
+				continue
+			case stop:
+				h.finishError(q, acc, res)
+				return
+			case abort:
+				aborted = true
+			}
+			if aborted {
 				break
 			}
 		}
-		q.at.tried[acc.UID] = struct{}{}
-		q.at.lastUID = acc.UID
-		res := h.try(q, acc)
-		switch res.kind {
-		case done:
-			return
-		case retrySame:
-			delete(q.at.tried, acc.UID)
-			forced = acc
+		// The free model was used up on every account: move to its paid sibling
+		// and run the whole selection again (legacy open_upstream recursion).
+		if !fallbackTried && h.fallbackToPaidModel(q) {
+			fallbackTried = true
+			forced = nil
 			continue
-		case stop:
-			h.finishError(q, acc, res)
-			return
-		case abort:
-			h.fail(q)
-			return
 		}
+		h.fail(q)
+		return
 	}
-	h.fail(q)
 }
 
 func minDur(a, b time.Duration) time.Duration {
@@ -476,6 +490,11 @@ func (h *Handler) classify(q *request, acc *pool.Account, status int, body []byt
 				"for", wait, "streak", acc.UnscopedStreak())
 		}
 		acc.NoteModelError(q.model, until, wait, "HTTP 429 (model throttled)", detail, now)
+		// Any model-scoped 429 that names a reset instant becomes a window the
+		// scheduler can probe at that instant (legacy wb_window_probe).
+		if hasReset && h.Windows != nil {
+			h.Windows.Schedule(acc.UID, q.model, reset)
+		}
 		if hasReset && ratelimit.IsCap(detail) {
 			// only the quota-cap answer (6004) is a quota verdict worth persisting
 			if rec, isNew := acc.NoteModelCap(q.model, reset, now); isNew && rec != nil {

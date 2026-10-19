@@ -14,10 +14,12 @@ import (
 	"math/rand"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"wb2api/internal/ops"
 	"wb2api/internal/pool"
+	"wb2api/internal/quota"
 	"wb2api/internal/realm"
 	"wb2api/internal/store/settings"
 )
@@ -36,6 +38,8 @@ type Scheduler struct {
 	Log       *slog.Logger
 	// Hold returns how long a realm is paused after a risk-control wave (nil = never).
 	Hold func(realm string) time.Duration
+	// Windows is the model-quota window probe (nil = disabled).
+	Windows *quota.Windows
 	// Stagger is the pause between accounts (default 2–5 s random).
 	Stagger func() time.Duration
 	Now     func() time.Time
@@ -47,6 +51,7 @@ type Scheduler struct {
 	logs     []string
 	parked   map[string]time.Time // accounts whose balance refresh failed, until when
 	credits  CreditsRefreshState
+	probing  atomic.Bool
 }
 
 func (s *Scheduler) now() time.Time {
@@ -236,14 +241,32 @@ func short(uid string) string {
 	return uid
 }
 
+// runWindows starts one window-probe pass in the background. Probes are
+// independent of the unattended cycle: they fire on the upstream's clock even
+// when the scheduler is switched off, and must not wait behind a long cycle.
+func (s *Scheduler) runWindows(ctx context.Context) {
+	if s.Windows == nil || s.Windows.Prober == nil {
+		return
+	}
+	if !s.probing.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer s.probing.Store(false)
+		s.Windows.RunDue(ctx, s.Pool, quota.BatchLimit)
+	}()
+}
+
 // Run blocks until ctx ends: after a short settle time it does one start-up
-// pass, then fires the cycle on the configured hours.
+// pass, then fires the cycle on the configured hours. Window probes run on
+// their own clock every tick, whether or not the unattended cycle is enabled.
 func (s *Scheduler) Run(ctx context.Context) {
 	select {
 	case <-time.After(10 * time.Second):
 	case <-ctx.Done():
 		return
 	}
+	s.runWindows(ctx)
 	if s.Settings.SchedulerEnabled() {
 		s.Cycle(ctx, "启动初次初始化巡检")
 	}
@@ -256,6 +279,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 			return
 		case <-t.C:
 		}
+		s.runWindows(ctx)
 		now := s.now()
 		if !s.Settings.SchedulerEnabled() || now.Minute() != 0 || now.Sub(lastFired) < 2*time.Minute {
 			continue

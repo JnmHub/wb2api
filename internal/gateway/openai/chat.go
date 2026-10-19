@@ -27,6 +27,7 @@ import (
 	"wb2api/internal/guards"
 	"wb2api/internal/jsonx"
 	"wb2api/internal/pool"
+	"wb2api/internal/quota"
 	"wb2api/internal/risk"
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/store/settings"
@@ -80,6 +81,9 @@ type Handler struct {
 	// Guards refreshes the daily / reserve limits before each pick and explains
 	// a fully parked pool (nil = no limits).
 	Guards *guards.Scanner
+	// Windows is the model-quota clock the 429 handler feeds and the scheduler
+	// probes (nil = no window tracking).
+	Windows *quota.Windows
 
 	keyCache   atomic.Pointer[keyCache]
 	promptMu   sync.Mutex
