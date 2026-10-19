@@ -13,10 +13,23 @@
 | `internal/gateway/leak` | 工具调用泄漏的解析（`parse_leaked_tool_calls` / DSML）与流式过滤器 | 400 条随机拼接语料 × 2 种分块与旧 Python **逐步对拍**（Legacy 模式）；新增 Precise 模式 |
 | `internal/pool` | 账号池：不可变快照、原子就绪判断（永不做网络 IO）、轮转选号、按账号并发上限 | 单测 + 并发测试；基准见下 |
 | `internal/upstream` | 每账号独立的 `http.Transport`（HTTP/1.1，分层超时） | 测试：两个账号绝不共用同一条 TCP 连接 |
-| `internal/gateway/openai` | `/v1/chat/completions` 流式+非流式、鉴权/Key 绑定/模型限制、429/401/402/403/5xx 的换号策略、SSE 管道、用量事件 | 14 个行为测试（见下） |
-| `cmd/hub` `cmd/mockup` `cmd/loadtest` | 网关雏形、模拟上游、压测器 | 手动跑通 |
+| `internal/gateway/openai` | `/v1/chat/completions` 流式+非流式、鉴权/Key 绑定/模型限制、请求体整形 + 出站身份头 + gzip（CLI/VSCode）+ CLI 专有字段、401 刷新后重试同号、403 风控/内容审核分流（含降级提示词重试）、429/402/5xx 换号、SSE 管道、用量事件 | 14 个行为测试 + 11 个出站/风控测试 |
+| `internal/jsonx` | 保序 JSON（对象保持插入顺序、Python `json.dumps(separators=(",",":"), ensure_ascii=False)` 的逐字节输出） | 单测 + 被 shape 的 325 条对拍间接覆盖 |
+| `internal/gateway/shape` | 旧版 `build_upstream_body` 全套请求体整形：角色归一、提示词模式、指纹清洗、reasoning 回填、工具调用配对修复（合并/重排/清孤儿）、工具 schema 归一、`tool_choice`/`stop`/`max_tokens` 归一、DeepSeek 思考注入、`stream_options` | **325 条**（手写 + 随机）与 Python 输出**逐字节一致**，并断言不改动入参 |
+| `internal/upstream/identity` | 三套出站身份（桌面端/VSCode/CLI）的头族、UUIDv7、会话 id 派生、trace 头、设备 token 规则 | **192 种**组合与 Python 对拍：头顺序/拼写/稳定值逐一相同，随机值形态相同 |
+| `internal/upstream/wire` | 自写 HTTP/1.1 客户端：线上字节顺序与拼写完全可控（与旧版 `http.client` 同一形状）、按账号独立连接池、过期连接安全重试、取消即断开、CONNECT 代理 | 10 个测试，含原始字节断言 |
+| `internal/refresh` | token 后台刷新：提前量+抖动、有界并发、同账号单飞、失败指数退避、401/无 token 标记需重新登录 | 9 个测试；`Pick` 在刷新进行中不被阻塞 |
+| `internal/risk` | 风控连坐保护：11140 识别、账号停放、窗口内多账号受限则整区域暂停 | 单测 |
+| `cmd/hub` `cmd/mockup` `cmd/loadtest` | 网关、模拟上游、压测器 | 手动跑通 |
 
 `go vet`、`gofmt` 干净；`go test ./...` 全绿。本机没有 C 编译器，`-race` 跑不了，需在 CI（Linux）补。
+
+### 出站/风控测试覆盖
+线上头部顺序（Accept-Encoding → Content-Length → Host → 身份头 → Connection）· 紧凑 JSON、客户端键序保留 ·
+CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`previous_response_id`、稳定的 `X-Conversation-ID` ·
+换号重试复用同一个 `X-Conversation-Request-ID`、`X-Request-ID` 每次新生成 · 401→刷新→同号重试 / 刷新失败则换号 ·
+11140 不换号、落盘 `restrictedUntil`、两个账号受限后整区域暂停并返回 429 + `Retry-After` ·
+内容审核 403→中性提示词重试一次、之后窗口内持续降级、再失败则透传 · 自定义提示词文件 · 设置里的响应头超时生效。
 
 ### 网关行为测试覆盖
 透传并去掉上游填充字段 · `<thinking>` 不再卡住（并有 Legacy 模式对照）· 流式中恢复被打印的工具调用 ·
@@ -58,7 +71,8 @@
 
 1. **泄漏过滤器默认用 Precise 策略**：只扣留"确实可能是工具调用"的标签（精确标签名或还没写完的前缀），`<thinking>`、`<think>`、`<args>`、`<params>` 之类普通文本立即放行；完整的 DSML 开标签（旧版因大小写正则 bug 根本不会扣留）现在会被正确扣留并恢复。`WB_LEGACY_LEAK_FILTER=1` 可切回旧行为。全部恢复场景（hybrid / DSML，整块与逐字符）在两种模式下都有测试。
 2. 缺失的 `usage` 现在**标记为估算**，且 `prompt_tokens` 记 0，不再写成 `completion//2`。
-3. 扣留文本有墙钟上限（默认 20 s，旧版只有 256 KiB 上限，等同于"到流结束"）。
+3. 响应头超时**保持旧版的 120 s**（推翻了计划书里"降到 30–45 s"的提议）：思考型模型首字节可能很慢，贸然缩短会误杀正常请求。改为让**拨号 8 s / TLS 10 s** 各有独立短超时，死掉的主机或代理在几秒内失败；设置页里的 `upstream.header_timeout_seconds` 照常生效。
+3b. 扣留文本有墙钟上限（默认 20 s，旧版只有 256 KiB 上限，等同于"到流结束"）。
 4. 上游 chunk 正常时**保留上游的 id/created**，只有被过滤器改写的文本才合成新 chunk（旧版总是合成 `chatcmpl-wb`）。
 5. 响应头在上游返回 200 后立即发出（旧版同样如此，因 Python 的 wfile 无缓冲）。
 6. 换号逻辑**没有** `sleep` 退避；每次尝试的等待上限由分层超时决定（响应头默认 45 s，旧版 120 s）。
@@ -68,13 +82,12 @@
 ## 还没做（按计划书优先级）
 
 **Phase 2 网关热路径剩余**
-- `build_upstream_body`：系统提示词模式、推理档位映射、`stop`/`max_tokens` 归一、Responses→Chat 转换、工具参数归一……
-- 出站身份：`wb_identity` 的三种身份（桌面端/VSCode/CLI）头、gzip 请求体、`X-Conversation-*` 派生。**目前网关只发 Bearer / X-User-Id / X-Domain，不能直接打真实上游。**
-- token 刷新（后台协程 + 抖动 + 指数退避 + singleflight）与积分刷新。**目前就绪判断遇到临期 token 只是"不可用"，没人去刷新。**
-- 调度偏好：手动权重 / 临期积分 / 剩余用量加权轮询、会话亲和、`apply_daily_guards` 四条限额护栏、风控连坐保护、窗口探针。
-- `usage` 持久化（SQLite 单写协程）与内存滚动计数；`/v1/models`、`/v1/balance-summary`、`/health` 的完整语义、`/u/<ref>/v1/*`。
+- 模型目录（`wb_catalog`/`wb_modelsdev`）：`shape.Catalog` 目前是接口，没有真实实现——`max_tokens` 缺省值与 DeepSeek 默认思考档位要等目录移植后才与旧版一致（对拍时用旧版导出的小表）。`upstream_effort_of`、`/v1/models`、`/v1/balance-summary` 同理。
+- **账号失败治理状态机**：软限流阶梯（600 s→2 h）、无作用域 429 的 60 s 阶梯、连续失败熔断（30 min→6 h）、降级窗口、`fails` 计数衰减（`WB_FAIL_WINDOW`）、402 停放到本地 04:00、`model_caps`（6004 落盘）、窗口探针。**目前 429 一律冷却该模型 60 s、5xx 冷却账号 5 s，是占位策略。**
+- 调度偏好：手动权重 / 临期积分 / 剩余用量加权轮询、会话亲和（`SessionAffinity`、`affinity_route`）、`apply_daily_guards` 四条限额护栏、`WB_BACKGROUND_MODEL_*` 后台模型重定向、模型封锁表、`/u/<ref>/v1/*` 定址调用。
+- `usage` 持久化（SQLite 单写协程）与内存滚动计数；`normalize_usage_cache_aliases`；Responses API / Anthropic Messages。
+- TLS 指纹（JA3/JA4）：现在用 Go 标准 `crypto/tls`，与旧版 Python 的 OpenSSL 指纹不同（风险 R1，Phase 0 的真实上游验证仍未做）。
 - 90% 冷却时的选号从线性扫描改为就绪集合。
-- usage 里 `normalize_usage_cache_aliases` 的归一尚未移植（目前原样透传 usage）。
 
 **Phase 3+**：面板鉴权（Cookie 会话落库）、`/api/v2`、SSE 事件总线、新前端、统计预聚合、各类自动化任务……（见计划书）。
 
@@ -83,6 +96,7 @@
 ```bash
 go test ./...                         # 全部测试
 py -I tools/genvectors/gen.py         # 用 legacy/python 重新生成黄金向量
+py -I tools/genvectors/gen_build.py   # 请求体整形的 325 条对拍向量
 go build -o bin/ ./cmd/...            # hub / mockup / loadtest
 
 bin/mockup -addr 127.0.0.1:19000 -tokens 200 -tps 50
@@ -93,4 +107,4 @@ bin/loadtest -url http://127.0.0.1:18788/v1/chat/completions -c 500 -key sk-test
 ```
 
 ## 版本控制说明
-当前在分支 `v2-go`。除第一个脚手架提交外，之后的改动都**只暂存（`git add`）、没有提交**，等你确认再提交。
+当前在分支 `v2-go`，按里程碑提交。

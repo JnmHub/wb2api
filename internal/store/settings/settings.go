@@ -46,6 +46,7 @@ type snapshot struct {
 
 // Store is the settings.json handle for one accounts directory.
 type Store struct {
+	dev       deviceTokenCache
 	path      string
 	lastCheck atomic.Int64 // unix nanos of the last stat
 	revSeq    atomic.Uint64

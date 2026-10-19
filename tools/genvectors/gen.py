@@ -189,3 +189,41 @@ for cur in ("intl", "cn"):
     for m in ms:
         out.append({"model": m, "current": cur, "out": P.detect_model_realm(m)})
 w("internal/realm/testdata/model_realm.json", out)
+
+# ---- outbound identity headers (order + values) ----
+import re as _re, itertools
+os.environ["WB_IDENTITY_OS"] = "Windows"; os.environ["WB_IDENTITY_ARCH"] = "x64"; os.environ["WB_IDENTITY_NODE_VERSION"] = "v22.21.1"
+os.environ["WB_VSCODE_IDE_VERSION"] = "1.119.0"
+def _kind(v):
+    v = str(v)
+    if _re.fullmatch(r"[0-9a-f]{32}", v): return "hex32"
+    if _re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", v): return "uuid"
+    if _re.fullmatch(r"[0-9a-f]{16}", v): return "hex16"
+    if _re.fullmatch(r"\d{13}", v): return "ms13"
+    if _re.fullmatch(r"00-[0-9a-f]{32}-[0-9a-f]{16}-01", v): return "traceparent"
+    if _re.fullmatch(r"[0-9a-f]{32}-[0-9a-f]{16}-1", v): return "b3_3"
+    if _re.fullmatch(r"[0-9a-f]{32}-[0-9a-f]{16}-1-[0-9a-f]{16}", v): return "b3_4"
+    return None
+cases = []
+for product, rl, ent, sess, model, conv, turn in itertools.product(
+        ("workbuddy", "vscode", "cli"), ("intl", "cn"), ("", "ent-1"), (None, "sess-1"), (None, "glm-5.3"), (None, "fixed-conv"), (None, "turn-1")):
+    tok = T_INTL if rl == "intl" else T_CN
+    acc = A.Account({"uid": "uid-x", "accessToken": tok, "realm": rl, "product": product, "enterpriseId": ent}, None)
+    runs = [acc.headers(purpose="chat", session_key=sess, turn_request_id=turn, model=model, conversation_id=conv) for _ in range(2)]
+    hs = []
+    for (n1, v1), (n2, v2) in zip(runs[0].items(), runs[1].items()):
+        assert n1 == n2
+        if n1.startswith("monitor_"): hs.append({"name": n1, "kind": "ms13"}); assert _kind(v1) == "ms13"
+        elif v1 == v2: hs.append({"name": n1, "value": v1})
+        else: hs.append({"name": n1, "kind": _kind(v1) or "?"}); assert _kind(v1) == _kind(v2) and _kind(v1)
+    cases.append({"product": product, "realm": rl, "enterprise": ent, "session": sess, "model": model, "conv": conv, "turn": turn,
+                  "token": tok, "headers": hs})
+w("internal/upstream/identity/testdata/headers.json", cases)
+# derived-id vectors
+w("internal/upstream/identity/testdata/conv_ids.json", [
+    {"uid": u, "key": k, "out": __import__("wb_identity").conversation_id_for(u, k)}
+    for u in ("u1", "uid-x", "") for k in ("", "  ", "sess", "会话-1")])
+
+# ---- str.title() (legacy refresh/default header names) ----
+names = ["Content-Type", "X-IDE-Type", "X-CodeBuddy-Request", "X-Refresh-Token", "x-stainless-lang", "b3", "X-B3-TraceId", "monitor_httpSendTime", "A1b", "it's", ""]
+w("internal/refresh/testdata/title.json", [{"in": n, "out": n.title()} for n in names])

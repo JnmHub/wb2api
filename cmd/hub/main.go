@@ -25,6 +25,7 @@ import (
 	"wb2api/internal/gateway/leak"
 	"wb2api/internal/gateway/openai"
 	"wb2api/internal/pool"
+	"wb2api/internal/refresh"
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/store/settings"
 	"wb2api/internal/upstream"
@@ -70,8 +71,17 @@ func main() {
 	if *legacyFilter {
 		mode = leak.Legacy
 	}
+	up := upstream.NewManager(upstream.DefaultTimeouts())
+	persist := func(rec *accounts.Record) error {
+		_, err := accounts.Save(*accountsDir, rec)
+		return err
+	}
+	refresher := &refresh.Refresher{Pool: p, Up: up, Log: log, Persist: persist}
+	if *upstreamOverride != "" {
+		refresher.BaseURL = func(*pool.Account) string { return *upstreamOverride }
+	}
 	h := &openai.Handler{
-		Pool: p, Up: upstream.NewManager(upstream.DefaultTimeouts()), Settings: st, Log: log,
+		Pool: p, Up: up, Settings: st, Log: log, Refresher: refresher, Persist: persist,
 		UpstreamOverride: *upstreamOverride, MaxAttempts: *maxAttempts, FilterMode: mode,
 	}
 	if os.Getenv("WB_TRACE") == "1" {
@@ -107,6 +117,9 @@ func main() {
 		ReadHeaderTimeout: 15 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+	bg, stopBG := context.WithCancel(context.Background())
+	defer stopBG()
+	go refresher.Run(bg)
 	go func() {
 		log.Info("listening", "addr", addr, "accounts", p.Len(), "dir", *accountsDir, "leak_filter", map[leak.Mode]string{leak.Precise: "precise", leak.Legacy: "legacy"}[mode])
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

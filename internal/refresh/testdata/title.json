@@ -1,0 +1,46 @@
+[
+ {
+  "in": "Content-Type",
+  "out": "Content-Type"
+ },
+ {
+  "in": "X-IDE-Type",
+  "out": "X-Ide-Type"
+ },
+ {
+  "in": "X-CodeBuddy-Request",
+  "out": "X-Codebuddy-Request"
+ },
+ {
+  "in": "X-Refresh-Token",
+  "out": "X-Refresh-Token"
+ },
+ {
+  "in": "x-stainless-lang",
+  "out": "X-Stainless-Lang"
+ },
+ {
+  "in": "b3",
+  "out": "B3"
+ },
+ {
+  "in": "X-B3-TraceId",
+  "out": "X-B3-Traceid"
+ },
+ {
+  "in": "monitor_httpSendTime",
+  "out": "Monitor_Httpsendtime"
+ },
+ {
+  "in": "A1b",
+  "out": "A1B"
+ },
+ {
+  "in": "it's",
+  "out": "It'S"
+ },
+ {
+  "in": "",
+  "out": ""
+ }
+]

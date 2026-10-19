@@ -246,3 +246,28 @@ func (p *Pool) ReadyCount(realm, model string) int {
 	}
 	return c
 }
+
+// NoteRestricted parks the account after an upstream risk-control restriction.
+// It only starts the clock on the first hit (repeated probing must not push
+// the deadline further out) and returns the updated record for persistence, or
+// nil when the account was already restricted.
+func (a *Account) NoteRestricted(now time.Time, cooldown time.Duration) *accounts.Record {
+	if a.restrictedTo.Load() > now.UnixNano() {
+		return nil
+	}
+	until := now.Add(cooldown)
+	a.restrictedTo.Store(until.UnixNano())
+	rec := *a.Record()
+	rec.RestrictedUntil = float64(until.UnixNano()) / 1e9
+	a.rec.Store(&rec)
+	return &rec
+}
+
+// RestrictedUntil returns the end of the restriction (zero when none).
+func (a *Account) RestrictedUntil() time.Time {
+	ns := a.restrictedTo.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}

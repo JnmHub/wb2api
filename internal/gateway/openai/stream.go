@@ -152,7 +152,7 @@ func usageTotal(u json.RawMessage) int64 {
 }
 
 // pipeStream relays an upstream SSE stream to the client.
-func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp func(), body io.Reader,
+func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp func(), idleD time.Duration, body io.Reader,
 	acc *pool.Account, model, keyID string, start time.Time) {
 
 	hdr := w.Header()
@@ -186,7 +186,6 @@ func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp fu
 		return err
 	}
 
-	idleD := h.Up.T.Idle
 	if idleD <= 0 {
 		idleD = 5 * time.Minute
 	}
@@ -396,10 +395,9 @@ type aggTool struct {
 }
 
 // aggregate folds the upstream stream into one chat.completion response.
-func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp func(), body io.Reader,
+func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp func(), idleD time.Duration, body io.Reader,
 	acc *pool.Account, model, keyID string, start time.Time) {
 
-	idleD := h.Up.T.Idle
 	if idleD <= 0 {
 		idleD = 5 * time.Minute
 	}
