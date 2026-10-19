@@ -127,6 +127,31 @@ func (s *Stream) addOutput(o *jsonx.Obj) int {
 	return len(s.outputs) - 1
 }
 
+// WebCall emits the client-visible cards for a locally executed web tool. The
+// call itself is not added to the final output (the answer message is), matching
+// the legacy event stream where cards are streamed as they happen.
+func (s *Stream) WebCall(id, kind, query string) []Frame {
+	idx := len(s.outputs)
+	item := obj("id", id, "type", "web_search_call", "status", "in_progress")
+	out := []Frame{
+		s.ev("response.output_item.added", obj("output_index", num(int64(idx)), "item", item)),
+		s.ev("response.web_search_call.in_progress", obj("item_id", id, "output_index", num(int64(idx)))),
+	}
+	action := obj("type", "search", "query", query)
+	if kind == "web_fetch" {
+		out = append(out, s.ev("response.web_search_call.searching", obj("item_id", id, "output_index", num(int64(idx)))))
+		action = obj("type", "open_page", "url", query)
+	} else {
+		out = append(out, s.ev("response.web_search_call.searching", obj("item_id", id, "output_index", num(int64(idx)))))
+	}
+	done := obj("id", id, "type", "web_search_call", "status", "completed", "action", action)
+	out = append(out,
+		s.ev("response.output_item.done", obj("output_index", num(int64(idx)), "item", done)),
+		s.ev("response.web_search_call.completed", obj("item_id", id, "output_index", num(int64(idx)))),
+	)
+	return out
+}
+
 // Start returns response.created and response.in_progress.
 func (s *Stream) Start() []Frame {
 	return []Frame{

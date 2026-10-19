@@ -241,6 +241,9 @@ func (s *Store) AuthDisabled() bool { return s.View().flag("auth_disabled") }
 // RemainingPriority: dispatch by the remaining-usage estimate (opt-in).
 func (s *Store) RemainingPriority() bool { return s.View().flag("remaining_priority_enabled") }
 
+// LocalWebTools: execute Responses web_search / web_fetch gateway-side.
+func (s *Store) LocalWebTools() bool { return s.View().flag("local_web_tools") }
+
 // AnthropicMessages: the Messages compatibility layer is switched on.
 func (s *Store) AnthropicMessages() bool { return s.View().flag("enable_anthropic_messages") }
 

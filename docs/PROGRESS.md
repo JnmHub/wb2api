@@ -50,6 +50,7 @@
 | 模型封锁表 | 精确名单 + 封锁子串 + 白名单/前缀（`allowed_models` / `allowed_prefixes`，默认全空）；命中的模型在网关本机 400、不发上游，并从 `/v1/models` 隐藏；设置页可维护名单 | 1 个 settings 单测 + 2 个网关测试 |
 | `internal/updates`（更新检查） | GitHub Releases 查询 + `releases/latest` 302 回退、版本比较、只读不下载；每天最多一次（`update_check_enabled` 默认关）+ 手动立即检查；状态（上次检查/最新版本）落盘；设置页显示当前/最新版本与发行页链接 | 5 个单测 + 1 个 API 测试 |
 | `internal/quota`（额度主动查询） | `quota_scan_models` 勾选的模型每 6 小时为每个「账号×模型」发一个最小请求体检：通了清该模型冷却；429 带重置时刻则记冷却并把这条配额线交给窗口探针；失败按 15 分钟重试、6 次后顺延一个完整周期；已有 429 窗口或冷却中的线跳过。调度器独立执行；`GET/POST /api/v2/quota-scan*`，设置页可维护模型并立即查询 | 4 个单测 + 1 个 API 测试 |
+| `internal/webtools`（Responses 本地 web 工具） | 开关 `local_web_tools`：把客户端声明的 `web_search` / `web_fetch` 换成网关自己的 function，模型调用后本地执行——搜索按 DuckDuckGo → Wikipedia → Google News 链式回退，抓取只允许公网 http(s) 文本页（私网/重定向复检、4 MB 上限、10 万字符分页），结果作为 tool 消息喂回并多轮继续（默认 3 轮、上限 8）。流式发 `web_search_call` 卡片并隐藏内部 tool_call；非流式只返回最终答案。客户端原始工具声明仍回显 | 6 个 webtools 单测 + 2 个 Responses 集成测试 |
 
 `go vet`、`gofmt` 干净；`go test ./...` 全绿。本机没有 C 编译器，`-race` 跑不了，需在 CI（Linux）补。
 
@@ -147,10 +148,11 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 12. **`/v1/models?realm=` 只接受 `intl`/`cn`/`all`**，其余值回落默认区域（旧版把任意字符串当区域并用它做缓存键）。
 13. **目录没有移植"窄接口回退"**（`/v2/enterprises/personal/models`，仅国际区且 `/v3/config` 与桌面缓存都拿不到时才用）：现在直接回落到内嵌快照。
 14. **Responses 流里保留了旧版的一个小怪癖**：文本以 `<` 开头且疑似 DSML 时会先发一个空 `delta`。无害，保留是为了与旧版逐字节对拍。
+15. **本地 web 工具**：只实现 DuckDuckGo / Wikipedia / Google News 三个搜索后端（旧版还有 Bing、StackOverflow），也不往最终文本注入 `url_citation` 注解；搜索结果文本本身带 URL。`web_fetch` 只接受公网 http(s) 文本页，私网或重定向到私网直接拒绝。
 
 ## 还没做
 
-- 没移植：国际网页会话那一路、`web_search` / `web_fetch` 代跑工具（`wb_webtools`）、桌面凭据解密导入、价格估算、智能体配置。
+- 没移植：国际网页会话那一路、桌面凭据解密导入、价格估算、智能体配置。
 - 目录：`upstream_effort_of`（按目录钉死思考档位改写请求）、模型封锁表、`/u/<ref>/v1/models`（定址路由）。
 - TLS 指纹（JA3/JA4）：仍是 Go 标准 `crypto/tls`，与旧版 Python 的 OpenSSL 指纹不同（风险 R1）；**只在模拟上游上验证过，没连真实上游账号**，是否会被识别未验证。
 - 本机没有 C 编译器，`go test -race` 跑不了，需在 CI（Linux）补。

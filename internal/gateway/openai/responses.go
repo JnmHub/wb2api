@@ -9,11 +9,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"wb2api/internal/gateway/responses"
 	"wb2api/internal/jsonx"
 	"wb2api/internal/pool"
+	"wb2api/internal/upstream"
+	"wb2api/internal/upstream/identity"
+	"wb2api/internal/webtools"
 )
 
 // defaultResponsesModel answers a request that names no model.
@@ -74,6 +81,15 @@ func (rh *Responses) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		model = defaultResponsesModel
 		chat.Set("model", model)
 	}
+	// Local web_search / web_fetch: swap the server-tool declarations for the
+	// gateway's own functions and run the calls ourselves (opt-in).
+	if h.Settings != nil && h.Settings.LocalWebTools() {
+		if search, fetch := webtools.WantsWeb(info.Tools); search || fetch {
+			webtools.InstallDefs(chat, search, fetch)
+			info.WebTools = true
+			h.logger().Info("local web tools installed", "search", search, "fetch", fetch)
+		}
+	}
 	wantStream := jsonx.Truthy(payload.Get("stream"))
 	sink := func(q *request, acc *pool.Account, cancel context.CancelFunc, idle time.Duration, body io.Reader) {
 		if wantStream {
@@ -97,21 +113,323 @@ func usageJSON(u *jsonx.Obj) []byte {
 	return b
 }
 
+// ---------------------------------------------------- local web tools (loop)
+
+type webCall struct{ ID, Name, Args string }
+
+func maxWebRounds() int {
+	n := 3
+	if v := strings.TrimSpace(os.Getenv("WB_MAX_WEB_ROUNDS")); v != "" {
+		if x, err := strconv.Atoi(v); err == nil && x > 0 {
+			n = x
+		}
+	}
+	if n > 8 {
+		n = 8
+	}
+	return n
+}
+
+func chunkInt(v any) int {
+	switch t := v.(type) {
+	case json.Number:
+		if n, err := t.Int64(); err == nil {
+			return int(n)
+		}
+	case float64:
+		return int(t)
+	case int:
+		return t
+	}
+	return 0
+}
+
+// filterWebChunk removes the gateway's own tool calls from a chat chunk and
+// accumulates their arguments. It reports whether the chunk carried one.
+func filterWebChunk(chunk *jsonx.Obj, pending map[int]*webCall) bool {
+	choices, _ := chunk.Get("choices").([]any)
+	internal := false
+	for _, raw := range choices {
+		ch, ok := raw.(*jsonx.Obj)
+		if !ok {
+			continue
+		}
+		delta, ok := ch.Get("delta").(*jsonx.Obj)
+		if !ok {
+			continue
+		}
+		tcs, _ := delta.Get("tool_calls").([]any)
+		if len(tcs) == 0 {
+			continue
+		}
+		var kept []any
+		for _, rawTC := range tcs {
+			tc, ok := rawTC.(*jsonx.Obj)
+			if !ok {
+				kept = append(kept, rawTC)
+				continue
+			}
+			idx := chunkInt(tc.Get("index"))
+			fn, _ := tc.Get("function").(*jsonx.Obj)
+			name := ""
+			if fn != nil {
+				name = strings.TrimSpace(jsonx.PyStrIfTruthy(fn.Get("name")))
+			}
+			if name == "" {
+				if c := pending[idx]; c != nil {
+					name = c.Name
+				}
+			}
+			if !webtools.WebToolName(name) {
+				kept = append(kept, rawTC)
+				continue
+			}
+			internal = true
+			c := pending[idx]
+			if c == nil {
+				c = &webCall{}
+				pending[idx] = c
+			}
+			if id := strings.TrimSpace(jsonx.PyStrIfTruthy(tc.Get("id"))); id != "" {
+				c.ID = id
+			}
+			if fn != nil {
+				if n := strings.TrimSpace(jsonx.PyStrIfTruthy(fn.Get("name"))); n != "" {
+					c.Name = n
+				}
+				c.Args += jsonx.PyStrIfTruthy(fn.Get("arguments"))
+			}
+		}
+		if len(kept) == 0 {
+			delta.Delete("tool_calls")
+		} else {
+			delta.Set("tool_calls", kept)
+		}
+	}
+	return internal
+}
+
+func orderedCalls(pending map[int]*webCall) []webCall {
+	keys := make([]int, 0, len(pending))
+	for k := range pending {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+	out := make([]webCall, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, *pending[k])
+	}
+	return out
+}
+
+func appendWebMessages(chat *jsonx.Obj, calls []webCall, results []string) *jsonx.Obj {
+	next := chat.Clone()
+	msgs, _ := next.Get("messages").([]any)
+	var tcs []any
+	for _, c := range calls {
+		fn := jsonx.NewObj()
+		fn.Set("name", c.Name)
+		fn.Set("arguments", c.Args)
+		tc := jsonx.NewObj()
+		tc.Set("id", c.ID)
+		tc.Set("type", "function")
+		tc.Set("function", fn)
+		tcs = append(tcs, tc)
+	}
+	assistant := jsonx.NewObj()
+	assistant.Set("role", "assistant")
+	assistant.Set("content", nil)
+	assistant.Set("tool_calls", tcs)
+	msgs = append(msgs, assistant)
+	for i, c := range calls {
+		m := jsonx.NewObj()
+		m.Set("role", "tool")
+		m.Set("tool_call_id", c.ID)
+		m.Set("name", c.Name)
+		m.Set("content", results[i])
+		msgs = append(msgs, m)
+	}
+	next.Set("messages", msgs)
+	return next
+}
+
+// disableWebTools removes the gateway's tool definitions and tells the model to
+// answer with what it already has.
+func disableWebTools(chat *jsonx.Obj) *jsonx.Obj {
+	next := chat.Clone()
+	if list, ok := next.Get("tools").([]any); ok {
+		var kept []any
+		for _, raw := range list {
+			if o, ok := raw.(*jsonx.Obj); ok {
+				name := strings.TrimSpace(jsonx.PyStrIfTruthy(o.Get("name")))
+				if fn, ok := o.Get("function").(*jsonx.Obj); ok {
+					name = strings.TrimSpace(jsonx.PyStrIfTruthy(fn.Get("name")))
+				}
+				if webtools.WebToolName(name) {
+					continue
+				}
+			}
+			kept = append(kept, raw)
+		}
+		if len(kept) == 0 {
+			next.Delete("tools")
+		} else {
+			next.Set("tools", kept)
+		}
+	}
+	msgs, _ := next.Get("messages").([]any)
+	sys := jsonx.NewObj()
+	sys.Set("role", "system")
+	sys.Set("content", "The web tools are no longer available. Answer the user now with what you already have. Do not say that you are searching again.")
+	next.Set("messages", append(msgs, sys))
+	return next
+}
+
+// openFollowUp sends another chat request for a web-tool round on the same
+// account, returning the upstream stream.
+func (h *Handler) openFollowUp(q *request, acc *pool.Account, chat *jsonx.Obj) (io.ReadCloser, error) {
+	q2 := *q
+	q2.payload = chat
+	h.reshape(&q2)
+	rec := acc.Record()
+	product := identity.NormalizeProduct(rec.Product)
+	enc, gz := q2.bodyFor(product)
+	hdrs := h.chatHeaders(&q2, rec, product, gz)
+	cfg := h.Settings.UpstreamConfig()
+	resp, err := h.Up.Wire(acc.UID, acc.Proxy()).Do(q.r.Context(), upstream.Request{
+		Method: http.MethodPost, URL: h.chatURL(acc, product), Headers: hdrs, Body: enc.wire(gz),
+		HeaderTimeout: cfg.HeaderTimeout,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		resp.Body.Close()
+		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return resp.Body, nil
+}
+
+func (h *Handler) runWebCalls(ctx context.Context, calls []webCall) []string {
+	out := make([]string, len(calls))
+	for i, c := range calls {
+		out[i] = webtools.Execute(ctx, c.Name, c.Args)
+	}
+	return out
+}
+
+// emptyWebChunk reports a chunk that carried nothing but the stripped internal
+// tool call, so it can be dropped instead of forwarded as an empty delta.
+func emptyWebChunk(chunk *jsonx.Obj) bool {
+	if u, ok := chunk.Get("usage").(*jsonx.Obj); ok && u.Len() > 0 {
+		return false
+	}
+	choices, _ := chunk.Get("choices").([]any)
+	if len(choices) == 0 {
+		return true
+	}
+	for _, raw := range choices {
+		ch, ok := raw.(*jsonx.Obj)
+		if !ok {
+			return false
+		}
+		if jsonx.PyStrIfTruthy(ch.Get("finish_reason")) != "" {
+			return false
+		}
+		if d, ok := ch.Get("delta").(*jsonx.Obj); !ok || d.Len() > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func webCallQuery(c webCall) string {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(c.Args), &m); err == nil {
+		for _, k := range []string{"query", "url"} {
+			if s, ok := m[k].(string); ok && strings.TrimSpace(s) != "" {
+				return s
+			}
+		}
+	}
+	return c.Args
+}
+
+// internalCalls returns the calls when every one of them is a gateway web tool.
+// A mixed batch is left to the client: we cannot fill a normal tool's result.
+func internalCalls(calls []map[string]any) ([]webCall, bool) {
+	if len(calls) == 0 {
+		return nil, false
+	}
+	out := make([]webCall, 0, len(calls))
+	for _, c := range calls {
+		fn, _ := c["function"].(map[string]any)
+		name := ""
+		args := ""
+		if fn != nil {
+			name = fmt.Sprint(fn["name"])
+			args = fmt.Sprint(fn["arguments"])
+		}
+		if !webtools.WebToolName(name) {
+			return nil, false
+		}
+		id := fmt.Sprint(c["id"])
+		if id == "" || id == "<nil>" {
+			id = fmt.Sprintf("call_web_%d_%d", time.Now().UnixMilli()%1000000, len(out))
+		}
+		out = append(out, webCall{ID: id, Name: name, Args: args})
+	}
+	return out, true
+}
+
 // responsesWhole answers a non-streaming request: the upstream stream is
 // folded into one chat message and re-shaped as a Responses object.
 func (h *Handler) responsesWhole(q *request, acc *pool.Account, cancel context.CancelFunc, idle time.Duration,
 	body io.Reader, model string, info responses.Info) {
 
-	res := h.collect(q.r, cancel, idle, body, model, true)
-	ev := res.usageEvent(acc, model, q.keyID, q.effort(h), q.start)
-	if res.err != nil {
-		ev.Outcome, ev.Status = "upstream_aborted", http.StatusBadGateway
-		h.emit(ev)
-		if q.r.Context().Err() == nil {
-			writeError(q.w, http.StatusBadGateway, "upstream stream error: "+res.err.Error(), "server_error")
-		}
-		return
+	chat := q.payload.Clone()
+	reader := body
+	rounds := 0
+	if info.WebTools {
+		rounds = maxWebRounds()
 	}
+	var res *collected
+	for round := 0; ; round++ {
+		res = h.collect(q.r, cancel, idle, reader, model, true)
+		if res.err != nil {
+			ev := res.usageEvent(acc, model, q.keyID, q.effort(h), q.start)
+			ev.Outcome, ev.Status = "upstream_aborted", http.StatusBadGateway
+			h.emit(ev)
+			if q.r.Context().Err() == nil {
+				writeError(q.w, http.StatusBadGateway, "upstream stream error: "+res.err.Error(), "server_error")
+			}
+			return
+		}
+		if info.WebTools && round < rounds {
+			if calls, ok := internalCalls(res.calls); ok {
+				results := h.runWebCalls(q.r.Context(), calls)
+				next := appendWebMessages(chat, calls, results)
+				if round+1 >= rounds {
+					next = disableWebTools(next)
+				}
+				nr, ferr := h.openFollowUp(q, acc, next)
+				if ferr != nil {
+					ev := res.usageEvent(acc, model, q.keyID, q.effort(h), q.start)
+					ev.Outcome, ev.Status = "failed", http.StatusBadGateway
+					h.emit(ev)
+					if q.r.Context().Err() == nil {
+						writeError(q.w, http.StatusBadGateway, "web tool follow-up failed: "+ferr.Error(), "server_error")
+					}
+					return
+				}
+				chat, reader = next, nr
+				continue
+			}
+		}
+		break
+	}
+	ev := res.usageEvent(acc, model, q.keyID, q.effort(h), q.start)
 	msg := jsonx.NewObj()
 	msg.Set("role", "assistant")
 	msg.Set("content", res.content)
@@ -137,14 +455,14 @@ func (h *Handler) responsesWhole(q *request, acc *pool.Account, cancel context.C
 	choice.Set("index", json.Number("0"))
 	choice.Set("message", msg)
 	choice.Set("finish_reason", res.finish)
-	chat := jsonx.NewObj()
-	chat.Set("choices", []any{choice})
+	chatObj := jsonx.NewObj()
+	chatObj.Set("choices", []any{choice})
 	if res.usage != nil {
 		if u, err := jsonx.UnmarshalObj(res.usage); err == nil {
-			chat.Set("usage", u)
+			chatObj.Set("usage", u)
 		}
 	}
-	out := responses.ChatToResponse(chat, model, info, responses.Env{})
+	out := responses.ChatToResponse(chatObj, model, info, responses.Env{})
 	b, err := jsonx.MarshalPy(out)
 	if err != nil {
 		writeError(q.w, http.StatusInternalServerError, "cannot encode response", "server_error")
@@ -194,8 +512,6 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 
 	s := responses.NewStream(model, info, responses.Env{})
 	var (
-		br           = bufio.NewReaderSize(body, sseReadBlock)
-		acc2         []byte
 		firstAt      time.Time
 		lastAt       time.Time
 		nChunks      int
@@ -206,35 +522,103 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 	if write(s.Start()) != nil || flush() != nil {
 		clientClosed = true
 	}
-	for !clientClosed {
-		if br.Buffered() == 0 {
-			if flush() != nil {
-				clientClosed = true
-				break
-			}
-		}
-		line, err := readLine(br, &acc2)
-		if len(line) > 0 {
-			idle.Reset(idleD)
-			if data := sseData(line); data != nil && !bytes.Equal(data, []byte("[DONE]")) {
-				now := time.Now()
-				if firstAt.IsZero() {
-					firstAt = now
+	chat := q.payload.Clone()
+	rounds := 0
+	if info.WebTools {
+		rounds = maxWebRounds()
+	}
+	reader := body
+	for round := 0; !clientClosed; round++ {
+		br := bufio.NewReaderSize(reader, sseReadBlock)
+		var acc2 []byte
+		pending := map[int]*webCall{}
+		for !clientClosed {
+			if br.Buffered() == 0 {
+				if flush() != nil {
+					clientClosed = true
+					break
 				}
-				lastAt = now
-				nChunks++
 			}
-			if write(s.Line(line)) != nil {
-				clientClosed = true
+			line, err := readLine(br, &acc2)
+			if len(line) > 0 {
+				idle.Reset(idleD)
+				data := sseData(line)
+				switch {
+				case data == nil:
+					if write(s.Line(line)) != nil {
+						clientClosed = true
+					}
+				case bytes.Equal(data, []byte("[DONE]")):
+					if write(s.Line(line)) != nil {
+						clientClosed = true
+					}
+				default:
+					chunk, perr := jsonx.UnmarshalObj(data)
+					if perr != nil {
+						if write(s.Line(line)) != nil {
+							clientClosed = true
+						}
+						break
+					}
+					now := time.Now()
+					if firstAt.IsZero() {
+						firstAt = now
+					}
+					lastAt = now
+					stripped := info.WebTools && filterWebChunk(chunk, pending)
+					if !stripped {
+						if write(s.Line(line)) != nil {
+							clientClosed = true
+						}
+						nChunks++
+					} else if !emptyWebChunk(chunk) {
+						b, _ := jsonx.Marshal(chunk)
+						if write(s.Line(append(append([]byte("data: "), b...), '\n', '\n'))) != nil {
+							clientClosed = true
+						}
+						nChunks++
+					}
+				}
+			}
+			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					streamErr = err
+				}
 				break
 			}
 		}
-		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				streamErr = err
-			}
+		if clientClosed || streamErr != nil {
 			break
 		}
+		calls := orderedCalls(pending)
+		if !info.WebTools || round >= rounds || len(calls) == 0 {
+			break
+		}
+		results := h.runWebCalls(q.r.Context(), calls)
+		for i, c := range calls {
+			id := c.ID
+			if id == "" {
+				id = fmt.Sprintf("ws_%d_%d", time.Now().UnixMilli()%1000000, i)
+			}
+			if write(s.WebCall(id, c.Name, webCallQuery(c))) != nil {
+				clientClosed = true
+				break
+			}
+		}
+		if clientClosed {
+			break
+		}
+		next := appendWebMessages(chat, calls, results)
+		if round+1 >= rounds {
+			next = disableWebTools(next)
+		}
+		nr, ferr := h.openFollowUp(q, acc, next)
+		if ferr != nil {
+			streamErr = ferr
+			break
+		}
+		chat = next
+		reader = nr
 	}
 	if !clientClosed && streamErr == nil {
 		if write(s.Finish()) != nil {

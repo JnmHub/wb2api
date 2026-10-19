@@ -44,6 +44,9 @@ type Info struct {
 	Tools             []any
 	ToolChoice        any
 	ParallelToolCalls any
+	// WebTools: the gateway replaced web_search / web_fetch with its own
+	// function definitions and executes the calls locally.
+	WebTools bool
 }
 
 const (
