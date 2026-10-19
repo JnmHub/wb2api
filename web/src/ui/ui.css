@@ -233,6 +233,19 @@ body {
   margin: 0;
 }
 
+/* Scheduler logs use the small variant; inside an antd card it must not stretch. */
+.app-page .logbox.small {
+  min-height: 0;
+  height: auto;
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  background: var(--ant-color-fill-quaternary, #fafafa);
+  color: var(--ant-color-text-secondary, #52525b);
+}
+
 /* The old page components keep their own layout; in the antd shell they must
    not add a second scroll container or their own padding. */
 .app-page > .page,
