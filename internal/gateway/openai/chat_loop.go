@@ -99,6 +99,14 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	q.at.charged = map[string]bool{}
 	applyBackgroundAlias(payload, h.logger())
 	q.model, _ = payload.Get("model").(string)
+	// The local model deny-list: refuse before touching the upstream (legacy
+	// is_model_banned), in whatever envelope the endpoint speaks.
+	if h.Settings != nil && h.Settings.ModelBanned(q.model) {
+		q.httpErr(http.StatusBadRequest,
+			fmt.Sprintf("模型 %s 已被本机代理封锁（依 ALLOWED_MODELS / BANNED_SUBSTRING 设定）。", q.model),
+			"invalid_request_error")
+		return
+	}
 	q.stream = jsonx.Truthy(payload.Get("stream"))
 	if opts.forceStream {
 		q.stream = opts.stream

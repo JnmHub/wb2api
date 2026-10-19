@@ -105,8 +105,13 @@ func (i *Info) models(w http.ResponseWriter, r *http.Request) {
 	list := make([]any, 0, len(data))
 	pinned := PinnedFrom(r.Context())
 	for _, d := range data {
+		id, _ := d.Get("id").(string)
+		// a local deny-list keeps blocked models out of every client's picker
+		if i.Chat != nil && i.Chat.Settings != nil && i.Chat.Settings.ModelBanned(id) {
+			continue
+		}
 		// a pinned route lists what that account can actually take
-		if id, _ := d.Get("id").(string); pinned != nil && pinned.ModelDisabled(id) {
+		if pinned != nil && pinned.ModelDisabled(id) {
 			continue
 		}
 		list = append(list, d)

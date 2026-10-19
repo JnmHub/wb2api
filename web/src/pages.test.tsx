@@ -98,6 +98,10 @@ describe('SettingsPage', () => {
     upstream: { header_timeout_seconds: 120, idle_timeout_seconds: 60, device_token_set: false, device_token_file: '' },
     prompt: { mode: 'passthrough', file: '' },
     credits_refresh_hours: 6,
+    window_probe: true,
+    quota_scan_models: [],
+    banned_models: [],
+    banned_substring: '',
     proxy_slots: [{ id: 's1', name: 'hk', url: 'socks5://127.0.0.1:1080', enabled: true, ip: '', country: '', country_code: '', ip_type: '', isp: '', asn: '', probed_at: 0 }],
     catalog: [{ realm: 'intl', source: 'bundled', fetched_at: 0, count: 3 }],
   }

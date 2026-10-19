@@ -47,6 +47,8 @@
 | `internal/api` + 任务页（成长任务） | `GET /api/v2/tasks`、`POST /api/v2/tasks/{run,travel,streak-bonus}`；面板任务页新增成长任务卡片（账号切换、连登/能量/猫猫状态、任务列表、全自动跑一轮/猫猫旅行/连登管家与结果展示） | 3 个 API 测试；前端 21 vitest |
 | `internal/usageest` + 用量页 | **剩余用量估算**：预算由真实撞线样本反推（窗口起点按上一次重置切分，按账号平均→按天平均→最近三天 6/3/1 加权）；24h 窗口分段、冷却中剩余记 0、无样本记未知；`GET /api/v2/usage/remaining` 带 ETag/304，用量页新增「剩余用量估算」区块 | 4 个估算单测 + 1 个 API 测试 |
 | 剩余用量优先调度 | 估算剩余/预算 ≤30% / ≤15% / ≤5% 分别加权 2/3/4，作为池的第三层偏好（手动权重 → 临期积分 → 剩余用量 → 轮转）；冷却、无预算、剩余为 0 的组合不参与；设置页 `remaining_priority_enabled` 开关（默认关） | 3 个 pool 测试 |
+| 模型封锁表 | 精确名单 + 封锁子串 + 白名单/前缀（`allowed_models` / `allowed_prefixes`，默认全空）；命中的模型在网关本机 400、不发上游，并从 `/v1/models` 隐藏；设置页可维护名单 | 1 个 settings 单测 + 2 个网关测试 |
+| `internal/updates`（更新检查） | GitHub Releases 查询 + `releases/latest` 302 回退、版本比较、只读不下载；每天最多一次（`update_check_enabled` 默认关）+ 手动立即检查；状态（上次检查/最新版本）落盘；设置页显示当前/最新版本与发行页链接 | 5 个单测 + 1 个 API 测试 |
 
 `go vet`、`gofmt` 干净；`go test ./...` 全绿。本机没有 C 编译器，`-race` 跑不了，需在 CI（Linux）补。
 
@@ -147,7 +149,7 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 
 ## 还没做
 
-- 没移植：国际网页会话那一路、`web_search` / `web_fetch` 代跑工具（`wb_webtools`）、桌面凭据解密导入、价格估算、智能体配置、更新检查。
+- 没移植：国际网页会话那一路、`web_search` / `web_fetch` 代跑工具（`wb_webtools`）、桌面凭据解密导入、价格估算、智能体配置、额度主动查询（quota scan）。
 - 目录：`upstream_effort_of`（按目录钉死思考档位改写请求）、模型封锁表、`/u/<ref>/v1/models`（定址路由）。
 - TLS 指纹（JA3/JA4）：仍是 Go 标准 `crypto/tls`，与旧版 Python 的 OpenSSL 指纹不同（风险 R1）；**只在模拟上游上验证过，没连真实上游账号**，是否会被识别未验证。
 - 本机没有 C 编译器，`go test -race` 跑不了，需在 CI（Linux）补。

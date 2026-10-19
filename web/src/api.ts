@@ -217,6 +217,8 @@ export interface SettingsView {
   credits_refresh_hours: number
   window_probe: boolean
   quota_scan_models: string[]
+  banned_models: string[]
+  banned_substring: string
   proxy_slots: ProxySlot[]
   catalog?: CatalogStatus[]
 }
@@ -369,4 +371,19 @@ export interface RemainingPayload {
   rows: RemainingRow[]
   models: RemainingModel[]
   etag: string
+}
+
+export interface UpdateStatus {
+  current_version: string
+  latest_version: string | null
+  latest_tag: string
+  update_available: boolean
+  enabled: boolean
+  checking: boolean
+  last_attempt: string
+  last_success: boolean
+  last_error: string
+  release_url: string
+  published_at: string
+  skipped?: string
 }

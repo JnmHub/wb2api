@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,6 +25,8 @@ type infoEnv struct {
 	srv     *httptest.Server
 	configs atomic.Int32
 	cat     *catalog.Service
+	p       *pool.Pool
+	mux     *http.ServeMux
 }
 
 const remoteConfig = `{"code":0,"data":{
@@ -87,6 +90,7 @@ func newInfoEnv(t *testing.T, settingsJSON string, creds map[string]map[string]a
 	h.Catalog = e.cat
 	mux := http.NewServeMux()
 	(&Info{Chat: h, Pool: p, Catalog: e.cat}).Register(mux)
+	e.p, e.mux = p, mux
 	e.srv = httptest.NewServer(mux)
 	t.Cleanup(e.srv.Close)
 	return e
@@ -226,6 +230,69 @@ func TestModelsKeyAuthAndBoundRealm(t *testing.T) {
 	code, out := e.get(t, "/v1/models", map[string]string{"Authorization": "Bearer sk-cn", "X-Realm": "intl"})
 	if code != 200 || out["realm"] != "cn" {
 		t.Fatalf("a key bound to cn wins over X-Realm: %d %v", code, out["realm"])
+	}
+}
+
+func TestBannedModelIsHiddenFromTheCatalogue(t *testing.T) {
+	e := newInfoEnv(t, `{"banned_models":["hy3"]}`, nil, 200)
+	code, out := e.get(t, "/v1/models", nil)
+	if code != 200 {
+		t.Fatalf("status %d", code)
+	}
+	list := ids(out)
+	if len(list) == 0 {
+		t.Fatal("no models returned")
+	}
+	for _, id := range list {
+		if id == "hy3" {
+			t.Fatalf("a banned model must not be listed: %v", list)
+		}
+	}
+}
+
+func TestBannedModelIsRefusedBeforeTheUpstream(t *testing.T) {
+	up := newRawUpstream(t, func(n int, r rawReq, c net.Conn) { sseOK(c) })
+	f := newFixture(t, up, accSpec{})
+	f.setSettings(t, `{"banned_models":["hy3"],"banned_substring":"image-alpha"}`)
+	code, body, _ := f.post(t, `{"model":"hy3","messages":[{"role":"user","content":"x"}]}`, nil)
+	if code != 400 || !strings.Contains(body, "封锁") {
+		t.Fatalf("banned model: %d %s", code, body)
+	}
+	if n := len(up.requests()); n != 0 {
+		t.Fatalf("a banned model must not reach the upstream (%d requests)", n)
+	}
+	code, body, _ = f.post(t, `{"model":"flux-image-alpha-v2","messages":[{"role":"user","content":"x"}]}`, nil)
+	if code != 400 || !strings.Contains(body, "封锁") {
+		t.Fatalf("banned substring: %d %s", code, body)
+	}
+	code, _, _ = f.post(t, `{"model":"glm-5.3","messages":[{"role":"user","content":"x"}]}`, nil)
+	if code != 200 {
+		t.Fatalf("an allowed model must still pass: %d", code)
+	}
+}
+
+func TestPinnedRouteListsTheAccountCatalogue(t *testing.T) {
+	e := newInfoEnv(t, "", nil, 200)
+	srv := httptest.NewServer(PinnedRoutes(e.p, e.mux))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/u/acct-0/v1/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	var out map[string]any
+	body, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("not JSON: %q", body)
+	}
+	if out["realm"] != "intl" {
+		t.Fatalf("a pinned route uses the account's realm: %v", out["realm"])
+	}
+	if len(ids(out)) == 0 {
+		t.Fatal("no models for the pinned account")
 	}
 }
 

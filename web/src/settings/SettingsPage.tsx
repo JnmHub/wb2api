@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ApiError, get, patch, post, type SettingsView } from '../api'
+import { ApiError, get, patch, post, type SettingsView, type UpdateStatus } from '../api'
 import { Toggle } from '../components/Modal'
 import { KeysSection } from './KeysSection'
 import { ProxySection } from './ProxySection'
@@ -33,6 +33,7 @@ const switchInfo: { key: string; label: string; hint: string }[] = [
   { key: 'remaining_priority_enabled', label: '剩余用量优先调度', hint: '估计剩余越接近耗尽的「账号×模型」分到越多请求，先把快用完的额度用掉；默认关闭，需要先真实撞过限额才有预算样本。' },
   { key: 'enable_anthropic_messages', label: '启用 Anthropic Messages（/v1/messages）', hint: '网关会忽略 cache_control，可能多耗积分，默认关闭。' },
   { key: 'auth_disabled', label: '关闭 API Key 校验', hint: '危险：任何能访问端口的人都能使用你的账号。仅限可信内网。' },
+  { key: 'update_check_enabled', label: '启用更新检查', hint: '每天最多查一次 GitHub Releases；只读，不下载、不替换、不重启。默认关闭。' },
 ]
 
 export function SettingsPage() {
@@ -115,6 +116,8 @@ export function SettingsPage() {
 
       <UpstreamSection s={s} />
       <ProbeSection s={s} />
+      <ModelsSection s={s} />
+      <UpdatesSection />
       <ProxySection s={s} />
     </div>
   )
@@ -206,6 +209,82 @@ function ProbeSection({ s }: { s: SettingsView }) {
         checked={s.window_probe}
         onChange={(v) => save.mutate({ window_probe: v })}
       />
+    </section>
+  )
+}
+
+function ModelsSection({ s }: { s: SettingsView }) {
+  const save = useSaveSettings()
+  const [models, setModels] = useState(s.banned_models.join('\n'))
+  const [sub, setSub] = useState(s.banned_substring)
+  const dirty = models !== s.banned_models.join('\n') || sub !== s.banned_substring
+  return (
+    <section className="card sec">
+      <h3>模型封锁</h3>
+      <p className="dim" style={{ margin: 0 }}>
+        命中的模型在网关本机直接返回 400，不会发往上游；同时从 `/v1/models` 列表里隐藏。精确名单优先于封锁子串，白名单（`allowed_models` / `allowed_prefixes`，默认空）又会覆盖两者。
+      </p>
+      <div className="field">
+        <label>精确封锁的模型（每行一个，大小写不敏感）</label>
+        <textarea className="input mono" rows={4} value={models} onChange={(e) => setModels(e.target.value)} placeholder={'gpt-5.5\ndeepseek-v4-pro'} />
+      </div>
+      <div className="field">
+        <label>封锁子串（模型名包含它就拒绝，留空 = 关闭）</label>
+        <input className="input mono" value={sub} onChange={(e) => setSub(e.target.value)} placeholder="image-alpha" />
+      </div>
+      {save.isError && <div className="err">{(save.error as Error).message}</div>}
+      <div className="row end">
+        <button
+          className="btn primary"
+          disabled={!dirty || save.isPending}
+          onClick={() => save.mutate({ banned_models: models.split(/[\s,]+/).filter(Boolean), banned_substring: sub })}
+        >
+          保存封锁名单
+        </button>
+      </div>
+    </section>
+  )
+}
+
+function UpdatesSection() {
+  const qc = useQueryClient()
+  const q = useQuery({ queryKey: ['updates'], queryFn: () => get<UpdateStatus>('/api/v2/updates'), retry: false, refetchInterval: 60_000 })
+  const check = useMutation({
+    mutationFn: () => post<UpdateStatus>('/api/v2/updates/check', {}),
+    onSuccess: (st) => qc.setQueryData(['updates'], st),
+  })
+  const st = q.data
+  return (
+    <section className="card sec">
+      <div className="row">
+        <h3>更新检查</h3>
+        <span className="spacer" />
+        <button className="btn sm" disabled={check.isPending} onClick={() => check.mutate()}>
+          {check.isPending ? '检查中…' : '立即检查'}
+        </button>
+      </div>
+      <p className="dim" style={{ margin: 0 }}>
+        只查询 GitHub Releases 并显示版本，不会下载或替换任何文件。默认关闭；开启后后台每天最多检查一次。
+      </p>
+      {q.isError && <div className="dim">更新检查接口不可用。</div>}
+      {st && (
+        <div className="row dim">
+          <span>当前版本 {st.current_version}</span>
+          {st.latest_version && (
+            <span>
+              最新 {st.latest_version}
+              {st.update_available ? <span className="badge cooling"> 有新版本</span> : null}
+            </span>
+          )}
+          {st.last_attempt ? <span>上次检查 {st.last_attempt}</span> : <span>尚未检查</span>}
+          {st.last_error ? <span className="err">{st.last_error}</span> : null}
+          {st.release_url ? (
+            <a href={st.release_url} target="_blank" rel="noreferrer">
+              发行页
+            </a>
+          ) : null}
+        </div>
+      )}
     </section>
   )
 }

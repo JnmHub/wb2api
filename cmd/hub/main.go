@@ -42,11 +42,15 @@ import (
 	"wb2api/internal/scheduler"
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/store/settings"
+	"wb2api/internal/updates"
 	"wb2api/internal/upstream"
 	"wb2api/internal/usagedb"
 	"wb2api/internal/usageest"
 	"wb2api/internal/webui"
 )
+
+// version is what the update checker compares against.
+const version = "2.0.0"
 
 func envOr(name, def string) string {
 	if v := os.Getenv(name); v != "" {
@@ -225,6 +229,25 @@ func main() {
 	}
 	(&api.Operations{Ops: opsClient, Pool: p, Prober: h, Scheduler: sched, Activity: activityLog}).Register(mux, auth.Require)
 	(&api.Settings{Store: st, Pool: p, Realm: realmSw, Guards: h.Guards, Catalog: cat}).Register(mux, auth.Require)
+	checker := &updates.Checker{Current: version, Enabled: st.UpdateCheckEnabled, Store: st, Log: log}
+	(&api.Updates{Checker: checker}).Register(mux, auth.Require)
+	go func() {
+		select {
+		case <-time.After(30 * time.Second):
+		case <-bg.Done():
+			return
+		}
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+		for {
+			checker.Check(bg, false)
+			select {
+			case <-t.C:
+			case <-bg.Done():
+				return
+			}
+		}
+	}()
 	(&api.Logs{Ring: logRing}).Register(mux, auth.Require)
 	ui, err := webui.New(webui.Dist())
 	if err != nil {
