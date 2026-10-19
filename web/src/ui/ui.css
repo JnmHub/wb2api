@@ -106,6 +106,87 @@ body {
   margin: 0 auto;
 }
 
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.stat-row {
+  margin-bottom: 12px;
+}
+
+.stat-tile .ant-statistic-title {
+  margin-bottom: 2px;
+}
+
+.stat-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.stat-title i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.toolbar-card {
+  margin-bottom: 12px;
+}
+
+.acct-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.acct-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ant-color-primary, #005d8f);
+  background: var(--ant-color-primary-bg, #e6f4ff);
+  flex: none;
+}
+
+.acct-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.acct-name a {
+  color: var(--ant-color-text, #1c1c1e);
+}
+
+.acct-name a:hover {
+  color: var(--ant-color-primary, #005d8f);
+}
+
+.acct-sub {
+  font-size: 11px;
+  color: var(--ant-color-text-tertiary, #71717a);
+}
+
+.acct-warn {
+  color: var(--ant-color-warning, #b45309);
+  font-size: 12px;
+}
+
 /* The old page components keep their own layout; in the antd shell they must
    not add a second scroll container or their own padding. */
 .app-page > .page,
@@ -216,4 +297,15 @@ body {
 
 [data-theme='dark'] .mono {
   color: inherit;
+}
+
+[data-theme='dark'] .selbar {
+  background: #1c1c1f;
+  border-color: #2c2c30;
+  color: #f4f4f6;
+}
+
+[data-theme='dark'] .acct-avatar {
+  background: #0b3a52;
+  color: #9fdcff;
 }

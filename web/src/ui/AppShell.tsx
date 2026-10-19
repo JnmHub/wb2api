@@ -67,9 +67,9 @@ export function AppShell({
             <Menu
               key={g.key}
               mode="inline"
-              theme={mode}
               selectedKeys={[tab]}
               onClick={(e) => onTab(e.key as Tab)}
+              style={{ background: 'transparent' }}
               items={[
                 {
                   type: 'group',
