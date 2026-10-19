@@ -175,6 +175,10 @@ func main() {
 	responsesH := &openai.Responses{Chat: h}
 	mux.Handle("/v1/responses", responsesH)
 	mux.Handle("/responses", responsesH)
+	messagesH := &openai.Messages{Chat: h}
+	for _, p := range []string{"/v1/messages", "/messages", "/v1/messages/count_tokens", "/messages/count_tokens"} {
+		mux.Handle(p, messagesH)
+	}
 	(&openai.Info{Chat: h, Pool: p, Catalog: cat}).Register(mux)
 	mux.HandleFunc("GET /realm", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

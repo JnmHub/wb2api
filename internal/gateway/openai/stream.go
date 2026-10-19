@@ -3,12 +3,15 @@ package openai
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 	"unicode"
 
@@ -425,13 +428,16 @@ func (h *Handler) collect(r *http.Request, cancelUp func(), idleD time.Duration,
 		reasoning bytes.Buffer
 		tools     = map[int]*aggTool{}
 		est       tokenEstimator
+		sawDone   bool
 		res       = &collected{meta: streamMeta{model: model}, finish: "stop"}
 	)
 	for {
 		line, err := readLine(br, &acc2)
 		if len(line) > 0 {
 			idle.Reset(idleD)
-			if data := sseData(line); data != nil && !bytes.Equal(data, []byte("[DONE]")) {
+			if data := sseData(line); data != nil && bytes.Equal(data, []byte("[DONE]")) {
+				sawDone = true
+			} else if data != nil {
 				now := time.Now()
 				if res.firstAt.IsZero() {
 					res.firstAt = now
@@ -479,9 +485,7 @@ func (h *Handler) collect(r *http.Request, cancelUp func(), idleD time.Duration,
 										if tc.ID != "" {
 											t.id = tc.ID
 										}
-										if tc.Function.Name != "" {
-											t.name = tc.Function.Name
-										}
+										t.name += tc.Function.Name
 										t.args.WriteString(tc.Function.Arguments)
 									}
 								}
@@ -507,12 +511,27 @@ func (h *Handler) collect(r *http.Request, cancelUp func(), idleD time.Duration,
 		idxs = append(idxs, i)
 	}
 	sort.Ints(idxs)
+	// A stream cut off by max_tokens or a dropped connection leaves the last call
+	// with half-written JSON: drop such calls instead of handing the client
+	// unparsable arguments. Placeholders with no function name are dropped too.
+	truncatedStream := res.finish == "length" || !sawDone
 	for _, i := range idxs {
 		t := tools[i]
-		res.calls = append(res.calls, map[string]any{"id": t.id, "type": "function",
+		if t.name == "" {
+			continue
+		}
+		if truncatedStream && truncatedArguments(t.args.String()) {
+			continue
+		}
+		id := t.id
+		if id == "" {
+			id = newCallID()
+		}
+		res.calls = append(res.calls, map[string]any{"id": id, "type": "function",
 			"function": map[string]any{"name": t.name, "arguments": t.args.String()}})
 	}
-	if repair && len(res.calls) == 0 {
+	if repair && len(tools) == 0 {
+		// a call the model printed instead of emitting arrives as content
 		if rc, clean, ok := leak.RepairText(res.content); ok {
 			res.content = clean
 			for _, c := range rc {
@@ -521,6 +540,16 @@ func (h *Handler) collect(r *http.Request, cancelUp func(), idleD time.Duration,
 			}
 			res.finish = "tool_calls"
 		}
+	}
+	switch {
+	case len(res.calls) > 0:
+		if res.finish == "stop" || res.finish == "" {
+			res.finish = "tool_calls"
+		}
+	case res.finish == "tool_calls":
+		// every call was a placeholder: end normally instead of leaving the
+		// client waiting for a call that never comes
+		res.finish = "stop"
 	}
 	if (res.usage == nil || usageTotal(res.usage) == 0) && est.tokens() > 0 {
 		n := est.tokens()
@@ -582,4 +611,16 @@ func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp fun
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(resp)
 	h.emit(ev)
+}
+
+// truncatedArguments: a non-empty argument string that is not valid JSON.
+func truncatedArguments(raw string) bool {
+	t := strings.TrimSpace(raw)
+	return t != "" && !json.Valid([]byte(t))
+}
+
+func newCallID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return "call_" + hex.EncodeToString(b[:])
 }

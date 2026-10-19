@@ -74,9 +74,27 @@ func (q *request) demote(h *Handler, acc *pool.Account) {
 	}
 }
 
+// httpErr reports an error in the style of the endpoint being served.
+func (q *request) httpErr(status int, msg, typ string) {
+	if q.anth {
+		writeAnthropicError(q.w, status, msg)
+		return
+	}
+	writeError(q.w, status, msg, typ)
+}
+
+// rateErr answers 429 with Retry-After in the endpoint's style.
+func (q *request) rateErr(wait int, message, detail string) {
+	if q.anth {
+		writeAnthropicRateLimited(q.w, wait, message, detail)
+		return
+	}
+	writeRateLimited(q.w, wait, message, detail)
+}
+
 // run serves one parsed request: payload is a chat-completions body.
 func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, key *settings.APIKey, payload *jsonx.Obj, opts runOpts) {
-	q := &request{r: r, w: w, start: start, payload: payload, refreshed: map[string]bool{}}
+	q := &request{r: r, w: w, start: start, payload: payload, refreshed: map[string]bool{}, anth: opts.anthropic}
 	q.at.tried = map[string]struct{}{}
 	q.at.charged = map[string]bool{}
 	applyBackgroundAlias(payload, h.logger())
@@ -99,15 +117,15 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	if key != nil {
 		q.keyID = key.ID
 		if msg := crossRealmMessage(q.model, q.realm, key); msg != "" {
-			writeError(w, http.StatusBadRequest, msg, "invalid_request_error")
+			q.httpErr(http.StatusBadRequest, msg, "invalid_request_error")
 			return
 		}
 		if !key.AllowsModel(q.model) {
-			writeError(w, http.StatusBadRequest, keyModelMessage(key, q.model), "invalid_request_error")
+			q.httpErr(http.StatusBadRequest, keyModelMessage(key, q.model), "invalid_request_error")
 			return
 		}
 	} else if msg := crossRealmMessage(q.model, q.realm, nil); msg != "" {
-		writeError(w, http.StatusBadRequest, msg, "invalid_request_error")
+		q.httpErr(http.StatusBadRequest, msg, "invalid_request_error")
 		return
 	}
 	if ok, release, limit := acquireKey(key); !ok {
@@ -116,7 +134,7 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 			name = key.ID
 		}
 		h.emit(UsageEvent{At: start, Model: q.model, KeyID: q.keyID, Stream: q.stream, Outcome: "failed", Status: http.StatusTooManyRequests, Elapsed: time.Since(start)})
-		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("Rate limit reached: API key '%s' reached its concurrency limit (%d in flight); retry shortly", name, limit), "rate_limit_error")
+		q.httpErr(http.StatusTooManyRequests, fmt.Sprintf("Rate limit reached: API key '%s' reached its concurrency limit (%d in flight); retry shortly", name, limit), "rate_limit_error")
 		return
 	} else {
 		defer release()
@@ -142,7 +160,7 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	if rem := h.guard().HoldRemaining(q.realm); rem > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(int(rem.Seconds())+1))
 		h.emit(UsageEvent{At: start, Model: q.model, KeyID: q.keyID, Stream: q.stream, Outcome: "failed", Status: http.StatusTooManyRequests, Elapsed: time.Since(start)})
-		writeError(w, http.StatusTooManyRequests, risk.HoldMessage(rem), "rate_limit_error")
+		q.httpErr(http.StatusTooManyRequests, risk.HoldMessage(rem), "rate_limit_error")
 		return
 	}
 
@@ -155,11 +173,11 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 		// a pinned route is served by that one account alone, with no failover
 		ref := pinnedRef(r)
 		if pinned.Realm != q.realm {
-			writeError(w, http.StatusConflict, fmt.Sprintf("pinned account '%s' belongs to realm %s, request targets %s", ref, pinned.Realm, q.realm), "invalid_request_error")
+			q.httpErr(http.StatusConflict, fmt.Sprintf("pinned account '%s' belongs to realm %s, request targets %s", ref, pinned.Realm, q.realm), "invalid_request_error")
 			return
 		}
 		if !pinned.Ready(q.model, time.Now()) {
-			writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("pinned account '%s' is not usable right now: %s", ref, pinned.UnavailableReason(q.model, time.Now())), "invalid_request_error")
+			q.httpErr(http.StatusServiceUnavailable, fmt.Sprintf("pinned account '%s' is not usable right now: %s", ref, pinned.UnavailableReason(q.model, time.Now())), "invalid_request_error")
 			return
 		}
 		max = 1
@@ -232,7 +250,7 @@ func (h *Handler) finishError(q *request, acc *pool.Account, res result) {
 	}
 	h.emit(UsageEvent{At: q.start, Model: q.model, Account: acc.UID, KeyID: q.keyID, Stream: q.stream,
 		Outcome: "failed", Status: res.status, Elapsed: time.Since(q.start)})
-	writeError(q.w, res.status, fmt.Sprintf("upstream %d: %s", res.status, detail), typ)
+	q.httpErr(res.status, fmt.Sprintf("upstream %d: %s", res.status, detail), typ)
 }
 
 func truncate(s string, n int) string {
@@ -657,35 +675,35 @@ func (h *Handler) fail(q *request) {
 		switch {
 		case a.kind == failTLS:
 			emit(http.StatusBadGateway, a.lastUID)
-			writeError(q.w, http.StatusBadGateway, "upstream TLS verification failed: "+a.lastErr.Error()+
+			q.httpErr(http.StatusBadGateway, "upstream TLS verification failed: "+a.lastErr.Error()+
 				" (a TLS-inspecting proxy needs its CA in WB_CA_BUNDLE)", "invalid_request_error")
 			return
 		case a.kind == failLocalNet:
 			emit(http.StatusServiceUnavailable, a.lastUID)
-			writeError(q.w, http.StatusServiceUnavailable, fmt.Sprintf("本机网络不可用：%s - 请检查本机网络/代理后重试（本次不计入账号熔断）",
+			q.httpErr(http.StatusServiceUnavailable, fmt.Sprintf("本机网络不可用：%s - 请检查本机网络/代理后重试（本次不计入账号熔断）",
 				truncate(a.lastErr.Error(), 180)), "invalid_request_error")
 			return
 		case a.last429:
 			emit(http.StatusTooManyRequests, a.lastUID)
-			writeRateLimited(q.w, h.retryAfter(q.realm, q.model), "", a.last429Detail)
+			q.rateErr(h.retryAfter(q.realm, q.model), "", a.last429Detail)
 			return
 		case a.last403Detail != "":
 			emit(http.StatusForbidden, a.lastUID)
-			writeError(q.w, http.StatusForbidden, "upstream 403: "+a.last403Detail, "invalid_request_error")
+			q.httpErr(http.StatusForbidden, "upstream 403: "+a.last403Detail, "invalid_request_error")
 			return
 		case a.kind == failHTTP:
 			emit(a.lastStatus, a.lastUID)
-			writeError(q.w, a.lastStatus, fmt.Sprintf("upstream %d: %s", a.lastStatus, truncate(string(a.lastBody), 600)), "server_error")
+			q.httpErr(a.lastStatus, fmt.Sprintf("upstream %d: %s", a.lastStatus, truncate(string(a.lastBody), 600)), "server_error")
 			return
 		case a.kind == failTransport:
 			emit(http.StatusBadGateway, a.lastUID)
-			writeError(q.w, http.StatusBadGateway, fmt.Sprintf("upstream unreachable: %v", a.lastErr), "server_error")
+			q.httpErr(http.StatusBadGateway, fmt.Sprintf("upstream unreachable: %v", a.lastErr), "server_error")
 			return
 		}
 	}
 	if throttled, wait := h.realmModelThrottled(q.realm, q.model); throttled {
 		emit(http.StatusTooManyRequests, "")
-		writeRateLimited(q.w, wait, "", "usage exceeds frequency limit")
+		q.rateErr(wait, "", "usage exceeds frequency limit")
 		return
 	}
 	if h.Guards != nil {
@@ -700,14 +718,14 @@ func (h *Handler) fail(q *request) {
 				reason = fmt.Sprintf("every usable account reached today's token limit for %s (%d per account); the model resumes after local midnight", q.model, b.Limit)
 			}
 			emit(http.StatusTooManyRequests, "")
-			writeRateLimited(q.w, untilLocalMidnight(), reason, "")
+			q.rateErr(untilLocalMidnight(), reason, "")
 			return
 		}
 	}
 	emit(http.StatusServiceUnavailable, "")
 	msg := fmt.Sprintf("no usable account for realm '%s': all are disabled, cooling down, expired or parked by the daily token limit%s - add or enable one at the dashboard (/)",
 		q.realm, h.unavailableDetail(q.realm, q.model))
-	writeError(q.w, http.StatusServiceUnavailable, msg, "server_error")
+	q.httpErr(http.StatusServiceUnavailable, msg, "server_error")
 }
 
 // ---------------------------------------------------- outbound identity switch

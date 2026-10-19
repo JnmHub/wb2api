@@ -258,6 +258,7 @@ type request struct {
 	at         attemptState
 	effortVal  string
 	effortDone bool
+	anth       bool
 
 	refreshed       map[string]bool
 	degradedRetried bool
@@ -403,6 +404,7 @@ type runOpts struct {
 	stream      bool
 	sessionKey  string
 	sink        sinkFunc
+	anthropic   bool // report errors in the Anthropic envelope
 }
 
 func (h *Handler) emit(ev UsageEvent) {

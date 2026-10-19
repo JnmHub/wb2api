@@ -102,7 +102,7 @@ func usageJSON(u *jsonx.Obj) []byte {
 func (h *Handler) responsesWhole(q *request, acc *pool.Account, cancel context.CancelFunc, idle time.Duration,
 	body io.Reader, model string, info responses.Info) {
 
-	res := h.collect(q.r, cancel, idle, body, model, false)
+	res := h.collect(q.r, cancel, idle, body, model, true)
 	ev := res.usageEvent(acc, model, q.keyID, q.effort(h), q.start)
 	if res.err != nil {
 		ev.Outcome, ev.Status = "upstream_aborted", http.StatusBadGateway
