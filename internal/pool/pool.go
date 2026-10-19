@@ -34,6 +34,9 @@ type Account struct {
 	maxInflight  atomic.Int32 // 0 = unlimited
 	weight       atomic.Int32
 
+	owner atomic.Pointer[Pool] // set when the account joins a pool; used to announce changes
+	updMu sync.Mutex           // serialises read-modify-write of the record (Pool.Update)
+
 	mu         sync.Mutex
 	modelCool  map[string]int64 // model -> unix nanoseconds
 	disabledMd map[string]bool  // manual per-model deny list (lower-case)
@@ -68,6 +71,7 @@ func (a *Account) SetRecord(rec *accounts.Record) {
 	a.mu.Lock()
 	a.disabledMd = dm
 	a.mu.Unlock()
+	a.touch()
 }
 
 // Record returns the current persisted record (treat as read-only).
@@ -119,7 +123,7 @@ func (a *Account) Acquire() { a.inflight.Add(1) }
 func (a *Account) Release() { a.inflight.Add(-1) }
 
 // CoolDown parks the whole account until t.
-func (a *Account) CoolDown(until time.Time) { a.cooldownTo.Store(until.UnixNano()) }
+func (a *Account) CoolDown(until time.Time) { a.cooldownTo.Store(until.UnixNano()); a.touch() }
 
 // CoolDownModel parks one model on this account until t.
 func (a *Account) CoolDownModel(model string, until time.Time) {
@@ -129,16 +133,17 @@ func (a *Account) CoolDownModel(model string, until time.Time) {
 	}
 	a.modelCool[model] = until.UnixNano()
 	a.mu.Unlock()
+	a.touch()
 }
 
 // MarkTokenBad flags the credential as unusable (needs re-login or refresh).
-func (a *Account) MarkTokenBad(bad bool) { a.tokenBad.Store(bad) }
+func (a *Account) MarkTokenBad(bad bool) { a.tokenBad.Store(bad); a.touch() }
 
 // SetExpiresAt records a refreshed token expiry (unix seconds).
-func (a *Account) SetExpiresAt(sec int64) { a.expiresAt.Store(sec) }
+func (a *Account) SetExpiresAt(sec int64) { a.expiresAt.Store(sec); a.touch() }
 
 // SetEnabled toggles the account.
-func (a *Account) SetEnabled(on bool) { a.enabled.Store(on) }
+func (a *Account) SetEnabled(on bool) { a.enabled.Store(on); a.touch() }
 
 // NoteResult updates the counters.
 func (a *Account) NoteResult(ok bool) {
@@ -167,6 +172,8 @@ type snapshot struct {
 type Pool struct {
 	snap    atomic.Pointer[snapshot]
 	cursors sync.Map // realm -> *atomic.Uint64
+	notify  atomic.Pointer[func(uid string)]
+	writeMu sync.Mutex // serialises membership changes (Add / Remove / Replace)
 }
 
 // New builds a pool from records.
@@ -182,6 +189,15 @@ func New(recs []*accounts.Record) *Pool {
 
 // Replace swaps in a new account list (copy-on-write).
 func (p *Pool) Replace(list []*Account) {
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
+	p.replaceLocked(list)
+}
+
+func (p *Pool) replaceLocked(list []*Account) {
+	for _, a := range list {
+		a.owner.Store(p)
+	}
 	s := &snapshot{
 		all:     list,
 		byRealm: map[string][]*Account{},
@@ -260,6 +276,7 @@ func (a *Account) NoteRestricted(now time.Time, cooldown time.Duration) *account
 	rec := *a.Record()
 	rec.RestrictedUntil = float64(until.UnixNano()) / 1e9
 	a.rec.Store(&rec)
+	a.touch()
 	return &rec
 }
 

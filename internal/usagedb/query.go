@@ -324,6 +324,7 @@ func (d *DB) Recent(limit int, beforeID int64, f Filter) ([]Request, error) {
 
 // DayCounters are one day's consumption, the input of the daily limit guards.
 type DayCounters struct {
+	RequestsByAccount    map[string]int64
 	TokensByAccount      map[string]int64
 	CreditsByAccount     map[string]float64
 	TokensByAccountModel map[string]map[string]int64
@@ -334,16 +335,16 @@ type DayCounters struct {
 // the exact request rows.
 func (d *DB) Day(start time.Time) (DayCounters, error) {
 	out := DayCounters{
-		TokensByAccount: map[string]int64{}, CreditsByAccount: map[string]float64{},
+		RequestsByAccount: map[string]int64{}, TokensByAccount: map[string]int64{}, CreditsByAccount: map[string]float64{},
 		TokensByAccountModel: map[string]map[string]int64{},
 	}
 	var rows *sql.Rows
 	var err error
 	if isMidnight(start) {
-		rows, err = d.sql.Query(`SELECT account, model, SUM(total), SUM(credit) FROM daily WHERE day >= ? AND account <> ''
+		rows, err = d.sql.Query(`SELECT account, model, SUM(total), SUM(credit), SUM(requests) FROM daily WHERE day >= ? AND account <> ''
 		  GROUP BY account, model`, localDay(start))
 	} else {
-		rows, err = d.sql.Query(`SELECT account, model, SUM(total), SUM(credit) FROM requests WHERE at >= ? AND account <> ''
+		rows, err = d.sql.Query(`SELECT account, model, SUM(total), SUM(credit), COUNT(*) FROM requests WHERE at >= ? AND account <> ''
 		  GROUP BY account, model`, epoch(start))
 	}
 	if err != nil {
@@ -352,11 +353,12 @@ func (d *DB) Day(start time.Time) (DayCounters, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var acc, model string
-		var tok int64
+		var tok, reqs int64
 		var cr float64
-		if err := rows.Scan(&acc, &model, &tok, &cr); err != nil {
+		if err := rows.Scan(&acc, &model, &tok, &cr, &reqs); err != nil {
 			return out, err
 		}
+		out.RequestsByAccount[acc] += reqs
 		out.TokensByAccount[acc] += tok
 		out.CreditsByAccount[acc] += cr
 		if out.TokensByAccountModel[acc] == nil {

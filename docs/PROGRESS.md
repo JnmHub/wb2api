@@ -24,6 +24,9 @@
 | `internal/usage` | 用量块解析（`prompt/completion/reasoning/cached/total/credit`，缓存命中取各别名里第一个正值） | 单测 |
 | `internal/usagedb` | **SQLite 用量库**：异步批写（请求路径只入队，队满丢弃并计数，绝不阻塞）、写入时增量维护日/时预聚合、`usage.jsonl` 断点续导、按范围/模型/账号/Key 聚合、按小时/天序列、游标分页的请求流水、当日计数（限额护栏的输入） | 与 Python 对 496 行样本日志**独立算术**的合计/分模型/分账号逐项一致；预聚合与精确扫描两条路径互相校验；断点续导、半行不导、并发读写、队满丢弃均有测试 |
 | `internal/api` | `/api/v2/usage/{summary,series,recent}`（`today/week/month/all/custom`，周一为一周起点，均走面板鉴权） | 8 个测试 |
+| `internal/events` | SSE 事件总线：发布永不阻塞、慢消费者丢事件后收到 `resync`、`Last-Event-ID` 重放、心跳、按键合并（`Coalescer`） | 5 个测试 |
+| `internal/jobs` | 后台批量任务：有界并发、进度/取消、单项失败（含 panic）不拖垮整批、失败清单有上限 | 6 个测试 |
+| `internal/api/accounts` | **账号管理 API**：服务端分页/过滤/排序（状态、区域、搜索 uid/昵称/备注、今日 token/请求数…）、汇总、详情、PATCH（校验+落盘）、删除、**批量任务**（启停/权重/备注/代理槽/身份/清冷却/清风控/删除/刷新 token；可按"当前筛选结果全部"而不只是可见页；破坏性操作须 `confirm`）、变更经事件总线合并推送 | 16 个测试；**5000 账号下"按状态过滤+按名排序取 50 条"单次请求 1.6 ms**；真实二进制端到端：2000 账号分页/批量禁用 1000 个/SSE 推送/CSRF/落盘 |
 | `cmd/hub` `cmd/mockup` `cmd/loadtest` | 网关、模拟上游、压测器 | 手动跑通；**端到端实测**：200 个请求→用量库恰好 200 行、8000 completion tokens、TPS≈192（模拟上游 200/s），重启后同一 Cookie、同一数据 |
 
 `go vet`、`gofmt` 干净；`go test ./...` 全绿。本机没有 C 编译器，`-race` 跑不了，需在 CI（Linux）补。
@@ -102,7 +105,7 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 - **账号失败治理状态机**：软限流阶梯（600 s→2 h）、无作用域 429 的 60 s 阶梯、连续失败熔断（30 min→6 h）、降级窗口、`fails` 计数衰减（`WB_FAIL_WINDOW`）、402 停放到本地 04:00、`model_caps`（6004 落盘）、窗口探针。**目前 429 一律冷却该模型 60 s、5xx 冷却账号 5 s，是占位策略。**
 - 调度偏好：手动权重 / 临期积分 / 剩余用量加权轮询、会话亲和（`SessionAffinity`、`affinity_route`）、`apply_daily_guards` 四条限额护栏、`WB_BACKGROUND_MODEL_*` 后台模型重定向、模型封锁表、`/u/<ref>/v1/*` 定址调用。
 - 限额护栏接入用量库（`usagedb.Day` 已提供当日计数，调度侧尚未使用）；`normalize_usage_cache_aliases`；Responses API / Anthropic Messages。
-- 账号管理 API（`/api/v2/accounts`：分页/筛选/批量）、设置 API、SSE 事件总线、OAuth 登录流程；新前端。
+- 设置 API、API Key 管理 API、日志 API、OAuth 登录/导入导出、积分刷新/签到/每日活跃/账号测试（批量接口里先返回 501）；**新前端**。
 - TLS 指纹（JA3/JA4）：现在用 Go 标准 `crypto/tls`，与旧版 Python 的 OpenSSL 指纹不同（风险 R1，Phase 0 的真实上游验证仍未做）。
 - 90% 冷却时的选号从线性扫描改为就绪集合。
 

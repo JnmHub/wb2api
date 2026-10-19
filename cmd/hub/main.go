@@ -24,8 +24,10 @@ import (
 	"time"
 
 	"wb2api/internal/api"
+	"wb2api/internal/events"
 	"wb2api/internal/gateway/leak"
 	"wb2api/internal/gateway/openai"
+	"wb2api/internal/jobs"
 	"wb2api/internal/panelauth"
 	"wb2api/internal/pool"
 	"wb2api/internal/refresh"
@@ -94,6 +96,8 @@ func main() {
 		log.Error("cannot create the usage directory", "dir", *usageDir, "err", err)
 		os.Exit(1)
 	}
+	bg, stopBG := context.WithCancel(context.Background())
+	defer stopBG()
 	udb, err := usagedb.Open(filepath.Join(*usageDir, "usage.db"), 0)
 	if err != nil {
 		log.Error("cannot open the usage database", "err", err)
@@ -102,8 +106,14 @@ func main() {
 	defer udb.Close()
 	realmOf := api.RealmOf(p)
 	trace := os.Getenv("WB_TRACE") == "1"
+	today := &api.Today{}
+	if err := today.Seed(udb); err != nil {
+		log.Warn("could not seed today's counters", "err", err)
+	}
 	h.OnUsage = func(ev openai.UsageEvent) {
-		udb.Record(api.EventFromGateway(ev, realmOf))
+		ue := api.EventFromGateway(ev, realmOf)
+		udb.Record(ue)
+		today.Add(ue)
 		if trace {
 			log.Info("usage", "ttft_ms", ev.TTFT.Milliseconds(), "elapsed_ms", ev.Elapsed.Milliseconds(), "chunks", ev.Chunks, "outcome", ev.Outcome)
 		}
@@ -143,6 +153,14 @@ func main() {
 	auth.Register(mux, "/api/v2/session")
 	mux.Handle("/v1/chat/completions", h)
 	(&api.Usage{DB: udb}).Register(mux, auth.Require)
+	bus := events.New(512)
+	jobMgr := &jobs.Manager{Workers: 4, OnProgress: func(j jobs.Job) { bus.Publish("job.progress", j) }}
+	accountsAPI := &api.Accounts{
+		Pool: p, Today: today, Persist: persist, Refresher: refresher, Jobs: jobMgr, Bus: bus,
+		Delete: accounts.Delete,
+	}
+	accountsAPI.Register(mux, auth.Require)
+	accountsAPI.StartEvents(bg, time.Second)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "accounts": p.Len()})
@@ -168,8 +186,6 @@ func main() {
 		ReadHeaderTimeout: 15 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-	bg, stopBG := context.WithCancel(context.Background())
-	defer stopBG()
 	go refresher.Run(bg)
 	go func() {
 		log.Info("listening", "addr", addr, "accounts", p.Len(), "dir", *accountsDir, "leak_filter", map[leak.Mode]string{leak.Precise: "precise", leak.Legacy: "legacy"}[mode])
