@@ -172,6 +172,58 @@ table.t td.num, table.t th.num { text-align: right; }
 .login .card { width: min(380px, 100%); padding: 26px; display: flex; flex-direction: column; gap: 14px; }
 .err { color: var(--bad); font-size: 13px; min-height: 1.2em; }
 
+/* ---------------------------------------------------------- settings */
+.page.settings { max-width: 1180px; width: 100%; margin: 0 auto; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.row.end { justify-content: flex-end; }
+.card.sec { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.card.sec h3 { margin: 0; font-size: 15px; }
+.toggle { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.toggle > span { display: flex; flex-direction: column; gap: 2px; }
+.toggle.compact { align-items: center; gap: 4px; }
+.hint { font-size: 12px; font-weight: 400; }
+.small { font-size: 12px; }
+details summary { cursor: pointer; }
+.limits { display: flex; flex-direction: column; gap: 8px; }
+.lhead, .lrow { display: grid; grid-template-columns: minmax(220px, 2fr) 100px 100px 100px 72px; gap: 8px; align-items: center; }
+.lhead { font-size: 12px; color: var(--dim); }
+.lrow .input { width: 100%; }
+.switches { display: flex; flex-direction: column; gap: 10px; }
+.keytable { display: flex; flex-direction: column; }
+.keyrow {
+  display: grid; grid-template-columns: minmax(170px, 1.8fr) 92px 110px 110px 44px auto; gap: 10px; align-items: center;
+  padding: 8px 0; border-bottom: 1px solid var(--border);
+}
+.keyrow .actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.pad { padding: 12px; }
+p.warn { background: var(--warn-bg); color: var(--warn); padding: 8px 10px; border-radius: 6px; margin: 0; }
+.slotrow { display: grid; grid-template-columns: 48px minmax(100px, 1fr) minmax(220px, 2fr) 44px 70px; gap: 8px; align-items: center; }
+.catalogs { display: flex; flex-direction: column; gap: 6px; }
+.catrow { display: grid; grid-template-columns: 60px 150px 90px 160px auto; gap: 8px; align-items: center; }
+.modal.wide { width: min(680px, 94vw); }
+.modal { max-height: 70vh; overflow: auto; }
+.secret { background: var(--panel-2); padding: 10px 12px; border-radius: 6px; word-break: break-all; }
+a.btn { color: var(--text); text-decoration: none; display: inline-block; }
+
+/* -------------------------------------------------------------- logs */
+.page.logs { gap: 10px; }
+.logbox {
+  padding: 8px 10px; overflow: auto; flex: 1; min-height: 240px;
+  font-size: 12.5px; line-height: 1.55; background: var(--panel);
+}
+.logline { white-space: pre-wrap; word-break: break-word; }
+.logline .lvl { font-weight: 650; }
+.logline .tag { color: var(--accent); }
+.logline.warn, .logline.warn .lvl { color: var(--warn); }
+.logline.error, .logline.error .lvl { color: var(--bad); }
+.logbox.small { min-height: 0; max-height: 180px; font-size: 12px; background: var(--panel-2); padding: 8px 10px; border-radius: 6px; }
+
+/* ------------------------------------------------------ account ops */
+.actionrow { display: flex; flex-wrap: wrap; gap: 6px; }
+.actionresult { padding: 8px 10px; border-radius: 6px; background: var(--panel-2); font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+.actionresult.ok { background: var(--ok-bg); color: var(--ok); }
+.actionresult.bad { background: var(--bad-bg); color: var(--bad); }
+
 /* narrower windows drop the least useful column (outbound identity) first */
 @media (max-width: 1180px) {
   .thead, .trow { grid-template-columns: 24px minmax(150px, 2.2fr) 64px 118px 52px 76px 70px 92px 44px; }
@@ -186,4 +238,10 @@ table.t td.num, table.t th.num { text-align: right; }
   .thead > :nth-child(9), .trow > :nth-child(9) { display: none; }
   .topbar { padding: 0 12px; gap: 8px; }
   .page { padding: 12px; }
+  .lhead, .lrow { grid-template-columns: minmax(150px, 1fr) 76px 76px 76px 64px; }
+  .keyrow { grid-template-columns: minmax(150px, 1fr) 80px 90px 44px auto; }
+  .keyrow > :nth-child(3) { display: none; }
+  .catrow { grid-template-columns: 56px 130px 80px auto; }
+  .catrow > :nth-child(4) { display: none; }
+  .tabs { overflow-x: auto; }
 }

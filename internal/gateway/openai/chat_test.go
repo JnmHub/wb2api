@@ -386,6 +386,22 @@ func TestAuthAndKeyModelRestriction(t *testing.T) {
 	}
 }
 
+func TestAuthDisabledBypassesKeys(t *testing.T) {
+	cfg := `{"api_keys":[{"id":"a","name":"all","key":"sk-all"}],"auth_disabled":true}`
+	e := newEnv(t, sseUpstream("ok"), 1, cfg)
+	if e.h.KeyRequired() {
+		t.Fatal("KeyRequired must be false when key checking is switched off")
+	}
+	if p := readSSE(t, e.post(t, chatBody, nil)); p.content != "ok" {
+		t.Fatalf("a request without a key was rejected: %+v", p)
+	}
+	// The switch is live: turning it back off restores the check.
+	e.h.Settings.SetSwitch("auth_disabled", false)
+	if r := e.post(t, chatBody, nil); r.StatusCode != 401 {
+		t.Fatalf("key check should be back on, got %d", r.StatusCode)
+	}
+}
+
 func TestBodyTooLarge(t *testing.T) {
 	e := newEnv(t, sseUpstream("x"), 1, "")
 	e.h.MaxBody = 1024

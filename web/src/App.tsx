@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, get, onUnauthorized, post, setCsrf, type SessionInfo } from './api'
 import { AccountsPage } from './accounts/AccountsPage'
+import { LogsPage } from './logs/LogsPage'
+import { SettingsPage } from './settings/SettingsPage'
+import { TasksPage } from './tasks/TasksPage'
 import { UsagePage } from './usage/UsagePage'
 import { useEventStream } from './events'
 
@@ -151,10 +154,19 @@ function ChangePassword({ forced, onDone }: { forced?: boolean; onDone?: () => v
 
 // ------------------------------------------------------------------- shell
 
-type Tab = 'accounts' | 'usage'
+type Tab = 'accounts' | 'usage' | 'settings' | 'logs' | 'tasks'
+
+const tabs: { id: Tab; label: string }[] = [
+  { id: 'accounts', label: '账号' },
+  { id: 'usage', label: '用量' },
+  { id: 'settings', label: '设置' },
+  { id: 'logs', label: '日志' },
+  { id: 'tasks', label: '任务' },
+]
 
 function tabFromHash(): Tab {
-  return location.hash.replace('#/', '') === 'usage' ? 'usage' : 'accounts'
+  const h = location.hash.replace(/^#\/?/, '')
+  return tabs.find((t) => t.id === h)?.id ?? 'accounts'
 }
 
 function Shell() {
@@ -186,12 +198,11 @@ function Shell() {
           <i /> Hub
         </div>
         <nav className="tabs" role="tablist">
-          <button className="tab" role="tab" aria-selected={tab === 'accounts'} onClick={() => go('accounts')}>
-            账号
-          </button>
-          <button className="tab" role="tab" aria-selected={tab === 'usage'} onClick={() => go('usage')}>
-            用量
-          </button>
+          {tabs.map((t) => (
+            <button key={t.id} className="tab" role="tab" aria-selected={tab === t.id} onClick={() => go(t.id)}>
+              {t.label}
+            </button>
+          ))}
         </nav>
         <span className="spacer" />
         <button className="btn sm" onClick={() => setPw(true)}>
@@ -201,7 +212,11 @@ function Shell() {
           退出
         </button>
       </header>
-      {tab === 'accounts' ? <AccountsPage /> : <UsagePage />}
+      {tab === 'accounts' && <AccountsPage />}
+      {tab === 'usage' && <UsagePage />}
+      {tab === 'settings' && <SettingsPage />}
+      {tab === 'logs' && <LogsPage />}
+      {tab === 'tasks' && <TasksPage />}
     </div>
   )
 }

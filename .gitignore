@@ -1,4 +1,6 @@
 /bin/
+/run/
+/.scratch/
 *.exe
 *.test
 *.out

@@ -189,9 +189,11 @@ func writeRateLimited(w http.ResponseWriter, wait int, message, detail string) {
 	_, _ = w.Write(append(b, '\n'))
 }
 
-// KeyRequired reports whether any API key is configured (and so every
-// request must carry one).
-func (h *Handler) KeyRequired() bool { return len(h.activeKeys()) > 0 }
+// KeyRequired reports whether a key must be presented: any key is configured
+// and the operator has not switched key checking off.
+func (h *Handler) KeyRequired() bool {
+	return h.Settings != nil && !h.Settings.AuthDisabled() && len(h.activeKeys()) > 0
+}
 
 // Authenticate returns the matched key (nil when auth is not required).
 func (h *Handler) Authenticate(r *http.Request) (key *settings.APIKey, ok bool) {
@@ -200,6 +202,11 @@ func (h *Handler) Authenticate(r *http.Request) (key *settings.APIKey, ok bool) 
 
 // authenticate returns the matched key (nil when auth is not required).
 func (h *Handler) authenticate(r *http.Request) (key *settings.APIKey, ok bool) {
+	// The settings page's "关闭 API Key 校验" switch wins over any key: it is the
+	// only way to run the gateway open on a trusted network.
+	if h.Settings != nil && h.Settings.AuthDisabled() {
+		return nil, true
+	}
 	keys := h.activeKeys()
 	if len(keys) == 0 {
 		return nil, true

@@ -31,8 +31,16 @@
 | `internal/jobs` | 后台批量任务：有界并发、进度/取消、单项失败（含 panic）不拖垮整批、失败清单有上限 | 6 个测试 |
 | `internal/api/accounts` | **账号管理 API**：服务端分页/过滤/排序（状态、区域、搜索 uid/昵称/备注、今日 token/请求数…）、汇总、详情、PATCH（校验+落盘）、删除、**批量任务**（启停/权重/备注/代理槽/身份/清冷却/清风控/删除/刷新 token；可按"当前筛选结果全部"而不只是可见页；破坏性操作须 `confirm`）、变更经事件总线合并推送 | 16 个测试；**5000 账号下"按状态过滤+按名排序取 50 条"单次请求 1.6 ms**；真实二进制端到端：2000 账号分页/批量禁用 1000 个/SSE 推送/CSRF/落盘 |
 | `internal/webui` | 内嵌面板的静态服务：构建期预压缩（br/gzip）直接下发、哈希资源 `immutable` 长缓存、`index.html` 用 ETag 重验证（回访 304）、SPA 路由回退、`/api` `/v1` 未知路径返回 JSON 404 而不是 HTML、CSP 等安全头、路径穿越防护、前端未构建时的提示页 | 9 个测试 |
-| `web/`（Vite + React + TS + TanStack Query/Virtual） | **新面板**：登录（含"记住我"、强制改默认密码）、**虚拟滚动账号表**（按需分页取数、随机跳转只取目标页）、服务端搜索/筛选/排序、状态汇总、多选 +"选择全部符合筛选的账号"批量栏（启停/权重/备注/代理槽/身份/刷新 Token/清冷却/解除风控/删除）、后台任务进度、详情抽屉（编辑/机器码/冷却/刷新状态）、SSE 实时推送行级更新、用量页（范围/区域、KPI、柱状图、分模型/账号/Key/区域表）；页面隐藏 15 秒后自动断开事件流 | 12 个 vitest；`tsc` 严格模式零错误；**真实浏览器端到端验证**（见下） |
+| `web/`（Vite + React + TS + TanStack Query/Virtual） | **新面板**：登录（含"记住我"、强制改默认密码）、**虚拟滚动账号表**（按需分页取数、随机跳转只取目标页）、服务端搜索/筛选/排序、状态汇总、多选 +"选择全部符合筛选的账号"批量栏（启停/权重/备注/代理槽/身份/刷新 Token/刷新积分/测试/签到/每日活跃/清冷却/解除风控/删除）、后台任务进度、详情抽屉（编辑/机器码/冷却/刷新状态/账号操作与测试结果）、SSE 实时推送行级更新、用量页（范围/区域、KPI、柱状图、分模型/账号/Key/区域表）；页面隐藏 15 秒后自动断开事件流；本轮补全**设置页**（出口/模型清单/Key/限额与调度偏好/开关/上游与提示词/代理槽）、**日志页**（级别/模块/搜索/暂停/跟随/导出/清空）、**任务页**（调度器时间表、立即巡检、积分刷新状态、签到与活跃历史）、**添加账号**（浏览器登录 + 轮询）、**导入（预演报告）/导出**弹窗，`App.tsx` 五个标签的 hash 路由 | 21 个 vitest（含日志/任务/设置页渲染冒烟）；`tsc` 严格模式零错误；真实二进制下登录/设置/日志/调度/导入导出/网关/SPA 全部跑通（见下） |
 | `cmd/hub` `cmd/mockup` `cmd/loadtest` | 网关、模拟上游、压测器 | 手动跑通；**端到端实测**：200 个请求→用量库恰好 200 行、8000 completion tokens、TPS≈192（模拟上游 200/s），重启后同一 Cookie、同一数据 |
+| `internal/gateway/ratelimit` + `openai`（失败治理） | **账号失败治理阶梯**：软限流阶梯（600 s→2 h）、429 按作用域分流（账号级 / 模型级 / 6004 额度窗口落盘 `model_caps`）、402 停到本地次日 04:00、5xx 与客户端断连熔断（30 min→6 h）、本机断网不扣账号、TLS 校验失败短路、出口级秒级退避、429 时自动切换出站身份；同一次请求里同一账号最多记一次失败，最终错误优先级与旧版一致 | 6 个 ratelimit 单测 + 11 个网关行为测试 |
+| `internal/guards` + `pool`（调度偏好） | 手动权重、临期积分优先、会话亲和（客户端会话键或对话开头派生）、超长对话分页轮转、保留积分线与每日 Token / 积分 / 单模型限额护栏 | 单测 + 网关集成测试 |
+| `internal/gateway/anthropic` | **Anthropic Messages**：`/v1/messages`、`/v1/messages/count_tokens`（请求体互转、SSE 事件翻译），默认关闭 | 4 个测试；与 Python 对拍向量逐字节一致 |
+| `internal/ops` | 账号操作：积分刷新（国内详细 / 国际回退 / 企业）、国内签到与活跃上报、国际每日活跃对话、浏览器（OAuth device）登录、昵称同步、账号测试、导入（含预演）/导出 | 9 个测试（模拟上游） |
+| `internal/scheduler` | 定时调度器：签到 / 活跃 / Token 保活按整点执行、账号间 2–5 s 错峰、跳过风控账号与暂停区域；积分后台刷新每次只挑一个最久未更新的账号 | 6 个测试（模拟上游） |
+| `internal/activity` `internal/logbuf` | 签到/活跃历史（JSONL，90 天 / 5000 条裁剪）与内存日志环（级别/模块/文本筛选、游标追加、导出） | 各 1–2 个测试 |
+| `internal/api`（设置/Key/代理槽/日志/运维） | 设置快照与 PATCH（出口、开关、限额、超时、提示词、积分刷新间隔）、API Key 增删改与一次性展示、代理槽、日志查询/清空/导出、活动历史、调度器状态/时间表/立即巡检、导入/导出、单账号操作、模型清单刷新；`auth_disabled` 现在真正关闭鉴权 | 22 个 API 测试 |
+| `internal/realmswitch` | 面板出口（国际/国内）持久化并热切换 | 单测 |
 
 `go vet`、`gofmt` 干净；`go test ./...` 全绿。本机没有 C 编译器，`-race` 跑不了，需在 CI（Linux）补。
 
@@ -93,6 +101,15 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 | 另一端修改一个账号（权重 1→42、写入备注） | 当前页面上那一行 **2.5 秒内自行更新**，没有刷新、没有轮询 |
 | 用量页 | 400 个请求：成功率 100%、64K tokens、首字延迟 85 ms、84.7 t/s，与模拟上游一致 |
 
+**本轮新增功能的端到端**（真实 `bin/hub` + `bin/mockup`，6 个模拟账号，`127.0.0.1:18788`，面板密码登录）：
+
+| 项目 | 结果 |
+|---|---|
+| 面板 | 登录（Cookie + CSRF）、设置读/写（开关、限额、时间表）、日志查询（级别/模块）、活动历史、调度器立即巡检（运行中返回 409 "已有巡检正在执行"）、导入预演 + 正式导入（6 → 7 个账号）、脱敏导出（不含 `accessToken`）、`/api/v2/settings` 返回 5 项限额与模型清单状态 |
+| 网关 | `/v1/models` 无 Key 401、带 Key 18 个模型；`/v1/chat/completions` 流式 123 个 SSE 帧；打开"关闭 API Key 校验"后无 Key 也能访问，关掉后立即恢复 401 |
+| 面板资源 | 首页 + 哈希 JS 正常下发（363 KB 原始 → 108 KB gzip / **94 KB brotli**）；未知 `/api` 路径返回 JSON 404 |
+| 导入校验 | 非 JWT 的 `accessToken` 被报告为不合格行而不是整批失败；合法 JWT 预演与正式导入结果一致 |
+
 ### 这些数字**不能**证明什么
 - **TTFT（首字延迟）这次没有测准。** 压测器、模拟上游、网关同机运行，Windows 回环上瞬间建立几百条新连接本身就要几百毫秒（压测器直连模拟上游、不经过网关，在无 ramp 的 100 并发下也是 ~280 ms）。网关内部从进入处理到首个上游 chunk 的耗时（hub 侧）是 p50 ≈ 258 ms，其中大部分是网关→上游新建连接。需要在 Linux 上、用连接复用或独立机器重测。
 - 2000 并发时压测器自身和模拟上游已接近饱和（直连模拟上游时 p1 也只有 39.6），所以 2000 档的"每流速率"主要反映测试环境，不是网关上限。
@@ -120,18 +137,15 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 13. **目录没有移植"窄接口回退"**（`/v2/enterprises/personal/models`，仅国际区且 `/v3/config` 与桌面缓存都拿不到时才用）：现在直接回落到内嵌快照。
 14. **Responses 流里保留了旧版的一个小怪癖**：文本以 `<` 开头且疑似 DSML 时会先发一个空 `delta`。无害，保留是为了与旧版逐字节对拍。
 
-## 还没做（按计划书优先级）
+## 还没做
 
-**Phase 2 网关热路径剩余**
-- 目录/模型的剩余部分：`upstream_effort_of`（按目录钉死的思考档位改写请求）、模型封锁表、`/u/<ref>/v1/models`（定址路由，需要 `/u/<ref>/` 前缀整体移植）、面板的"刷新模型清单"按钮（后端 `catalog.Service.Refresh` 已有，未挂 API/页面）。
-- **账号失败治理状态机**：软限流阶梯（600 s→2 h）、无作用域 429 的 60 s 阶梯、连续失败熔断（30 min→6 h）、降级窗口、`fails` 计数衰减（`WB_FAIL_WINDOW`）、402 停放到本地 04:00、`model_caps`（6004 落盘）、窗口探针。**目前 429 一律冷却该模型 60 s、5xx 冷却账号 5 s，是占位策略。**
-- 调度偏好：手动权重 / 临期积分 / 剩余用量加权轮询、会话亲和（`SessionAffinity`、`affinity_route`）、`apply_daily_guards` 四条限额护栏、`WB_BACKGROUND_MODEL_*` 后台模型重定向、模型封锁表、`/u/<ref>/v1/*` 定址调用。
-- 限额护栏接入用量库（`usagedb.Day` 已提供当日计数，调度侧尚未使用）；`normalize_usage_cache_aliases`；Anthropic Messages（`/v1/messages`）；Responses 的"代跑 web_search/web_fetch"（`wb_webtools`，旧版默认关闭，未移植）。
-- 设置 API、API Key 管理 API、日志 API、OAuth 登录/导入导出、积分刷新/签到/每日活跃/账号测试（批量接口里先返回 501）；面板里对应的**设置页、日志页、API Key 页、添加账号流程**。
-- TLS 指纹（JA3/JA4）：现在用 Go 标准 `crypto/tls`，与旧版 Python 的 OpenSSL 指纹不同（风险 R1，Phase 0 的真实上游验证仍未做）。
-- 90% 冷却时的选号从线性扫描改为就绪集合。
-
-**Phase 3+**：面板鉴权（Cookie 会话落库）、`/api/v2`、SSE 事件总线、新前端、统计预聚合、各类自动化任务……（见计划书）。
+- **免费模型积分回退开关**（`free_model_credit_fallback`）仍只存了值，网关没有实现，设置页已暂时不显示；`auth_disabled` 已经真正生效。
+- 没移植：国内猫猫旅行 / 连登任务、国际网页会话那一路、`web_search` / `web_fetch` 代跑工具（`wb_webtools`）、剩余用量优先调度、窗口探针、桌面凭据解密导入、价格估算、智能体配置、更新检查。
+- 目录：`upstream_effort_of`（按目录钉死思考档位改写请求）、模型封锁表、`/u/<ref>/v1/models`（定址路由）。
+- TLS 指纹（JA3/JA4）：仍是 Go 标准 `crypto/tls`，与旧版 Python 的 OpenSSL 指纹不同（风险 R1）；**只在模拟上游上验证过，没连真实上游账号**，是否会被识别未验证。
+- 本机没有 C 编译器，`go test -race` 跑不了，需在 CI（Linux）补。
+- 90% 冷却时的选号仍是线性扫描（未改成就绪集合）。
+- 面板只做了页面渲染冒烟与 HTTP 级端到端；**没有像上一轮那样在真实浏览器里逐页点击回归**（设置页各区块、日志跟随/暂停、添加账号的 OAuth 轮询、导入文件选择）。
 
 ## 怎么跑
 
@@ -149,7 +163,13 @@ bin/loadtest genaccounts -dir run/accounts -n 50 -key sk-test
 bin/hub -port 18788 -accounts-dir run/accounts -upstream-override http://127.0.0.1:19000 -debug
 bin/loadtest -url http://127.0.0.1:18788/v1/chat/completions -c 500 -key sk-test -ramp 5s \
              -stats http://127.0.0.1:18788/debug/runtime
+
+# 面板/账号操作的端到端（模拟上游，6 个账号）
+bin/loadtest genaccounts -dir run/e2e/accounts -n 6 -key sk-test
+bin/hub -port 18788 -accounts-dir run/e2e/accounts -usage-dir run/e2e/usage \
+        -catalog-dir run/e2e/catalog -upstream-override http://127.0.0.1:19000 \
+        -panel-password e2e-pass -no-modelsdev
 ```
 
 ## 版本控制说明
-当前在分支 `v2-go`，按里程碑提交。
+当前在分支 `v2-go`，按里程碑提交。本轮提交：`feat: dashboard settings, logs, tasks, account import/export and account actions`。

@@ -1,9 +1,18 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { del, get, patch, post, type Account, type Job } from '../api'
+import { del, get, patch, post, type Account, type ActionResult, type Job } from '../api'
 import { applyPatch } from '../events'
-import { num, realmLabel, span, statusLabel, tokens, until } from '../format'
+import { credit, num, realmLabel, span, statusLabel, tokens, until } from '../format'
 import { JobToast } from './BatchBar'
+
+const actionLabel: Record<string, string> = {
+  credits: '刷新积分',
+  checkin: '签到',
+  'report-activity': '活跃上报',
+  'daily-chat': '每日活跃',
+  'sync-profile': '同步昵称',
+  test: '测试账号',
+}
 
 export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => void }) {
   const qc = useQueryClient()
@@ -12,6 +21,9 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
   const [form, setForm] = useState({ enabled: true, weight: 1, note: '', models: '', proxySlot: '', product: 'workbuddy' })
   const [dirty, setDirty] = useState(false)
   const [job, setJob] = useState<string | null>(null)
+  const [busy, setBusy] = useState('')
+  const [result, setResult] = useState<{ name: string; ok: boolean; text: string } | null>(null)
+  const [testModel, setTestModel] = useState('')
 
   useEffect(() => {
     if (a && !dirty) {
@@ -43,6 +55,30 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
     const j = await post<Job>('/api/v2/accounts/batch', { action, uids: [uid], confirm })
     qc.setQueryData(['job', j.id], j)
     setJob(j.id)
+  }
+  const runAction = async (name: string) => {
+    setBusy(name)
+    setResult(null)
+    try {
+      const body = name === 'test' && testModel.trim() ? { model: testModel.trim() } : {}
+      const r = await post<ActionResult>(`/api/v2/accounts/${uid}/actions/${name}`, body)
+      const ok = r.ok !== false && !r.error
+      let text = ok ? r.reply || r.msg || '成功' : r.error || r.msg || '失败'
+      if (r.elapsed_ms) text += ` · ${r.elapsed_ms} ms`
+      if (r.status) text += ` · HTTP ${r.status}`
+      if (r.restricted) text += ' · 已被上游风控'
+      if (r.network) text += ' · 网络不通'
+      setResult({ name, ok, text })
+      if (ok) {
+        qc.invalidateQueries({ queryKey: ['account', uid] })
+        qc.invalidateQueries({ queryKey: ['accounts'] })
+        qc.invalidateQueries({ queryKey: ['accounts-summary'] })
+      }
+    } catch (e) {
+      setResult({ name, ok: false, text: (e as Error).message })
+    } finally {
+      setBusy('')
+    }
   }
   const remove = useMutation({
     mutationFn: () => del(`/api/v2/accounts/${uid}`),
@@ -107,6 +143,14 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
                 <dt>区域</dt><dd>{realmLabel[a.realm]}</dd>
                 <dt>Token 有效期</dt><dd>{until(a.expires_at)}</dd>
                 <dt>今日</dt><dd>{num(a.today.requests)} 次 · {tokens(a.today.tokens)} tokens</dd>
+                {a.credits && (a.credits.remain != null || a.credits.total != null) && (
+                  <>
+                    <dt>积分</dt>
+                    <dd>
+                      {credit(a.credits.remain)} / {credit(a.credits.total)}
+                    </dd>
+                  </>
+                )}
                 <dt>进行中</dt><dd>{a.inflight}</dd>
                 {a.cooldown_for ? (<><dt>冷却</dt><dd>剩余 {span(a.cooldown_for)}</dd></>) : null}
                 {a.restricted_for ? (<><dt>风控限制</dt><dd>剩余 {span(a.restricted_for)}</dd></>) : null}
@@ -128,10 +172,51 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
                   </div>
                 </div>
               )}
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button className="btn sm" onClick={() => act('refresh_token')}>刷新 Token</button>
-                <button className="btn sm" onClick={() => act('clear_cooldown')}>清除冷却</button>
-                <button className="btn sm danger" onClick={() => confirm('永久删除这个账号？') && remove.mutate()}>删除账号</button>
+              <div className="field">
+                <label>账号操作</label>
+                <div className="actionrow">
+                  <button className="btn sm" disabled={!!busy} onClick={() => runAction('credits')}>
+                    {busy === 'credits' ? '刷新中…' : '刷新积分'}
+                  </button>
+                  {a.realm === 'cn' && (
+                    <button className="btn sm" disabled={!!busy} onClick={() => runAction('checkin')}>
+                      签到
+                    </button>
+                  )}
+                  {a.realm === 'cn' && (
+                    <button className="btn sm" disabled={!!busy} onClick={() => runAction('report-activity')}>
+                      活跃上报
+                    </button>
+                  )}
+                  {a.realm === 'intl' && (
+                    <button className="btn sm" disabled={!!busy} onClick={() => runAction('daily-chat')}>
+                      每日活跃
+                    </button>
+                  )}
+                  <button className="btn sm" disabled={!!busy} onClick={() => runAction('sync-profile')}>
+                    同步昵称
+                  </button>
+                  <button className="btn sm" onClick={() => act('refresh_token')}>
+                    刷新 Token
+                  </button>
+                  <button className="btn sm" onClick={() => act('clear_cooldown')}>
+                    清除冷却
+                  </button>
+                  <button className="btn sm danger" onClick={() => confirm('永久删除这个账号？') && remove.mutate()}>
+                    删除账号
+                  </button>
+                </div>
+                <div className="row" style={{ marginTop: 6 }}>
+                  <input className="input" placeholder="测试用模型（留空 = 自动选择）" value={testModel} onChange={(e) => setTestModel(e.target.value)} style={{ flex: 1 }} />
+                  <button className="btn sm" disabled={!!busy} onClick={() => runAction('test')}>
+                    {busy === 'test' ? '测试中…' : '测试账号'}
+                  </button>
+                </div>
+                {result && (
+                  <div className={'actionresult ' + (result.ok ? 'ok' : 'bad')} role="status">
+                    <b>{actionLabel[result.name] ?? result.name}</b> {result.text}
+                  </div>
+                )}
               </div>
             </>
           )}

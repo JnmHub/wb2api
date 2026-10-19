@@ -4,7 +4,10 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { get, type Account, type AccountPage, type AccountSummary, type Status } from '../api'
 import { credit, debounce, num, realmLabel, span, statusLabel, tokens, until } from '../format'
 import { AccountDrawer } from './AccountDrawer'
+import { AddAccountModal } from './AddAccountModal'
 import { BatchBar, type Selection } from './BatchBar'
+import { ExportModal } from './ExportModal'
+import { ImportModal } from './ImportModal'
 
 export const PAGE = 100
 const ROW = 46
@@ -39,6 +42,7 @@ export function AccountsPage() {
   const setQ = useDebouncedSetter((v: string) => setFilters((f) => ({ ...f, q: v })), 250)
   const [selection, setSelection] = useState<Selection>({ uids: new Set(), allMatching: false })
   const [open, setOpen] = useState<string | null>(null)
+  const [dialog, setDialog] = useState<'add' | 'import' | 'export' | null>(null)
 
   // Any change of the filter resets the selection: it referred to other rows.
   useEffect(() => setSelection({ uids: new Set(), allMatching: false }), [filters])
@@ -146,6 +150,15 @@ export function AccountsPage() {
         <span className="dim">
           今日 {tokens(sum?.today.tokens)} tokens · {num(sum?.today.requests)} 次请求
         </span>
+        <button className="btn sm primary" onClick={() => setDialog('add')}>
+          添加账号
+        </button>
+        <button className="btn sm" onClick={() => setDialog('import')}>
+          导入
+        </button>
+        <button className="btn sm" onClick={() => setDialog('export')}>
+          导出
+        </button>
         <button className="btn sm" onClick={() => qc.invalidateQueries({ queryKey: ['accounts'] })}>
           刷新
         </button>
@@ -229,6 +242,9 @@ export function AccountsPage() {
       </div>
 
       {open && <AccountDrawer uid={open} onClose={() => setOpen(null)} />}
+      {dialog === 'add' && <AddAccountModal onClose={() => setDialog(null)} />}
+      {dialog === 'import' && <ImportModal onClose={() => setDialog(null)} />}
+      {dialog === 'export' && <ExportModal onClose={() => setDialog(null)} />}
     </div>
   )
 }

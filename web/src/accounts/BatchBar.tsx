@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, del, get, post, type Job } from '../api'
 import { num } from '../format'
+import { Confirm, PromptDialog } from '../components/Modal'
 import type { Filters } from './AccountsPage'
 
 export interface Selection {
@@ -73,6 +74,10 @@ export function BatchBar(props: {
         <button className="btn sm" onClick={() => setDialog({ kind: 'proxy' })}>绑定代理槽…</button>
         <button className="btn sm" onClick={() => setDialog({ kind: 'product' })}>出站身份…</button>
         <button className="btn sm" onClick={() => run('refresh_token')}>刷新 Token</button>
+        <button className="btn sm" onClick={() => run('refresh_credits')}>刷新积分</button>
+        <button className="btn sm" onClick={() => run('test')}>测试</button>
+        <button className="btn sm" onClick={() => run('checkin')} title="仅国内版">签到</button>
+        <button className="btn sm" onClick={() => run('daily_chat')} title="仅国际版">每日活跃</button>
         <button className="btn sm" onClick={() => run('clear_cooldown')}>清除冷却</button>
         <button
           className="btn sm"
@@ -121,55 +126,10 @@ export function BatchBar(props: {
   )
 }
 
-function Modal(props: { title: string; children: React.ReactNode; onCancel: () => void }) {
-  useEffect(() => {
-    const on = (e: KeyboardEvent) => e.key === 'Escape' && props.onCancel()
-    window.addEventListener('keydown', on)
-    return () => window.removeEventListener('keydown', on)
-  })
-  return (
-    <>
-      <div className="scrim" onClick={props.onCancel} />
-      <div className="card modal" role="dialog" aria-modal="true" aria-label={props.title}>
-        <b>{props.title}</b>
-        {props.children}
-      </div>
-    </>
-  )
-}
-
-function PromptDialog(props: { title: string; label: string; initial: string; type?: string; onOk: (v: string) => void; onCancel: () => void }) {
-  const [v, setV] = useState(props.initial)
-  return (
-    <Modal title={props.title} onCancel={props.onCancel}>
-      <div className="field">
-        <label>{props.label}</label>
-        <input className="input" autoFocus type={props.type ?? 'text'} value={v} onChange={(e) => setV(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && props.onOk(v)} />
-      </div>
-      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-        <button className="btn" onClick={props.onCancel}>取消</button>
-        <button className="btn primary" onClick={() => props.onOk(v)}>确定</button>
-      </div>
-    </Modal>
-  )
-}
-
-function Confirm(props: { title: string; text: string; onOk: () => void; onCancel: () => void }) {
-  return (
-    <Modal title={props.title} onCancel={props.onCancel}>
-      <span className="dim">{props.text}</span>
-      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-        <button className="btn" onClick={props.onCancel}>取消</button>
-        <button className="btn danger" onClick={props.onOk}>确认</button>
-      </div>
-    </Modal>
-  )
-}
-
 const kindLabel: Record<string, string> = {
   enable: '启用', disable: '停用', set_weight: '设置权重', set_note: '设置备注', set_proxy_slot: '绑定代理槽',
   set_product: '切换出站身份', refresh_token: '刷新 Token', clear_cooldown: '清除冷却', clear_restriction: '解除风控', delete: '删除',
+  refresh_credits: '刷新积分', checkin: '签到', daily_chat: '每日活跃', report_activity: '活跃上报', sync_profile: '同步昵称', test: '测试账号',
 }
 
 /** Progress of a background batch job (also fed by the event stream). */

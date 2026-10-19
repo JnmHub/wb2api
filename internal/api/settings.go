@@ -25,7 +25,13 @@ type Settings struct {
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	return decodeN(w, r, v, 1<<20)
+}
+
+// decodeN is decode with an explicit body ceiling: imports can legitimately be
+// a few megabytes (thousands of accounts), while every other write stays small.
+func decodeN(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
+	dec := json.NewDecoder(io.LimitReader(r.Body, limit))
 	dec.UseNumber()
 	if err := dec.Decode(v); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
@@ -76,7 +82,7 @@ func (s *Settings) snapshot() map[string]any {
 	out := map[string]any{
 		"realm":                map[string]any{"current": s.Realm.Get(), "options": []string{"intl", "cn"}},
 		"keys":                 keys,
-		"auth_required":        len(s.Store.APIKeys(false)) > 0,
+		"auth_required":        !s.Store.AuthDisabled() && len(s.Store.APIKeys(false)) > 0,
 		"limits":               s.Store.Limits(),
 		"switches":             switches,
 		"auto_switch_products": s.Store.AutoSwitchProducts(),

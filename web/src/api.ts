@@ -59,6 +59,7 @@ export const get = <T>(path: string) => api<T>('GET', path)
 export const post = <T>(path: string, body?: unknown) => api<T>('POST', path, body ?? {})
 export const patch = <T>(path: string, body: unknown) => api<T>('PATCH', path, body)
 export const del = <T>(path: string) => api<T>('DELETE', path)
+export const put = <T>(path: string, body: unknown) => api<T>('PUT', path, body)
 
 // ------------------------------------------------------------------- types
 
@@ -160,4 +161,144 @@ export interface UsageSummary {
 
 export interface SeriesPoint extends UsageAgg {
   bucket: string
+}
+
+// ---------------------------------------------------------------- settings
+
+export interface KeyView {
+  id: string
+  name: string
+  key_preview: string
+  realm: '' | 'intl' | 'cn'
+  models: string[]
+  concurrency_limit: number
+  enabled: boolean
+  created_at: string
+  deleted_at: string
+  deleted: boolean
+}
+
+export interface LimitEntry {
+  global: number
+  intl: number | null
+  cn: number | null
+}
+
+export interface ProxySlot {
+  id: string
+  name: string
+  url: string
+  enabled: boolean
+  ip: string
+  country: string
+  country_code: string
+  ip_type: string
+  isp: string
+  asn: string
+  probed_at: number
+}
+
+export interface CatalogStatus {
+  realm: string
+  source: string
+  fetched_at: number
+  count: number
+}
+
+export interface SettingsView {
+  realm: { current: 'intl' | 'cn'; options: string[] }
+  keys: KeyView[]
+  auth_required: boolean
+  limits: Record<string, LimitEntry>
+  switches: Record<string, boolean>
+  auto_switch_products: string[]
+  upstream: { header_timeout_seconds: number; idle_timeout_seconds: number; device_token_set: boolean; device_token_file: string }
+  prompt: { mode: 'passthrough' | 'custom' | 'append'; file: string }
+  credits_refresh_hours: number
+  proxy_slots: ProxySlot[]
+  catalog?: CatalogStatus[]
+}
+
+export interface LogEntry {
+  id: number
+  ts: string
+  time: string
+  level: 'INFO' | 'WARN' | 'ERROR'
+  tag: string
+  msg: string
+}
+
+export interface LogList {
+  entries: LogEntry[]
+  last: number
+  tags: string[]
+}
+
+export interface ActivityRow {
+  ts: string
+  uid: string
+  nickname: string
+  realm: string
+  task: string
+  trigger: string
+  ok: boolean
+  message: string
+}
+
+export interface ActivityList {
+  rows: ActivityRow[]
+  total: number
+  limit: number
+  truncated: boolean
+}
+
+export interface SchedulerStatus {
+  enabled: boolean
+  running: boolean
+  last_run_time: string
+  next_run_time: string
+  last_summary: string
+  schedule: Record<string, number[]>
+  logs: string[]
+  credits: { ttl_hours: number; last_run: string; last_uid: string; last_error: string }
+}
+
+export interface ActionResult {
+  ok: boolean
+  msg?: string
+  error?: string
+  need_relogin?: boolean
+  // probe results
+  reply?: string
+  elapsed_ms?: number
+  status?: number
+  restricted?: boolean
+  network?: boolean
+}
+
+export interface ImportReport {
+  added: string[]
+  updated: string[]
+  skipped: { uid: string; reason: string }[]
+  invalid: { index: number; reason: string }[]
+}
+
+export interface ImportResponse {
+  count: number
+  dry_run: boolean
+  result: ImportReport
+}
+
+export interface LoginStart {
+  state: string
+  authUrl: string
+  realm: 'intl' | 'cn'
+  platform: string
+}
+
+export interface LoginPoll {
+  status: 'pending' | 'ok' | 'error' | 'expired' | 'unknown'
+  message?: string
+  uid?: string
+  nickname?: string
 }

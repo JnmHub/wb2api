@@ -172,7 +172,7 @@ func (o *Operations) importAccounts(w http.ResponseWriter, r *http.Request) {
 		Overwrite bool   `json:"overwrite"`
 		DryRun    bool   `json:"dry_run"`
 	}
-	if !decode(w, r, &in) {
+	if !decodeN(w, r, &in, 32<<20) {
 		return
 	}
 	var raw []byte
@@ -262,7 +262,7 @@ func (o *Operations) schedulerPatch(w http.ResponseWriter, r *http.Request) {
 
 func (o *Operations) schedulerTrigger(w http.ResponseWriter, r *http.Request) {
 	if !o.Scheduler.Trigger() {
-		writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "msg": "已有巡检正在执行，请稍候再试"})
+		writeErr(w, http.StatusConflict, "已有巡检正在执行，请稍候再试")
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "msg": "已触发后台调度执行"})
