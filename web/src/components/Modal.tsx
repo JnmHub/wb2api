@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Switch } from 'antd'
 
 export function Modal(props: { title: string; children: React.ReactNode; onCancel: () => void; wide?: boolean }) {
   useEffect(() => {
@@ -92,12 +93,12 @@ export function CopyButton({ text, label = '复制' }: { text: string | (() => P
 /** A labelled on/off switch. */
 export function Toggle(props: { checked: boolean; onChange: (v: boolean) => void; label: string; hint?: string; disabled?: boolean }) {
   return (
-    <label className="toggle">
-      <input type="checkbox" checked={props.checked} disabled={props.disabled} onChange={(e) => props.onChange(e.target.checked)} />
-      <span>
-        {props.label}
+    <div className="toggle-row">
+      <Switch size="small" checked={props.checked} disabled={props.disabled} onChange={props.onChange} />
+      <div className="toggle-text">
+        <b>{props.label}</b>
         {props.hint && <span className="dim hint">{props.hint}</span>}
-      </span>
-    </label>
+      </div>
+    </div>
   )
 }

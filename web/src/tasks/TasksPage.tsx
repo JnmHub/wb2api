@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Typography } from 'antd'
 import {
   ApiError,
   get,
@@ -36,6 +37,14 @@ export function parseHours(text: string): number[] {
 export function TasksPage() {
   return (
     <div className="page">
+      <div className="page-head">
+        <div>
+          <Typography.Title level={3} style={{ margin: 0 }}>
+            任务
+          </Typography.Title>
+          <Typography.Text type="secondary">定时巡检、国内成长任务与活动历史。</Typography.Text>
+        </div>
+      </div>
       <SchedulerCard />
       <GrowthCard />
       <ActivityCard />

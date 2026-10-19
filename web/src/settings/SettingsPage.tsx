@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Segmented, Typography } from 'antd'
 import { ApiError, get, patch, post, type SettingsView, type UpdateStatus } from '../api'
 import { Toggle } from '../components/Modal'
 import { AgentsSection } from './AgentsSection'
@@ -48,18 +49,27 @@ export function SettingsPage() {
   const s = q.data
   return (
     <div className="page settings">
+      <div className="page-head">
+        <div>
+          <Typography.Title level={3} style={{ margin: 0 }}>
+            设置
+          </Typography.Title>
+          <Typography.Text type="secondary">出口、Key、限额、上游与自动化；修改立即生效。</Typography.Text>
+        </div>
+      </div>
       {save.isError && <div className="err" role="alert">{(save.error as Error).message}</div>}
 
       <section className="card sec">
         <h3>出口</h3>
         <p className="dim">未绑定出口的 Key、也没有 X-Realm / ?realm= 的请求，走这里选的出口。只在国内版提供的模型（如 deepseek-v4-pro）必须选国内版或使用绑定国内版的 Key。</p>
-        <div className="chips">
-          {(['intl', 'cn'] as const).map((r) => (
-            <button key={r} className="chip" aria-pressed={s.realm.current === r} onClick={() => save.mutate({ realm: r })}>
-              {r === 'intl' ? '国际版 (Global)' : '国内版 (China)'}
-            </button>
-          ))}
-        </div>
+        <Segmented
+          value={s.realm.current}
+          onChange={(r) => save.mutate({ realm: String(r) })}
+          options={[
+            { value: 'intl', label: '国际版 (Global)' },
+            { value: 'cn', label: '国内版 (China)' },
+          ]}
+        />
       </section>
 
       <CatalogSection s={s} />

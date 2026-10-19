@@ -1,15 +1,16 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Alert, Button, Card, Checkbox, Input, Space, Typography } from 'antd'
 import { ApiError, get, onUnauthorized, post, setCsrf, type SessionInfo } from './api'
-import { AccountsPage } from './accounts/AccountsPage'
-import { LogsPage } from './logs/LogsPage'
-import { SettingsPage } from './settings/SettingsPage'
-import { TasksPage } from './tasks/TasksPage'
-import { UsagePage } from './usage/UsagePage'
 import { useEventStream } from './events'
 import { AppShell, type Tab } from './ui/AppShell'
 import { ThemeProvider } from './ui/theme'
+
+const AccountsPage = lazy(() => import('./accounts/AccountsPage').then((m) => ({ default: m.AccountsPage })))
+const UsagePage = lazy(() => import('./usage/UsagePage').then((m) => ({ default: m.UsagePage })))
+const SettingsPage = lazy(() => import('./settings/SettingsPage').then((m) => ({ default: m.SettingsPage })))
+const LogsPage = lazy(() => import('./logs/LogsPage').then((m) => ({ default: m.LogsPage })))
+const TasksPage = lazy(() => import('./tasks/TasksPage').then((m) => ({ default: m.TasksPage })))
 
 const loggedOut: SessionInfo = { authenticated: false, using_default_password: false }
 
@@ -205,11 +206,13 @@ function Shell() {
   }
   return (
     <AppShell tab={tab} onTab={go} onPassword={() => setPw(true)} onLogout={() => logout.mutate()}>
-      {tab === 'accounts' && <AccountsPage />}
-      {tab === 'usage' && <UsagePage />}
-      {tab === 'settings' && <SettingsPage />}
-      {tab === 'logs' && <LogsPage />}
-      {tab === 'tasks' && <TasksPage />}
+      <Suspense fallback={<div className="page dim">加载中…</div>}>
+        {tab === 'accounts' && <AccountsPage />}
+        {tab === 'usage' && <UsagePage />}
+        {tab === 'settings' && <SettingsPage />}
+        {tab === 'logs' && <LogsPage />}
+        {tab === 'tasks' && <TasksPage />}
+      </Suspense>
     </AppShell>
   )
 }
