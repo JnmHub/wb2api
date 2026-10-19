@@ -387,3 +387,38 @@ export interface UpdateStatus {
   published_at: string
   skipped?: string
 }
+
+export interface DesktopFile {
+  path: string
+  file: string
+  realm: string
+  realm_name: string
+  domain: string
+  uid: string
+  nickname: string
+  expires_at: number
+  readable: boolean
+  valid: boolean
+  encrypted: boolean
+  needs_key: boolean
+  error: string
+}
+
+export interface DesktopStatus {
+  platform: string
+  hunt_supported: boolean
+  hunt_hint: string
+  keyblob: string
+  keyblob_found: boolean
+  key_id: string
+  key_cached: boolean
+  key_source: string
+  error: string
+}
+
+export interface DesktopResult {
+  ok?: boolean
+  status: DesktopStatus
+  files: DesktopFile[]
+  imported?: { path: string; uid?: string; nickname?: string; realm?: string; ok?: boolean; error?: string }[]
+}
