@@ -394,10 +394,24 @@ type aggTool struct {
 	args  bytes.Buffer
 }
 
-// aggregate folds the upstream stream into one chat.completion response.
-func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp func(), idleD time.Duration, body io.Reader,
-	acc *pool.Account, model, keyID string, start time.Time) {
+// collected is an upstream stream folded into one assistant message.
+type collected struct {
+	meta      streamMeta
+	content   string
+	reasoning string
+	finish    string
+	calls     []map[string]any
+	usage     json.RawMessage
+	estimated bool
+	firstAt   time.Time
+	lastAt    time.Time
+	nChunks   int
+	err       error // upstream read error (nil = clean end of stream)
+}
 
+// collect reads the whole upstream stream. With repair, tool calls the model
+// printed as text are recovered into structured calls.
+func (h *Handler) collect(r *http.Request, cancelUp func(), idleD time.Duration, body io.Reader, model string, repair bool) *collected {
 	if idleD <= 0 {
 		idleD = 5 * time.Minute
 	}
@@ -407,17 +421,11 @@ func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp fun
 	br := bufio.NewReaderSize(body, sseReadBlock)
 	var (
 		acc2      []byte
-		meta      = streamMeta{model: model}
 		content   bytes.Buffer
 		reasoning bytes.Buffer
-		finish    = "stop"
 		tools     = map[int]*aggTool{}
-		lastUsage json.RawMessage
-		firstAt   time.Time
-		lastAt    time.Time
-		nChunks   int
-		readErr   error
 		est       tokenEstimator
+		res       = &collected{meta: streamMeta{model: model}, finish: "stop"}
 	)
 	for {
 		line, err := readLine(br, &acc2)
@@ -425,15 +433,15 @@ func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp fun
 			idle.Reset(idleD)
 			if data := sseData(line); data != nil && !bytes.Equal(data, []byte("[DONE]")) {
 				now := time.Now()
-				if firstAt.IsZero() {
-					firstAt = now
+				if res.firstAt.IsZero() {
+					res.firstAt = now
 				}
-				lastAt = now
-				nChunks++
+				res.lastAt = now
+				res.nChunks++
 				if c, ok := parseChunk(data); ok {
-					meta.update(c.top)
-					if u := c.usage(); u != nil && (lastUsage == nil || usageTotal(u) >= usageTotal(lastUsage)) {
-						lastUsage = append(json.RawMessage(nil), u...)
+					res.meta.update(c.top)
+					if u := c.usage(); u != nil && (res.usage == nil || usageTotal(u) >= usageTotal(res.usage)) {
+						res.usage = append(json.RawMessage(nil), u...)
 					}
 					for i := range c.deltas {
 						if s := c.content(i); s != "" {
@@ -445,7 +453,7 @@ func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp fun
 							est.add(s)
 						}
 						if fr := c.finishReason(i); fr != "" {
-							finish = fr
+							res.finish = fr
 						}
 						if c.deltas[i] != nil {
 							if raw, ok := c.deltas[i]["tool_calls"]; ok {
@@ -485,31 +493,15 @@ func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp fun
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
-				readErr = err
+				res.err = err
 			}
 			break
 		}
 	}
-
-	ev := UsageEvent{At: start, Model: model, Account: acc.UID, KeyID: keyID, Outcome: "completed", Status: http.StatusOK,
-		Elapsed: time.Since(start), Usage: lastUsage, Chunks: nChunks}
-	if !firstAt.IsZero() {
-		ev.TTFT, ev.Gen = firstAt.Sub(start), lastAt.Sub(firstAt)
+	if res.err == nil && r.Context().Err() != nil {
+		res.err = r.Context().Err()
 	}
-	if readErr != nil || r.Context().Err() != nil {
-		ev.Outcome, ev.Status = "upstream_aborted", http.StatusBadGateway
-		h.emit(ev)
-		if r.Context().Err() == nil {
-			writeError(w, http.StatusBadGateway, "upstream stream aborted: "+readErr.Error(), "server_error")
-		}
-		return
-	}
-
-	msg := map[string]any{"role": "assistant", "content": content.String()}
-	if reasoning.Len() > 0 {
-		msg["reasoning_content"] = reasoning.String()
-	}
-	var calls []map[string]any
+	res.content, res.reasoning = content.String(), reasoning.String()
 	idxs := make([]int, 0, len(tools))
 	for i := range tools {
 		idxs = append(idxs, i)
@@ -517,41 +509,72 @@ func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp fun
 	sort.Ints(idxs)
 	for _, i := range idxs {
 		t := tools[i]
-		calls = append(calls, map[string]any{"id": t.id, "type": "function",
+		res.calls = append(res.calls, map[string]any{"id": t.id, "type": "function",
 			"function": map[string]any{"name": t.name, "arguments": t.args.String()}})
 	}
-	if len(calls) == 0 {
-		if rc, clean, ok := leak.RepairText(content.String()); ok {
-			msg["content"] = clean
+	if repair && len(res.calls) == 0 {
+		if rc, clean, ok := leak.RepairText(res.content); ok {
+			res.content = clean
 			for _, c := range rc {
-				calls = append(calls, map[string]any{"id": c.ID, "type": "function",
+				res.calls = append(res.calls, map[string]any{"id": c.ID, "type": "function",
 					"function": map[string]any{"name": c.Name, "arguments": c.Arguments}})
 			}
-			finish = "tool_calls"
+			res.finish = "tool_calls"
 		}
 	}
-	if len(calls) > 0 {
-		msg["tool_calls"] = calls
-	}
-	if (lastUsage == nil || usageTotal(lastUsage) == 0) && est.tokens() > 0 {
+	if (res.usage == nil || usageTotal(res.usage) == 0) && est.tokens() > 0 {
 		n := est.tokens()
-		lastUsage = json.RawMessage(`{"prompt_tokens":0,"completion_tokens":` + strconv.Itoa(n) + `,"total_tokens":` + strconv.Itoa(n) + `}`)
-		ev.Usage, ev.Estimated = lastUsage, true
+		res.usage = json.RawMessage(`{"prompt_tokens":0,"completion_tokens":` + strconv.Itoa(n) + `,"total_tokens":` + strconv.Itoa(n) + `}`)
+		res.estimated = true
 	}
-	id := meta.id
+	return res
+}
+
+// usageEvent fills the common fields of the usage record of a collected stream.
+func (c *collected) usageEvent(acc *pool.Account, model, keyID string, start time.Time) UsageEvent {
+	ev := UsageEvent{At: start, Model: model, Account: acc.UID, KeyID: keyID, Outcome: "completed", Status: http.StatusOK,
+		Elapsed: time.Since(start), Usage: c.usage, Estimated: c.estimated, Chunks: c.nChunks}
+	if !c.firstAt.IsZero() {
+		ev.TTFT, ev.Gen = c.firstAt.Sub(start), c.lastAt.Sub(c.firstAt)
+	}
+	return ev
+}
+
+// aggregate folds the upstream stream into one chat.completion response.
+func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp func(), idleD time.Duration, body io.Reader,
+	acc *pool.Account, model, keyID string, start time.Time) {
+
+	res := h.collect(r, cancelUp, idleD, body, model, true)
+	ev := res.usageEvent(acc, model, keyID, start)
+	if res.err != nil {
+		ev.Outcome, ev.Status = "upstream_aborted", http.StatusBadGateway
+		h.emit(ev)
+		if r.Context().Err() == nil {
+			writeError(w, http.StatusBadGateway, "upstream stream aborted: "+res.err.Error(), "server_error")
+		}
+		return
+	}
+	msg := map[string]any{"role": "assistant", "content": res.content}
+	if res.reasoning != "" {
+		msg["reasoning_content"] = res.reasoning
+	}
+	if len(res.calls) > 0 {
+		msg["tool_calls"] = res.calls
+	}
+	id := res.meta.id
 	if id == "" {
 		id = "chatcmpl-wb"
 	}
-	created := meta.created
+	created := res.meta.created
 	if created == 0 {
 		created = time.Now().Unix()
 	}
 	resp := map[string]any{
-		"id": id, "object": "chat.completion", "created": created, "model": meta.model,
-		"choices": []map[string]any{{"index": 0, "message": msg, "finish_reason": finish}},
+		"id": id, "object": "chat.completion", "created": created, "model": res.meta.model,
+		"choices": []map[string]any{{"index": 0, "message": msg, "finish_reason": res.finish}},
 	}
-	if lastUsage != nil {
-		resp["usage"] = lastUsage
+	if res.usage != nil {
+		resp["usage"] = res.usage
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

@@ -9,6 +9,8 @@
 //	model contains "mhang"  -> accepts the request and never answers
 //	model contains "mtool"  -> prints a tool call as text (leaked call)
 //
+// GET /v3/config answers with a tiny product-config catalogue.
+//
 // Per-request knobs (headers): X-Mock-Tokens, X-Mock-TPS, X-Mock-Delay (ms
 // before response headers).
 package main
@@ -153,6 +155,12 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v2/chat/completions", handleChat(*tokens, *tps))
+	mux.HandleFunc("/v3/config", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"code":0,"data":{"agents":[{"name":"cli","models":["glm-5.3","hy3","mock-new","default-model"]}],`+
+			`"models":[{"id":"glm-5.3","name":"GLM 5.3 (mock)","credits":"x1.00","supportsToolCall":true},`+
+			`{"id":"mock-new","name":"Mock New","credits":"x2.00","supportsImages":true}]}}`)
+	})
 	mux.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]int64{"active": active.Load(), "peak": peak.Load(), "total": total.Load(), "chunks": chunks.Load()})
 	})

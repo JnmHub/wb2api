@@ -1,7 +1,7 @@
 // Command hub is the WorkBuddy2API gateway (Go rewrite).
 //
-// STATUS: it serves /v1/chat/completions, /v1/models, /v1/balance-summary and
-// /health through the real account pool, per-account transports and leak
+// STATUS: it serves /v1/chat/completions, /v1/responses, /v1/models,
+// /v1/balance-summary and /health through the real account pool, per-account transports and leak
 // filter, plus the new dashboard; see docs/PROGRESS.md for what of the legacy
 // surface is still missing.
 package main
@@ -162,6 +162,9 @@ func main() {
 	mux := http.NewServeMux()
 	auth.Register(mux, "/api/v2/session")
 	mux.Handle("/v1/chat/completions", h)
+	responsesH := &openai.Responses{Chat: h}
+	mux.Handle("/v1/responses", responsesH)
+	mux.Handle("/responses", responsesH)
 	(&openai.Info{Chat: h, Pool: p, Catalog: cat}).Register(mux)
 	(&api.Usage{DB: udb}).Register(mux, auth.Require)
 	bus := events.New(512)

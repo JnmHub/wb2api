@@ -304,3 +304,13 @@ func RepairText(content string) (calls []Call, clean string, ok bool) {
 	}
 	return nil, content, false
 }
+
+// FindDSMLBlock locates the first complete DSML calls block in text (the
+// legacy DSML_CALLS_RE.search): the byte range [start, end) of the whole block.
+func FindDSMLBlock(text string) (start, end int, ok bool) {
+	loc := dsmlCallsRe.FindStringIndex(text)
+	if loc == nil {
+		return 0, 0, false
+	}
+	return loc[0], loc[1], true
+}

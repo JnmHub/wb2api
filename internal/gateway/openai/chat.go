@@ -216,6 +216,7 @@ type request struct {
 	vscodeConv string
 	shaped     *jsonx.Obj
 	enc        map[string]*encoded
+	sink       sinkFunc // renders the upstream stream (nil = chat completions)
 
 	refreshed       map[string]bool
 	degradedRetried bool
@@ -347,9 +348,31 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "request body must be a JSON object", "invalid_request_error")
 		return
 	}
+	h.run(w, r, start, key, payload, runOpts{})
+}
+
+// sinkFunc renders a successful upstream stream to the client.
+type sinkFunc func(q *request, acc *pool.Account, cancel context.CancelFunc, idle time.Duration, body io.Reader)
+
+// runOpts lets another endpoint reuse the chat pipeline (account selection,
+// failover, identity, error handling) with its own request translation and
+// response rendering.
+type runOpts struct {
+	forceStream bool
+	stream      bool
+	sessionKey  string
+	sink        sinkFunc
+}
+
+// run serves one parsed request: payload is a chat-completions body.
+func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, key *settings.APIKey, payload *jsonx.Obj, opts runOpts) {
 	q := &request{r: r, w: w, start: start, payload: payload, refreshed: map[string]bool{}}
 	q.model, _ = payload.Get("model").(string)
 	q.stream = jsonx.Truthy(payload.Get("stream"))
+	if opts.forceStream {
+		q.stream = opts.stream
+	}
+	q.sink = opts.sink
 	rl := h.DefaultRealm
 	if rl == "" {
 		rl = realm.Intl
@@ -366,6 +389,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	q.sessionKey = extractSessionKey(r, payload)
+	if opts.sessionKey != "" {
+		q.sessionKey = opts.sessionKey
+	}
 	q.turnID = identity.NewTurnRequestID()
 	q.vscodeConv = identity.NewMessageID()
 	h.reshape(q)
@@ -523,7 +549,9 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 	}
 	acc.NoteResult(true)
 	idle := cfg.IdleTimeout
-	if q.stream {
+	if q.sink != nil {
+		q.sink(q, acc, cancel, idle, resp.Body)
+	} else if q.stream {
 		h.pipeStream(q.w, q.r, cancel, idle, resp.Body, acc, q.model, q.keyID, q.start)
 	} else {
 		h.aggregate(q.w, q.r, cancel, idle, resp.Body, acc, q.model, q.keyID, q.start)

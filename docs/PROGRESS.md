@@ -14,6 +14,9 @@
 | `internal/pool` | 账号池：不可变快照、原子就绪判断（永不做网络 IO）、轮转选号、按账号并发上限 | 单测 + 并发测试；基准见下 |
 | `internal/upstream` | 每账号独立的 `http.Transport`（HTTP/1.1，分层超时） | 测试：两个账号绝不共用同一条 TCP 连接 |
 | `internal/gateway/openai` | `/v1/chat/completions` 流式+非流式、鉴权/Key 绑定/模型限制、请求体整形 + 出站身份头 + gzip（CLI/VSCode）+ CLI 专有字段、401 刷新后重试同号、403 风控/内容审核分流（含降级提示词重试）、429/402/5xx 换号、SSE 管道、用量事件 | 14 个行为测试 + 11 个出站/风控测试 |
+| `internal/catalog` | **模型目录**：内嵌国际/国内两张静态表；`/v3/config` 同步（桌面 UA 双尝试、10 s 超时、`agents[].models` + `models[]` 元数据解析）、整理（去虚拟别名/`lite`/`codewise-`/`-image-alpha*`/`-sg`/`-x`、有免费 `x0.00` 兄弟时去掉付费版）、与静态表合并（reasoning 字段级合并、`hy4-preview-f` 替换、无倍率新模型不外露）、5 分钟缓存 + 单飞、手动刷新 30 s 冷却、每日兜底、桌面缓存文件回退、`/v3/config` 响应归档；`/v1/models` 的富条目（各客户端约定的能力字段全部输出）；上下文/输出上限四级查找（上游 > 内建知识表 > `model.json` > models.dev 异步预热）；`output_probes.json` 钳制标注；同时实现 `shape.Catalog`（缺省 `max_tokens` 与 DeepSeek 默认思考档位现在与旧版一致） | **黄金向量**（`tools/genvectors/gen_catalog.py`，共 200 余条）：`is_chat_model`、`parse_remote_catalog`（10 种载荷）、`curate_remote_catalog`（9 条）、`merge_catalog`（19 条，含 `all`/extras/`hy4-preview-f`）、`model_entry`（70 条，逐字节）、上限查找、models.dev 索引构建、目录默认值（67 个模型）全部与 Python 逐项一致 |
+| `internal/gateway/openai`（信息端点） | `/v1/models`、`/models`、`/v1/balance-summary`（只读缓存快照、不识别账号、未知余额为 null 而不是 0）、`/health`（永远应答；Key 通过后才附账号身份） | 11 个 HTTP 测试（含模拟 `/v3/config`、缓存命中次数、Key 绑定区域优先于 `X-Realm`、失败刷新保留旧清单、手动刷新冷却） |
+| `internal/gateway/responses` + `openai.Responses` | **Responses API（`/v1/responses`）**：请求→chat 转换（`input` 各类条目、`instructions`/developer、reasoning 回填、多模态、function/custom 工具调用及输出、`agent_message`、孤儿输出、`additional_tools`、namespace 工具展开与回程还原、custom 工具降级为 function 再还原为 `custom_tool_call`、`text.format`、`reasoning.effort`）、整段与流式事件翻译（reasoning/文本/工具调用事件序、DSML 文本防泄漏缓冲、半截工具参数丢弃、缺 usage 时估算）、`previous_response_id` 明确拒绝；与 chat 共用账号选择/换号/身份/错误处理/用量记账 | **257 条黄金向量**（`tools/genvectors/gen_responses.py`）：56 条请求转换 + 15 条整段响应 + 186 条流（含 160 条针对 DSML 缓冲的随机模糊）与 Python **逐字节一致**；7 个端点集成测试 + 真实二进制端到端（hub→mock 上游：流式/非流式、用量入库） |
 | `internal/jsonx` | 保序 JSON（对象保持插入顺序、Python `json.dumps(separators=(",",":"), ensure_ascii=False)` 的逐字节输出） | 单测 + 被 shape 的 325 条对拍间接覆盖 |
 | `internal/gateway/shape` | 旧版 `build_upstream_body` 全套请求体整形：角色归一、提示词模式、指纹清洗、reasoning 回填、工具调用配对修复（合并/重排/清孤儿）、工具 schema 归一、`tool_choice`/`stop`/`max_tokens` 归一、DeepSeek 思考注入、`stream_options` | **325 条**（手写 + 随机）与 Python 输出**逐字节一致**，并断言不改动入参 |
 | `internal/upstream/identity` | 三套出站身份（桌面端/VSCode/CLI）的头族、UUIDv7、会话 id 派生、trace 头、设备 token 规则 | **192 种**组合与 Python 对拍：头顺序/拼写/稳定值逐一相同，随机值形态相同 |
@@ -110,13 +113,20 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 7. `created_at` 缺失时 API Key 条目保持空串（旧版每次读取都会盖当前时间，导致值不稳定）。
 8. 账号文件里的 JSON 对象键顺序：嵌套对象（如 `credits`）按字母序写回，旧版保持插入序。语义相同。
 
+9. **Responses 流式：上游中途断开时不再补发 `response.completed`**——只写 `data: [DONE]` 并记 `upstream_aborted`（旧版同样不补，这里只是明确不"伪造成功"）。
+10. **Responses：缺省模型**——请求没带 `model` 时用 `deepseek-v4.1-flash`（旧版只在回显里用它，发给上游的是 null）。
+11. **旧版会给被清洗改写过的 Responses 流帧多补一个空行**（`clean_responses_frame` 的 `splitlines` 副作用）；新版不补。SSE 解析上等价，黄金对拍在该处做了归一。
+12. **`/v1/models?realm=` 只接受 `intl`/`cn`/`all`**，其余值回落默认区域（旧版把任意字符串当区域并用它做缓存键）。
+13. **目录没有移植"窄接口回退"**（`/v2/enterprises/personal/models`，仅国际区且 `/v3/config` 与桌面缓存都拿不到时才用）：现在直接回落到内嵌快照。
+14. **Responses 流里保留了旧版的一个小怪癖**：文本以 `<` 开头且疑似 DSML 时会先发一个空 `delta`。无害，保留是为了与旧版逐字节对拍。
+
 ## 还没做（按计划书优先级）
 
 **Phase 2 网关热路径剩余**
-- 模型目录（`wb_catalog`/`wb_modelsdev`）：`shape.Catalog` 目前是接口，没有真实实现——`max_tokens` 缺省值与 DeepSeek 默认思考档位要等目录移植后才与旧版一致（对拍时用旧版导出的小表）。`upstream_effort_of`、`/v1/models`、`/v1/balance-summary` 同理。
+- 目录/模型的剩余部分：`upstream_effort_of`（按目录钉死的思考档位改写请求）、模型封锁表、`/u/<ref>/v1/models`（定址路由，需要 `/u/<ref>/` 前缀整体移植）、面板的"刷新模型清单"按钮（后端 `catalog.Service.Refresh` 已有，未挂 API/页面）。
 - **账号失败治理状态机**：软限流阶梯（600 s→2 h）、无作用域 429 的 60 s 阶梯、连续失败熔断（30 min→6 h）、降级窗口、`fails` 计数衰减（`WB_FAIL_WINDOW`）、402 停放到本地 04:00、`model_caps`（6004 落盘）、窗口探针。**目前 429 一律冷却该模型 60 s、5xx 冷却账号 5 s，是占位策略。**
 - 调度偏好：手动权重 / 临期积分 / 剩余用量加权轮询、会话亲和（`SessionAffinity`、`affinity_route`）、`apply_daily_guards` 四条限额护栏、`WB_BACKGROUND_MODEL_*` 后台模型重定向、模型封锁表、`/u/<ref>/v1/*` 定址调用。
-- 限额护栏接入用量库（`usagedb.Day` 已提供当日计数，调度侧尚未使用）；`normalize_usage_cache_aliases`；Responses API / Anthropic Messages。
+- 限额护栏接入用量库（`usagedb.Day` 已提供当日计数，调度侧尚未使用）；`normalize_usage_cache_aliases`；Anthropic Messages（`/v1/messages`）；Responses 的"代跑 web_search/web_fetch"（`wb_webtools`，旧版默认关闭，未移植）。
 - 设置 API、API Key 管理 API、日志 API、OAuth 登录/导入导出、积分刷新/签到/每日活跃/账号测试（批量接口里先返回 501）；面板里对应的**设置页、日志页、API Key 页、添加账号流程**。
 - TLS 指纹（JA3/JA4）：现在用 Go 标准 `crypto/tls`，与旧版 Python 的 OpenSSL 指纹不同（风险 R1，Phase 0 的真实上游验证仍未做）。
 - 90% 冷却时的选号从线性扫描改为就绪集合。
@@ -130,6 +140,8 @@ cd web && npm ci && npm test && npm run build && cd ..   # 构建内嵌的面板
 go test ./...                         # 全部测试
 py -I tools/genvectors/gen.py         # 用 legacy/python 重新生成黄金向量
 py -I tools/genvectors/gen_build.py   # 请求体整形的 325 条对拍向量
+py -I tools/genvectors/gen_catalog.py     # 模型目录对拍向量
+py -I tools/genvectors/gen_responses.py   # Responses 转换/流事件对拍向量
 go build -o bin/ ./cmd/...            # hub / mockup / loadtest
 
 bin/mockup -addr 127.0.0.1:19000 -tokens 200 -tps 50
