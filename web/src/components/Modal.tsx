@@ -1,20 +1,24 @@
-import { useEffect, useState } from 'react'
-import { Switch } from 'antd'
+import { useState } from 'react'
+import { Button, Input, Modal as AntModal, Switch } from 'antd'
 
+/**
+ * Shared modal shell. Pages own their action buttons (they render them in the
+ * body), so this keeps the footer empty and only provides the antd chrome,
+ * Escape/close behaviour and a responsive width.
+ */
 export function Modal(props: { title: string; children: React.ReactNode; onCancel: () => void; wide?: boolean }) {
-  useEffect(() => {
-    const on = (e: KeyboardEvent) => e.key === 'Escape' && props.onCancel()
-    window.addEventListener('keydown', on)
-    return () => window.removeEventListener('keydown', on)
-  })
   return (
-    <>
-      <div className="scrim" onClick={props.onCancel} />
-      <div className={'card modal' + (props.wide ? ' wide' : '')} role="dialog" aria-modal="true" aria-label={props.title}>
-        <b>{props.title}</b>
-        {props.children}
-      </div>
-    </>
+    <AntModal
+      open
+      title={props.title}
+      onCancel={props.onCancel}
+      footer={null}
+      width={props.wide ? 720 : 480}
+      destroyOnHidden
+      maskClosable
+    >
+      {props.children}
+    </AntModal>
   )
 }
 
@@ -28,43 +32,43 @@ export function PromptDialog(props: {
 }) {
   const [v, setV] = useState(props.initial)
   return (
-    <Modal title={props.title} onCancel={props.onCancel}>
-      <div className="field">
-        <label>{props.label}</label>
-        <input
-          className="input"
-          autoFocus
-          type={props.type ?? 'text'}
-          value={v}
-          onChange={(e) => setV(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && props.onOk(v)}
-        />
+    <AntModal
+      open
+      title={props.title}
+      onCancel={props.onCancel}
+      onOk={() => props.onOk(v)}
+      okText="确定"
+      cancelText="取消"
+      destroyOnHidden
+    >
+      <div style={{ marginBottom: 6 }}>
+        <span className="dim">{props.label}</span>
       </div>
-      <div className="row end">
-        <button className="btn" onClick={props.onCancel}>
-          取消
-        </button>
-        <button className="btn primary" onClick={() => props.onOk(v)}>
-          确定
-        </button>
-      </div>
-    </Modal>
+      <Input
+        autoFocus
+        type={props.type ?? 'text'}
+        value={v}
+        onChange={(e) => setV(e.target.value)}
+        onPressEnter={() => props.onOk(v)}
+      />
+    </AntModal>
   )
 }
 
 export function Confirm(props: { title: string; text: string; onOk: () => void; onCancel: () => void; danger?: boolean }) {
   return (
-    <Modal title={props.title} onCancel={props.onCancel}>
+    <AntModal
+      open
+      title={props.title}
+      onCancel={props.onCancel}
+      onOk={props.onOk}
+      okText="确认"
+      cancelText="取消"
+      okButtonProps={{ danger: props.danger !== false }}
+      destroyOnHidden
+    >
       <span className="dim">{props.text}</span>
-      <div className="row end">
-        <button className="btn" onClick={props.onCancel}>
-          取消
-        </button>
-        <button className={'btn ' + (props.danger === false ? 'primary' : 'danger')} onClick={props.onOk}>
-          确认
-        </button>
-      </div>
-    </Modal>
+    </AntModal>
   )
 }
 
@@ -72,8 +76,8 @@ export function Confirm(props: { title: string; text: string; onOk: () => void; 
 export function CopyButton({ text, label = '复制' }: { text: string | (() => Promise<string>); label?: string }) {
   const [state, setState] = useState<'idle' | 'ok' | 'err'>('idle')
   return (
-    <button
-      className="btn sm"
+    <Button
+      size="small"
       onClick={async () => {
         try {
           const value = typeof text === 'function' ? await text() : text
@@ -86,7 +90,7 @@ export function CopyButton({ text, label = '复制' }: { text: string | (() => P
       }}
     >
       {state === 'ok' ? '已复制' : state === 'err' ? '复制失败' : label}
-    </button>
+    </Button>
   )
 }
 
