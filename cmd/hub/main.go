@@ -35,6 +35,7 @@ import (
 	"wb2api/internal/store/settings"
 	"wb2api/internal/upstream"
 	"wb2api/internal/usagedb"
+	"wb2api/internal/webui"
 )
 
 func envOr(name, def string) string {
@@ -161,6 +162,12 @@ func main() {
 	}
 	accountsAPI.Register(mux, auth.Require)
 	accountsAPI.StartEvents(bg, time.Second)
+	ui, err := webui.New(webui.Dist())
+	if err != nil {
+		log.Error("cannot load the embedded dashboard", "err", err)
+		os.Exit(1)
+	}
+	mux.Handle("/", ui) // everything not claimed above: the dashboard SPA
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "accounts": p.Len()})

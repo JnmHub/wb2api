@@ -1,0 +1,36 @@
+name: ci
+on:
+  push:
+    branches: [main, v2-go]
+  pull_request:
+
+jobs:
+  go:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build the dashboard (embedded into the binary)
+        working-directory: web
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+      - run: go vet ./...
+      # -race needs cgo; the Linux runner has gcc, the Windows one is skipped.
+      - if: runner.os == 'Linux'
+        run: go test -race ./... -timeout 10m
+      - if: runner.os != 'Linux'
+        run: go test ./... -timeout 10m
+      - run: go build ./cmd/...

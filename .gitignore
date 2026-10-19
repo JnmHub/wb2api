@@ -7,3 +7,7 @@ legacy/python/__pycache__/
 /dist/
 node_modules/
 /web/dist/
+
+/internal/webui/dist/*
+!/internal/webui/dist/.keep
+/web/node_modules/
