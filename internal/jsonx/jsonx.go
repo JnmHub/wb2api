@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -204,7 +205,21 @@ func MarshalPy(v any) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
+// MarshalPySorted renders v like json.dumps(v, ensure_ascii=False,
+// sort_keys=True): default separators, object keys in code point order.
+func MarshalPySorted(v any) ([]byte, error) {
+	var b bytes.Buffer
+	if err := writeX(&b, v, ", ", ": ", true); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
+}
+
 func write(b *bytes.Buffer, v any, itemSep, keySep string) error {
+	return writeX(b, v, itemSep, keySep, false)
+}
+
+func writeX(b *bytes.Buffer, v any, itemSep, keySep string, sorted bool) error {
 	switch t := v.(type) {
 	case nil:
 		b.WriteString("null")
@@ -238,7 +253,7 @@ func write(b *bytes.Buffer, v any, itemSep, keySep string) error {
 			if i > 0 {
 				b.WriteString(itemSep)
 			}
-			if err := write(b, x, itemSep, keySep); err != nil {
+			if err := writeX(b, x, itemSep, keySep, sorted); err != nil {
 				return err
 			}
 		}
@@ -253,14 +268,19 @@ func write(b *bytes.Buffer, v any, itemSep, keySep string) error {
 		}
 		b.WriteByte(']')
 	case *Obj:
+		keys := t.keys
+		if sorted {
+			keys = append([]string(nil), keys...)
+			sort.Strings(keys)
+		}
 		b.WriteByte('{')
-		for i, k := range t.keys {
+		for i, k := range keys {
 			if i > 0 {
 				b.WriteString(itemSep)
 			}
 			writeString(b, k)
 			b.WriteString(keySep)
-			if err := write(b, t.m[k], itemSep, keySep); err != nil {
+			if err := writeX(b, t.m[k], itemSep, keySep, sorted); err != nil {
 				return err
 			}
 		}

@@ -502,7 +502,8 @@ func TestEachAccountUsesItsOwnConnectionPool(t *testing.T) {
 	})
 	e := newEnv(t, up, 3, "")
 	for i := 0; i < 12; i++ {
-		readSSE(t, e.post(t, chatBody, nil))
+		// different conversations: one conversation sticks to its account (prefix affinity)
+		readSSE(t, e.post(t, fmt.Sprintf(`{"model":"glm-5.3","messages":[{"role":"user","content":"conversation %d"}]}`, i), nil))
 	}
 	mu.Lock()
 	defer mu.Unlock()

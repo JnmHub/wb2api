@@ -340,3 +340,21 @@ func (s *Service) curatedLive(ctx context.Context, r string) (live []Entry, extr
 	}
 	return nil, false, ""
 }
+
+// FreeModels lists the models the catalogue marks free ("x0.00") on a realm,
+// from the bundled table and the current list. Local reads only.
+func (s *Service) FreeModels(r string) map[string]bool {
+	out := map[string]bool{}
+	add := func(entries []Entry) {
+		for _, e := range entries {
+			if isFree(creditsOf(e.Meta)) {
+				out[e.ID] = true
+			}
+		}
+	}
+	add(Static(r))
+	if v, ok := s.cache.Load(r); ok {
+		add(v.(*cached).entries)
+	}
+	return out
+}

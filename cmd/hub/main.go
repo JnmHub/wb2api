@@ -27,6 +27,7 @@ import (
 	"wb2api/internal/api"
 	"wb2api/internal/catalog"
 	"wb2api/internal/events"
+	"wb2api/internal/guards"
 	"wb2api/internal/gateway/leak"
 	"wb2api/internal/gateway/openai"
 	"wb2api/internal/jobs"
@@ -120,10 +121,16 @@ func main() {
 	if err := today.Seed(udb); err != nil {
 		log.Warn("could not seed today's counters", "err", err)
 	}
+	h.Guards = &guards.Scanner{Pool: p, Settings: st, Usage: udb, FreeModels: cat.FreeModels, Log: log}
 	h.OnUsage = func(ev openai.UsageEvent) {
 		ue := api.EventFromGateway(ev, realmOf)
 		udb.Record(ue)
 		today.Add(ue)
+		if ue.Credit > 0 && ev.Account != "" {
+			if a := p.Get(ev.Account); a != nil {
+				a.ConsumeCredit(ue.Credit)
+			}
+		}
 		if trace {
 			log.Info("usage", "ttft_ms", ev.TTFT.Milliseconds(), "elapsed_ms", ev.Elapsed.Milliseconds(), "chunks", ev.Chunks, "outcome", ev.Outcome)
 		}

@@ -492,6 +492,7 @@ func TestPromptFileCustomMode(t *testing.T) {
 func TestUpstreamTimeoutsComeFromSettings(t *testing.T) {
 	up := newRawUpstream(t, func(n int, _ rawReq, c net.Conn) { time.Sleep(3 * time.Second) })
 	f := newFixture(t, up, accSpec{})
+	f.h.MaxAttempts = 1 // a timeout is retried like any transient failure; measure a single attempt
 	if err := os.WriteFile(filepath.Join(f.dir, "settings.json"), []byte(`{"upstream":{"header_timeout_seconds":1}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}

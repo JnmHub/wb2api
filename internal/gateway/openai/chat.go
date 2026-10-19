@@ -24,9 +24,9 @@ import (
 
 	"wb2api/internal/gateway/leak"
 	"wb2api/internal/gateway/shape"
+	"wb2api/internal/guards"
 	"wb2api/internal/jsonx"
 	"wb2api/internal/pool"
-	"wb2api/internal/realm"
 	"wb2api/internal/risk"
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/store/settings"
@@ -74,6 +74,9 @@ type Handler struct {
 	OnUsage func(UsageEvent)
 	// DefaultRealm is used when neither the key nor the model decides (intl).
 	DefaultRealm string
+	// Guards refreshes the daily / reserve limits before each pick and explains
+	// a fully parked pool (nil = no limits).
+	Guards *guards.Scanner
 
 	keyCache   atomic.Pointer[keyCache]
 	promptMu   sync.Mutex
@@ -82,6 +85,15 @@ type Handler struct {
 	promptBody string
 	riskOnce   sync.Once
 	degOnce    sync.Once
+	affOnce    sync.Once
+	aff        affinityConfig
+	egress     egressTracker
+	sw         switchLog
+}
+
+func (h *Handler) affinity() affinityConfig {
+	h.affOnce.Do(func() { h.aff = affinityFromEnv() })
+	return h.aff
 }
 
 type keyCache struct {
@@ -141,14 +153,36 @@ func (h *Handler) degrade() *shape.DegradeGate {
 }
 
 type apiError struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
+	Message     string `json:"message"`
+	Type        string `json:"type"`
+	Code        int    `json:"code,omitempty"`
+	GatewayHint string `json:"gateway_hint,omitempty"`
 }
 
 func writeError(w http.ResponseWriter, status int, msg, typ string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	b, _ := marshalNoEscape(map[string]apiError{"error": {Message: msg, Type: typ}})
+	b, _ := marshalNoEscape(map[string]apiError{"error": {Message: msg, Type: typ, Code: status, GatewayHint: gatewayHint(status, msg)}})
+	_, _ = w.Write(append(b, '\n'))
+}
+
+// writeRateLimited answers 429 with Retry-After so clients back off.
+func writeRateLimited(w http.ResponseWriter, wait int, message, detail string) {
+	if wait < 1 {
+		wait = 60
+	}
+	text := message
+	if text == "" {
+		text = fmt.Sprintf("upstream rate limit reached for this model; retry in %ds", wait)
+		if detail != "" {
+			text += " - " + truncate(detail, 200)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Retry-After", strconv.Itoa(wait))
+	w.WriteHeader(http.StatusTooManyRequests)
+	b, _ := marshalNoEscape(map[string]any{"error": map[string]any{
+		"message": text, "type": "rate_limit_error", "code": 429, "retry_after": wait}})
 	_, _ = w.Write(append(b, '\n'))
 }
 
@@ -217,6 +251,8 @@ type request struct {
 	shaped     *jsonx.Obj
 	enc        map[string]*encoded
 	sink       sinkFunc // renders the upstream stream (nil = chat completions)
+	page       *pool.Page
+	at         attemptState
 
 	refreshed       map[string]bool
 	degradedRetried bool
@@ -362,275 +398,6 @@ type runOpts struct {
 	stream      bool
 	sessionKey  string
 	sink        sinkFunc
-}
-
-// run serves one parsed request: payload is a chat-completions body.
-func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, key *settings.APIKey, payload *jsonx.Obj, opts runOpts) {
-	q := &request{r: r, w: w, start: start, payload: payload, refreshed: map[string]bool{}}
-	q.model, _ = payload.Get("model").(string)
-	q.stream = jsonx.Truthy(payload.Get("stream"))
-	if opts.forceStream {
-		q.stream = opts.stream
-	}
-	q.sink = opts.sink
-	rl := h.DefaultRealm
-	if rl == "" {
-		rl = realm.Intl
-	}
-	q.realm = realm.DetectModelRealm(q.model, rl)
-	if key != nil {
-		q.keyID = key.ID
-		if key.Realm != "" {
-			q.realm = key.Realm
-		}
-		if !key.AllowsModel(q.model) {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("model %q is not allowed for this API key", q.model), "invalid_request_error")
-			return
-		}
-	}
-	q.sessionKey = extractSessionKey(r, payload)
-	if opts.sessionKey != "" {
-		q.sessionKey = opts.sessionKey
-	}
-	q.turnID = identity.NewTurnRequestID()
-	q.vscodeConv = identity.NewMessageID()
-	h.reshape(q)
-
-	if rem := h.guard().HoldRemaining(q.realm); rem > 0 {
-		w.Header().Set("Retry-After", strconv.Itoa(int(rem.Seconds())+1))
-		h.emit(UsageEvent{At: start, Model: q.model, KeyID: q.keyID, Stream: q.stream, Outcome: "failed", Status: http.StatusTooManyRequests, Elapsed: time.Since(start)})
-		writeError(w, http.StatusTooManyRequests, risk.HoldMessage(rem), "rate_limit_error")
-		return
-	}
-
-	tried := map[string]struct{}{}
-	var forced *pool.Account // retry the same account (after refresh / prompt degrade)
-	var lastStatus int
-	var lastBody []byte
-	for attempt := 0; attempt < h.maxAttempts()+2; attempt++ {
-		acc := forced
-		forced = nil
-		if acc == nil {
-			if len(tried) >= h.maxAttempts() {
-				break
-			}
-			if acc = h.Pool.Pick(q.realm, q.model, tried); acc == nil {
-				break
-			}
-		}
-		tried[acc.UID] = struct{}{}
-		res := h.try(q, acc)
-		switch res.kind {
-		case done:
-			return
-		case retrySame:
-			delete(tried, acc.UID)
-			forced = acc
-			continue
-		case stop:
-			h.finishError(q, acc, res)
-			return
-		case retry:
-			lastStatus, lastBody = res.status, res.body
-		}
-		if r.Context().Err() != nil {
-			return
-		}
-	}
-	status := http.StatusServiceUnavailable
-	msg := "no usable account for this model; add or enable one in the dashboard"
-	if lastStatus == http.StatusTooManyRequests {
-		status, msg = lastStatus, "all accounts are rate limited for this model"
-		w.Header().Set("Retry-After", "60")
-	} else if lastStatus != 0 {
-		status, msg = http.StatusBadGateway, fmt.Sprintf("upstream error %d: %s", lastStatus, truncate(string(lastBody), 200))
-	}
-	h.emit(UsageEvent{At: start, Model: q.model, KeyID: q.keyID, Stream: q.stream, Outcome: "failed", Status: status, Elapsed: time.Since(start)})
-	writeError(w, status, msg, "server_error")
-}
-
-// finishError relays an upstream error that must not be retried elsewhere.
-func (h *Handler) finishError(q *request, acc *pool.Account, res result) {
-	detail := truncate(string(res.body), 600)
-	typ := "server_error"
-	if res.status == http.StatusForbidden {
-		typ = "invalid_request_error"
-		if strings.TrimSpace(detail) == "" {
-			detail = "content rejected"
-		}
-	}
-	h.emit(UsageEvent{At: q.start, Model: q.model, Account: acc.UID, KeyID: q.keyID, Stream: q.stream,
-		Outcome: "failed", Status: res.status, Elapsed: time.Since(q.start)})
-	writeError(q.w, res.status, fmt.Sprintf("upstream %d: %s", res.status, detail), typ)
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
-}
-
-type resultKind int
-
-const (
-	done      resultKind = iota // response fully handled
-	retry                       // try another account
-	retrySame                   // try the same account again (token refreshed / prompt degraded)
-	stop                        // hand this upstream error to the client, no more attempts
-)
-
-type result struct {
-	kind   resultKind
-	status int
-	body   []byte
-}
-
-func (h *Handler) chatURL(acc *pool.Account, product string) string {
-	if h.UpstreamOverride != "" {
-		return strings.TrimRight(h.UpstreamOverride, "/") + ChatPath
-	}
-	base, _ := identity.Endpoint(acc.Realm, product)
-	return base + ChatPath
-}
-
-// try performs one upstream attempt with acc.
-func (h *Handler) try(q *request, acc *pool.Account) result {
-	acc.Acquire()
-	defer acc.Release()
-
-	rec := acc.Record()
-	product := identity.NormalizeProduct(rec.Product)
-	enc, gz := q.bodyFor(product)
-
-	conv := ""
-	if product == identity.ProductVSCode {
-		conv = q.vscodeConv
-	} else if q.sessionKey != "" {
-		conv = identity.ConversationIDFor(rec.UID, q.sessionKey)
-	}
-	hdrs := identity.ChatHeaders(identity.ChatParams{
-		Params: identity.Params{
-			Product: product, Realm: rec.Realm, UID: rec.UID, Token: rec.AccessToken,
-			ConversationID: conv, EnterpriseID: rec.EnterpriseID, TenantID: rec.EnterpriseID,
-			Model: q.model, SessionKey: q.sessionKey, TurnRequestID: q.turnID,
-		},
-		DeviceToken: h.Settings.ResolveDeviceToken(),
-	})
-	if gz {
-		hdrs.Set("Content-Encoding", identity.RequestContentEnc)
-	}
-	cfg := h.Settings.UpstreamConfig()
-
-	ctx, cancel := context.WithCancel(q.r.Context())
-	defer cancel()
-	tDo := time.Now()
-	resp, err := h.Up.Wire(acc.UID, rec.ProxyLegacy).Do(ctx, upstream.Request{
-		Method: http.MethodPost, URL: h.chatURL(acc, product), Headers: hdrs,
-		Body: enc.wire(gz), HeaderTimeout: cfg.HeaderTimeout,
-	})
-	if traceTimings {
-		h.logger().Info("trace", "pre_ms", tDo.Sub(q.start).Milliseconds(), "upstream_headers_ms", time.Since(tDo).Milliseconds())
-	}
-	if err != nil {
-		if q.r.Context().Err() != nil {
-			return result{kind: done}
-		}
-		acc.NoteResult(false)
-		acc.CoolDown(time.Now().Add(5 * time.Second))
-		h.logger().Warn("upstream request failed", "account", short(acc.UID), "err", err)
-		return result{kind: retry, status: http.StatusBadGateway, body: []byte(err.Error())}
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		eb, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		return h.classify(q, acc, resp.StatusCode, eb)
-	}
-	acc.NoteResult(true)
-	idle := cfg.IdleTimeout
-	if q.sink != nil {
-		q.sink(q, acc, cancel, idle, resp.Body)
-	} else if q.stream {
-		h.pipeStream(q.w, q.r, cancel, idle, resp.Body, acc, q.model, q.keyID, q.start)
-	} else {
-		h.aggregate(q.w, q.r, cancel, idle, resp.Body, acc, q.model, q.keyID, q.start)
-	}
-	return result{kind: done}
-}
-
-func short(uid string) string {
-	if len(uid) > 8 {
-		return uid[:8]
-	}
-	return uid
-}
-
-// classify decides what an upstream error status means for scheduling.
-func (h *Handler) classify(q *request, acc *pool.Account, status int, body []byte) result {
-	acc.NoteResult(false)
-	now := time.Now()
-	switch {
-	case status == http.StatusTooManyRequests:
-		acc.CoolDownModel(q.model, now.Add(60*time.Second))
-		return result{kind: retry, status: status, body: body}
-
-	case status == http.StatusUnauthorized:
-		// The token may simply have expired before its JWT clock did: refresh
-		// once per account per request and retry that same account.
-		if h.Refresher != nil && !q.refreshed[acc.UID] {
-			q.refreshed[acc.UID] = true
-			rctx, cancel := context.WithTimeout(q.r.Context(), 35*time.Second)
-			err := h.Refresher.Refresh(rctx, acc)
-			cancel()
-			if err == nil {
-				h.logger().Info("HTTP 401, token refreshed; retrying the same account", "account", short(acc.UID))
-				return result{kind: retrySame, status: status, body: body}
-			}
-			h.logger().Warn("token refresh after 401 failed", "account", short(acc.UID), "err", err)
-		}
-		acc.CoolDown(now.Add(60 * time.Second))
-		return result{kind: retry, status: status, body: body}
-
-	case status == http.StatusPaymentRequired:
-		acc.CoolDown(now.Add(time.Hour))
-		return result{kind: retry, status: status, body: body}
-
-	case status == http.StatusForbidden:
-		detail := string(body)
-		if risk.IsAccountRestriction(detail) {
-			// Account-level restriction: park the account (persisted) and do NOT
-			// replay the request on other accounts - they share the device.
-			if rec := acc.NoteRestricted(now, risk.RestrictedAccountCooldown); rec != nil && h.Persist != nil {
-				if err := h.Persist(rec); err != nil {
-					h.logger().Warn("restriction not persisted", "account", short(acc.UID), "err", err)
-				}
-			}
-			h.logger().Warn("account restricted by upstream (403 11140)", "account", short(acc.UID))
-			h.guard().Note(q.realm, acc.UID)
-			if q.restrictedRot >= h.guard().Cfg.RotateMax {
-				return result{kind: stop, status: status, body: body}
-			}
-			q.restrictedRot++
-			return result{kind: retry, status: status, body: body}
-		}
-		// Content review. In passthrough/append prompt modes a system-prompt
-		// fingerprint is the usual culprit: switch to the neutral prompt until
-		// 00:00 CST and retry this turn once.
-		if m := h.Settings.PromptConfig().Mode; !q.degradedRetried && (m == "passthrough" || m == "append") {
-			q.degradedRetried = true
-			h.degrade().Trigger(now)
-			h.reshape(q)
-			h.logger().Info("upstream 403 (content review) -> degraded prompt retry")
-			return result{kind: retrySame, status: status, body: body}
-		}
-		return result{kind: stop, status: status, body: body}
-
-	case status >= 500:
-		acc.CoolDown(now.Add(5 * time.Second))
-		return result{kind: retry, status: status, body: body}
-	}
-	return result{kind: stop, status: status, body: body}
 }
 
 func (h *Handler) emit(ev UsageEvent) {

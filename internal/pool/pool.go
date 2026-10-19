@@ -30,6 +30,10 @@ type Account struct {
 	expiresAt    atomic.Int64 // unix seconds
 	cooldownTo   atomic.Int64 // unix nanoseconds; account-wide cooldown
 	restrictedTo atomic.Int64 // unix nanoseconds; upstream risk-control hold
+	breakerTo    atomicInt64  // unix nanoseconds; breaker after consecutive hard failures
+	degradeTo    atomicInt64  // unix nanoseconds; degrade window after unknown failures
+	balanceTo    atomicInt64  // unix nanoseconds; 402 park until the daily reset
+	guard        guards       // daily / reserve limits, refreshed by the guard scan
 	inflight     atomic.Int32
 	maxInflight  atomic.Int32 // 0 = unlimited
 	weight       atomic.Int32
@@ -39,9 +43,12 @@ type Account struct {
 
 	mu         sync.Mutex
 	modelCool  map[string]int64 // model -> unix nanoseconds
-	disabledMd map[string]bool  // manual per-model deny list (lower-case)
+	g          governState
+	disabledMd map[string]bool // manual per-model deny list (lower-case)
 	stats      Stats
 }
+
+type atomicInt64 = atomic.Int64
 
 // Stats are cheap counters shown on the panel.
 type Stats struct {
@@ -71,6 +78,10 @@ func (a *Account) SetRecord(rec *accounts.Record) {
 	a.mu.Lock()
 	a.disabledMd = dm
 	a.mu.Unlock()
+	a.restoreCaps(rec, time.Now())
+	if p := a.owner.Load(); p != nil {
+		p.prefDirty.Store(true)
+	}
 	a.touch()
 }
 
@@ -93,7 +104,11 @@ func (a *Account) Ready(model string, now time.Time) bool {
 		return false
 	}
 	ns := now.UnixNano()
-	if a.cooldownTo.Load() > ns || a.restrictedTo.Load() > ns {
+	if a.cooldownTo.Load() > ns || a.restrictedTo.Load() > ns || a.breakerTo.Load() > ns ||
+		a.degradeTo.Load() > ns || a.balanceTo.Load() > ns {
+		return false
+	}
+	if a.guard.reserve.Load() || a.guard.dailyToken.Load() {
 		return false
 	}
 	if max := a.maxInflight.Load(); max > 0 && a.inflight.Load() >= max {
@@ -104,7 +119,7 @@ func (a *Account) Ready(model string, now time.Time) bool {
 		blocked := a.disabledMd[model]
 		until := a.modelCool[model]
 		a.mu.Unlock()
-		if blocked || until > ns {
+		if blocked || until > ns || a.guard.creditBlocked(model) || a.guard.modelTokenBlocked(model) {
 			return false
 		}
 	}
@@ -174,11 +189,20 @@ type Pool struct {
 	cursors sync.Map // realm -> *atomic.Uint64
 	notify  atomic.Pointer[func(uid string)]
 	writeMu sync.Mutex // serialises membership changes (Add / Remove / Replace)
+
+	affinity  *SessionAffinity
+	prefs     atomic.Pointer[prefSnap] // dispatch preferences (weights, expiring credits), rebuilt lazily
+	prefDirty atomic.Bool
+	expWindow atomic.Pointer[map[string]int] // realm -> expiring window in days
+	wrrMu     sync.Mutex
+	wrrManual map[string]int // smooth weighted round-robin state: manual weights
+	wrrExpire map[string]int // ... expiring-credits window
+	pageCur   sync.Map       // pageKey -> *atomic.Uint64
 }
 
 // New builds a pool from records.
 func New(recs []*accounts.Record) *Pool {
-	p := &Pool{}
+	p := &Pool{affinity: NewSessionAffinity(), wrrManual: map[string]int{}, wrrExpire: map[string]int{}}
 	list := make([]*Account, 0, len(recs))
 	for _, r := range recs {
 		list = append(list, NewAccount(r))
@@ -208,6 +232,7 @@ func (p *Pool) replaceLocked(list []*Account) {
 		s.byUID[a.UID] = a
 	}
 	p.snap.Store(s)
+	p.prefDirty.Store(true)
 }
 
 // Len returns the number of accounts.
@@ -225,29 +250,6 @@ func (p *Pool) cursor(realm string) *atomic.Uint64 {
 	}
 	c, _ := p.cursors.LoadOrStore(realm, new(atomic.Uint64))
 	return c.(*atomic.Uint64)
-}
-
-// Pick returns the next ready account of realm for model, skipping exclude.
-// It scans from a shared rotating cursor, so on a healthy pool it inspects one
-// or two accounts regardless of pool size. It returns nil when nobody is ready.
-func (p *Pool) Pick(realm, model string, exclude map[string]struct{}) *Account {
-	list := p.snap.Load().byRealm[realm]
-	n := len(list)
-	if n == 0 {
-		return nil
-	}
-	now := time.Now()
-	start := p.cursor(realm).Add(1) - 1
-	for i := 0; i < n; i++ {
-		a := list[int((start+uint64(i))%uint64(n))]
-		if _, skip := exclude[a.UID]; skip {
-			continue
-		}
-		if a.Ready(model, now) {
-			return a
-		}
-	}
-	return nil
 }
 
 // ReadyCount counts ready accounts (used for retry budgeting and /health). It
