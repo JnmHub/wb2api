@@ -152,6 +152,15 @@ func writeError(w http.ResponseWriter, status int, msg, typ string) {
 	_, _ = w.Write(append(b, '\n'))
 }
 
+// KeyRequired reports whether any API key is configured (and so every
+// request must carry one).
+func (h *Handler) KeyRequired() bool { return len(h.activeKeys()) > 0 }
+
+// Authenticate returns the matched key (nil when auth is not required).
+func (h *Handler) Authenticate(r *http.Request) (key *settings.APIKey, ok bool) {
+	return h.authenticate(r)
+}
+
 // authenticate returns the matched key (nil when auth is not required).
 func (h *Handler) authenticate(r *http.Request) (key *settings.APIKey, ok bool) {
 	keys := h.activeKeys()

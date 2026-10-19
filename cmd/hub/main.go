@@ -1,8 +1,9 @@
 // Command hub is the WorkBuddy2API gateway (Go rewrite).
 //
-// STATUS: Phase 0/1 vertical slice. It serves /v1/chat/completions through the
-// real account pool, per-account transports and leak filter; panel, models
-// catalog, token refresh and the rest of the legacy surface are not ported yet.
+// STATUS: it serves /v1/chat/completions, /v1/models, /v1/balance-summary and
+// /health through the real account pool, per-account transports and leak
+// filter, plus the new dashboard; see docs/PROGRESS.md for what of the legacy
+// surface is still missing.
 package main
 
 import (
@@ -24,6 +25,7 @@ import (
 	"time"
 
 	"wb2api/internal/api"
+	"wb2api/internal/catalog"
 	"wb2api/internal/events"
 	"wb2api/internal/gateway/leak"
 	"wb2api/internal/gateway/openai"
@@ -56,6 +58,8 @@ func main() {
 	perAccount := flag.Int("per-account-inflight", 0, "max concurrent requests per account (0 = unlimited)")
 	usageDir := flag.String("usage-dir", envOr("WB_PROXY_USAGE_DIR", "usage"), "directory for usage.db (and the legacy usage.jsonl to import)")
 	panelPassword := flag.String("panel-password", os.Getenv("WB_PANEL_PASSWORD"), "set the dashboard password at start-up")
+	catalogDir := flag.String("catalog-dir", envOr("WB_PROXY_CATALOG_DIR", "catalog"), "archive directory for the last /v3/config responses")
+	noModelsDev := flag.Bool("no-modelsdev", os.Getenv("WB_NO_MODELSDEV") == "1", "never contact models.dev for context/output limits")
 	debug := flag.Bool("debug", os.Getenv("WB_DEBUG") == "1", "expose /debug/runtime")
 	flag.Parse()
 
@@ -93,6 +97,11 @@ func main() {
 		Pool: p, Up: up, Settings: st, Log: log, Refresher: refresher, Persist: persist,
 		UpstreamOverride: *upstreamOverride, MaxAttempts: *maxAttempts, FilterMode: mode,
 	}
+	cat := &catalog.Service{
+		Pool: p, Up: up, Dir: *accountsDir, CacheDir: *catalogDir, Log: log,
+		UpstreamOverride: *upstreamOverride, ModelsDev: !*noModelsDev,
+	}
+	h.Catalog = cat
 	if err := os.MkdirAll(*usageDir, 0o755); err != nil {
 		log.Error("cannot create the usage directory", "dir", *usageDir, "err", err)
 		os.Exit(1)
@@ -153,6 +162,7 @@ func main() {
 	mux := http.NewServeMux()
 	auth.Register(mux, "/api/v2/session")
 	mux.Handle("/v1/chat/completions", h)
+	(&openai.Info{Chat: h, Pool: p, Catalog: cat}).Register(mux)
 	(&api.Usage{DB: udb}).Register(mux, auth.Require)
 	bus := events.New(512)
 	jobMgr := &jobs.Manager{Workers: 4, OnProgress: func(j jobs.Job) { bus.Publish("job.progress", j) }}
@@ -168,10 +178,6 @@ func main() {
 		os.Exit(1)
 	}
 	mux.Handle("/", ui) // everything not claimed above: the dashboard SPA
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "accounts": p.Len()})
-	})
 	if *debug {
 		mux.HandleFunc("/debug/pprof/", pprof.Index)
 		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
@@ -194,6 +200,7 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 	go refresher.Run(bg)
+	go cat.RunDaily(bg)
 	go func() {
 		log.Info("listening", "addr", addr, "accounts", p.Len(), "dir", *accountsDir, "leak_filter", map[leak.Mode]string{leak.Precise: "precise", leak.Legacy: "legacy"}[mode])
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
