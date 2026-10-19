@@ -282,7 +282,7 @@ func TestBatchRulesAndErrors(t *testing.T) {
 		{"no target", `{"action":"enable"}`, 400},
 		{"uids and filter", `{"action":"enable","uids":["acct-0001"],"filter":{}}`, 400},
 		{"nothing matches", `{"action":"enable","filter":{"q":"zzzzzz"}}`, 400},
-		{"not yet ported", `{"action":"checkin","uids":["acct-0001"]}`, 501},
+		{"vendor actions need the ops client", `{"action":"checkin","uids":["acct-0001"]}`, 400},
 		{"bad product", `{"action":"set_product","uids":["acct-0001"],"params":{"product":"x"}}`, 400},
 	}
 	for _, c := range cases {

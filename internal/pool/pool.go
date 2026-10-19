@@ -195,9 +195,10 @@ type Pool struct {
 	prefDirty atomic.Bool
 	expWindow atomic.Pointer[map[string]int] // realm -> expiring window in days
 	wrrMu     sync.Mutex
-	wrrManual map[string]int // smooth weighted round-robin state: manual weights
-	wrrExpire map[string]int // ... expiring-credits window
-	pageCur   sync.Map       // pageKey -> *atomic.Uint64
+	wrrManual map[string]int                    // smooth weighted round-robin state: manual weights
+	wrrExpire map[string]int                    // ... expiring-credits window
+	pageCur   sync.Map                          // pageKey -> *atomic.Uint64
+	slots     atomic.Pointer[map[string]string] // enabled proxy slot id -> URL
 }
 
 // New builds a pool from records.

@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"wb2api/internal/activity"
 	"wb2api/internal/api"
 	"wb2api/internal/catalog"
 	"wb2api/internal/events"
@@ -31,10 +32,13 @@ import (
 	"wb2api/internal/gateway/openai"
 	"wb2api/internal/guards"
 	"wb2api/internal/jobs"
+	"wb2api/internal/logbuf"
+	"wb2api/internal/ops"
 	"wb2api/internal/panelauth"
 	"wb2api/internal/pool"
 	"wb2api/internal/realmswitch"
 	"wb2api/internal/refresh"
+	"wb2api/internal/scheduler"
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/store/settings"
 	"wb2api/internal/upstream"
@@ -68,7 +72,9 @@ func main() {
 	if *lan && *host == "127.0.0.1" {
 		*host = "0.0.0.0"
 	}
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logRing := logbuf.New(2000)
+	log := slog.New(logbuf.NewHandler(logRing, slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	slog.SetDefault(log)
 
 	recs, errs := accounts.Load(*accountsDir, time.Now())
 	for _, e := range errs {
@@ -81,6 +87,14 @@ func main() {
 		}
 	}
 	st := settings.Open(*accountsDir)
+	applyProxySlots := func() {
+		var slots []pool.ProxySlot
+		for _, sl := range st.ProxySlots() {
+			slots = append(slots, pool.ProxySlot{ID: sl.ID, URL: sl.URL, Enabled: sl.Enabled})
+		}
+		p.ApplyProxySlots(slots)
+	}
+	applyProxySlots()
 
 	mode := leak.Precise
 	if *legacyFilter {
@@ -191,8 +205,21 @@ func main() {
 		Pool: p, Today: today, Persist: persist, Refresher: refresher, Jobs: jobMgr, Bus: bus,
 		Delete: accounts.Delete,
 	}
+	activityLog := &activity.Log{Dir: *usageDir}
+	opsClient := &ops.Client{
+		Pool: p, Up: up, Refresher: refresher, Settings: st, Activity: activityLog, Log: log,
+		Persist: persist, BaseOverride: *upstreamOverride,
+	}
+	accountsAPI.Ops, accountsAPI.Prober = opsClient, h
 	accountsAPI.Register(mux, auth.Require)
 	accountsAPI.StartEvents(bg, time.Second)
+	sched := &scheduler.Scheduler{
+		Pool: p, Ops: opsClient, Refresher: refresher, Settings: st, Log: log,
+		Hold: func(realm string) time.Duration { return h.RiskHold(realm) },
+	}
+	(&api.Operations{Ops: opsClient, Pool: p, Prober: h, Scheduler: sched, Activity: activityLog}).Register(mux, auth.Require)
+	(&api.Settings{Store: st, Pool: p, Realm: realmSw, Guards: h.Guards, Catalog: cat}).Register(mux, auth.Require)
+	(&api.Logs{Ring: logRing}).Register(mux, auth.Require)
 	ui, err := webui.New(webui.Dist())
 	if err != nil {
 		log.Error("cannot load the embedded dashboard", "err", err)
@@ -221,6 +248,8 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 	go refresher.Run(bg)
+	go sched.Run(bg)
+	go sched.RunCredits(bg)
 	go cat.RunDaily(bg)
 	go func() {
 		log.Info("listening", "addr", addr, "accounts", p.Len(), "dir", *accountsDir, "leak_filter", map[leak.Mode]string{leak.Precise: "precise", leak.Legacy: "legacy"}[mode])

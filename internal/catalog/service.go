@@ -376,3 +376,27 @@ func (s *Service) FixedEffort(model string) string {
 	}
 	return ""
 }
+
+// Status describes the published list of a realm for the panel.
+type Status struct {
+	Realm     string   `json:"realm"`
+	Source    string   `json:"source"`
+	FetchedAt float64  `json:"fetched_at"`
+	Count     int      `json:"count"`
+	FileMtime *float64 `json:"file_mtime"`
+}
+
+// Status reports what is currently published per realm (zero values before the
+// first listing).
+func (s *Service) Status() []Status {
+	var out []Status
+	for _, r := range []string{realm.Intl, realm.CN} {
+		st := Status{Realm: r, Source: "not built yet"}
+		if v, ok := s.cache.Load(r); ok {
+			c := v.(*cached)
+			st.Source, st.FetchedAt, st.Count, st.FileMtime = c.meta.Source, c.meta.FetchedAt, len(c.entries), c.meta.FileMtime
+		}
+		out = append(out, st)
+	}
+	return out
+}

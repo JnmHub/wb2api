@@ -3,6 +3,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -253,4 +254,17 @@ func timeZeroIfDefault(r *http.Request, t time.Time) time.Time {
 		return time.Time{}
 	}
 	return t
+}
+
+func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
+
+func jsonIndent(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

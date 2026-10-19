@@ -345,7 +345,7 @@ func (r *Refresher) doRefresh(ctx context.Context, a *pool.Account) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	resp, err := r.Up.Wire(a.UID, rec.ProxyLegacy).Do(ctx, upstream.Request{
+	resp, err := r.Up.Wire(a.UID, a.Proxy()).Do(ctx, upstream.Request{
 		Method: http.MethodPost, URL: strings.TrimRight(base, "/") + RefreshPath,
 		Headers: r.headers(rec), Body: []byte("{}"),
 	})

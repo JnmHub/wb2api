@@ -240,3 +240,14 @@ func (s *Store) AuthDisabled() bool { return s.View().flag("auth_disabled") }
 
 // AnthropicMessages: the Messages compatibility layer is switched on.
 func (s *Store) AnthropicMessages() bool { return s.View().flag("enable_anthropic_messages") }
+
+func numberFloat(v any) (float64, bool) {
+	switch t := v.(type) {
+	case float64:
+		return t, true
+	case interface{ Float64() (float64, error) }:
+		f, err := t.Float64()
+		return f, err == nil
+	}
+	return 0, false
+}

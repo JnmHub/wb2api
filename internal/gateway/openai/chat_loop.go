@@ -301,30 +301,14 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 	product := identity.NormalizeProduct(rec.Product)
 	enc, gz := q.bodyFor(product)
 
-	conv := ""
-	if product == identity.ProductVSCode {
-		conv = q.vscodeConv
-	} else if q.sessionKey != "" {
-		conv = identity.ConversationIDFor(rec.UID, q.sessionKey)
-	}
-	hdrs := identity.ChatHeaders(identity.ChatParams{
-		Params: identity.Params{
-			Product: product, Realm: rec.Realm, UID: rec.UID, Token: rec.AccessToken,
-			ConversationID: conv, EnterpriseID: rec.EnterpriseID, TenantID: rec.EnterpriseID,
-			Model: q.model, SessionKey: q.sessionKey, TurnRequestID: q.turnID,
-		},
-		DeviceToken: h.Settings.ResolveDeviceToken(),
-	})
-	if gz {
-		hdrs.Set("Content-Encoding", identity.RequestContentEnc)
-	}
+	hdrs := h.chatHeaders(q, rec, product, gz)
 	cfg := h.Settings.UpstreamConfig()
 
 	ctx, cancel := context.WithCancel(q.r.Context())
 	defer cancel()
 	tDo := time.Now()
 	target := h.chatURL(acc, product)
-	resp, err := h.Up.Wire(acc.UID, rec.ProxyLegacy).Do(ctx, upstream.Request{
+	resp, err := h.Up.Wire(acc.UID, acc.Proxy()).Do(ctx, upstream.Request{
 		Method: http.MethodPost, URL: target, Headers: hdrs,
 		Body: enc.wire(gz), HeaderTimeout: cfg.HeaderTimeout,
 	})
@@ -335,20 +319,20 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 		if q.r.Context().Err() != nil {
 			return result{kind: done}
 		}
-		return h.transportError(q, acc, err, egressKey(target, rec.ProxyLegacy))
+		return h.transportError(q, acc, err, egressKey(target, acc.Proxy()))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		eb, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		return h.classify(q, acc, resp.StatusCode, eb, egressKey(target, rec.ProxyLegacy))
+		return h.classify(q, acc, resp.StatusCode, eb, egressKey(target, acc.Proxy()))
 	}
 	acc.NoteResult(true)
 	if lifted := acc.NoteSuccess(q.model); lifted != nil {
 		h.persistRecord(lifted)
 	}
 	if h.Settings.EgressBackoff() {
-		h.egress.success(egressKey(target, rec.ProxyLegacy))
+		h.egress.success(egressKey(target, acc.Proxy()))
 	}
 	h.resetSwitch(acc.UID, q.model)
 	idle := cfg.IdleTimeout
@@ -371,6 +355,30 @@ func (h *Handler) persistRecord(rec *accounts.Record) {
 	if err := h.Persist(rec); err != nil {
 		h.logger().Warn("account record not persisted", "account", short(rec.UID), "err", err)
 	}
+}
+
+// chatHeaders builds the outbound headers of one attempt for the account's
+// identity: the conversation id is stable per (account, session key), the turn
+// request id is shared by every retry of one user turn.
+func (h *Handler) chatHeaders(q *request, rec *accounts.Record, product string, gz bool) identity.Headers {
+	conv := ""
+	if product == identity.ProductVSCode {
+		conv = q.vscodeConv
+	} else if q.sessionKey != "" {
+		conv = identity.ConversationIDFor(rec.UID, q.sessionKey)
+	}
+	hdrs := identity.ChatHeaders(identity.ChatParams{
+		Params: identity.Params{
+			Product: product, Realm: rec.Realm, UID: rec.UID, Token: rec.AccessToken,
+			ConversationID: conv, EnterpriseID: rec.EnterpriseID, TenantID: rec.EnterpriseID,
+			Model: q.model, SessionKey: q.sessionKey, TurnRequestID: q.turnID,
+		},
+		DeviceToken: h.Settings.ResolveDeviceToken(),
+	})
+	if gz {
+		hdrs.Set("Content-Encoding", identity.RequestContentEnc)
+	}
+	return hdrs
 }
 
 // transportError files a failure that produced no HTTP status.

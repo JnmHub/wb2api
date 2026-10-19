@@ -414,3 +414,6 @@ func (h *Handler) emit(ev UsageEvent) {
 }
 
 var traceTimings = os.Getenv("WB_TRACE") == "1"
+
+// RiskHold is how long a realm is paused after an upstream risk-control wave.
+func (h *Handler) RiskHold(realmName string) time.Duration { return h.guard().HoldRemaining(realmName) }

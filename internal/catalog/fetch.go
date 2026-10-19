@@ -88,7 +88,7 @@ func (s *Service) fetchRemote(ctx context.Context, r string) *Parsed {
 	}
 	var last any
 	for _, ua := range uas {
-		body, err := s.getConfig(ctx, acc, rec.ProxyLegacy, s.configURL(r), configHeaders(r, ua, rec.UID, rec.AccessToken))
+		body, err := s.getConfig(ctx, acc, acc.Proxy(), s.configURL(r), configHeaders(r, ua, rec.UID, rec.AccessToken))
 		if err != nil {
 			last = err
 			continue

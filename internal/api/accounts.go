@@ -15,6 +15,7 @@ import (
 	"wb2api/internal/events"
 	"wb2api/internal/fingerprint"
 	"wb2api/internal/jobs"
+	"wb2api/internal/ops"
 	"wb2api/internal/pool"
 	"wb2api/internal/realm"
 	"wb2api/internal/refresh"
@@ -38,6 +39,10 @@ type Accounts struct {
 	Jobs      *jobs.Manager
 	Bus       *events.Bus
 	Now       func() time.Time
+	// Ops runs the vendor-facing account operations (balances, check-in, ...);
+	// Prober tests an account with a real request. Either may be nil.
+	Ops    *ops.Client
+	Prober Prober
 
 	changes events.Coalescer
 }
@@ -511,12 +516,7 @@ const maxBatch = 20000
 
 var destructive = map[string]bool{"delete": true, "clear_restriction": true}
 
-var notYet = map[string]string{
-	"refresh_credits": "credit refresh is not ported yet",
-	"checkin":         "daily check-in is not ported yet",
-	"daily_chat":      "daily activity is not ported yet",
-	"test":            "the account test is not ported yet",
-}
+var notYet = map[string]string{}
 
 func (a *Accounts) resolveTargets(b batchReq, now time.Time) ([]string, error) {
 	if len(b.UIDs) > 0 && b.Filter != nil {
@@ -623,6 +623,8 @@ func (a *Accounts) batchFn(b batchReq) (jobs.Func, error) {
 			}
 			return nil
 		}, nil
+	case "refresh_credits", "checkin", "daily_chat", "report_activity", "sync_profile", "test":
+		return a.upstreamAction(b)
 	case "refresh_token":
 		if a.Refresher == nil {
 			return nil, errors.New("token refresh is not available")
