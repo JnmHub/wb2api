@@ -48,7 +48,7 @@ body {
 }
 button, input, select, textarea { font: inherit; color: inherit; }
 a { color: var(--accent); }
-.mono { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12.5px; }
+.mono { font-family: "Sarasa Mono SC", ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12.5px; }
 .dim { color: var(--dim); }
 .right { text-align: right; }
 

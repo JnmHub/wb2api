@@ -40,6 +40,12 @@ SOFTWARE.
 - **clsx** — MIT
 - **@number-flow/react** — MIT
 
+## Fonts
+
+- **Sarasa Mono SC** 0.36.0 — SIL Open Font License 1.1. The bundled core
+  shards (`web/src/assets/fonts/sarasa/`) keep their licence in
+  `OFL.txt` next to the font files.
+
 ## Go libraries
 
 - **modernc.org/sqlite** — BSD-3-Clause

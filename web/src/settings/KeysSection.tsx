@@ -61,6 +61,7 @@ export function KeysSection({ s }: { s: SettingsView }) {
     {
       title: '模型',
       dataIndex: 'models',
+      responsive: ['md'],
       render: (m: string[]) =>
         m.length ? (
           <Typography.Text ellipsis={{ tooltip: m.join('\n') }} style={{ maxWidth: 260 }}>
@@ -74,6 +75,7 @@ export function KeysSection({ s }: { s: SettingsView }) {
       title: '并发',
       dataIndex: 'concurrency_limit',
       width: 100,
+      responsive: ['md'],
       render: (v: number) => (v ? `≤ ${v}` : '不限'),
     },
     {
