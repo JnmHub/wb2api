@@ -49,6 +49,8 @@ type Client struct {
 	// BaseOverride replaces every vendor base URL (tests, mock).
 	BaseOverride string
 	Now          func() time.Time
+	// Pause replaces the inter-write sleeps (tests); nil = time.Sleep.
+	Pause func(time.Duration)
 
 	loginMu sync.Mutex
 	logins  map[string]loginInfo

@@ -43,6 +43,8 @@
 | `internal/realmswitch` | 面板出口（国际/国内）持久化并热切换 | 单测 |
 | 免费模型积分回退（`openai`） | 国际版 `deepseek-v4.1-flash` 的 24h 窗口在**所有**可用账号上都用尽（落盘的 6004 窗口）后，自动改打付费同款 `deepseek-v4.1-flash-sg` 一次；开关 `free_model_credit_fallback`（默认关）或 `WB_ENABLE_FREE_MODEL_CREDIT_FALLBACK`，用量记在付费模型上，不再二次回退 | 2 个网关测试（回退成功、开关关闭不回退） |
 | `internal/quota`（额度窗口探针） | 429 带重置时刻时，把「账号 × 模型」窗口落盘到 `accounts/model_windows.json`；到点发一个最小请求（`max_tokens=16`、`reasoning_effort=none`）：通了就清该模型冷却，仍 429 且给了新时刻就重排，否则 15 s 后重试、最多 20 次；设置页 `window_probe` 开关（默认开），调度器每 30 s 检查且不受定时任务开关影响 | 7 个单测 + 1 个网关测试 |
+| `internal/ops`（国内成长任务） | 成长中心：任务清单/汇总、自动接取、按任务类型生成最小事件（canvas/template/expert/team/skill/automation/playbook/skin/chat/glm/cat）、完成后领奖、不可伪造任务与仅桌面任务跳过；猫猫旅行（状态/领奖/派出、无 Buddy 时先补 `first_buddy`）；连登管家（补签/礼包/补偿/7d14d28d 兑换/抽奖）；夜猫子（23:00–08:00 窗口）。所有写入间隔 ≥1 s | 7 个 ops 测试 + 3 个 API 测试 |
+| `internal/api` + 任务页（成长任务） | `GET /api/v2/tasks`、`POST /api/v2/tasks/{run,travel,streak-bonus}`；面板任务页新增成长任务卡片（账号切换、连登/能量/猫猫状态、任务列表、全自动跑一轮/猫猫旅行/连登管家与结果展示） | 3 个 API 测试；前端 21 vitest |
 
 `go vet`、`gofmt` 干净；`go test ./...` 全绿。本机没有 C 编译器，`-race` 跑不了，需在 CI（Linux）补。
 
@@ -141,7 +143,7 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 
 ## 还没做
 
-- 没移植：国内猫猫旅行 / 连登任务、国际网页会话那一路、`web_search` / `web_fetch` 代跑工具（`wb_webtools`）、剩余用量优先调度、桌面凭据解密导入、价格估算、智能体配置、更新检查。
+- 没移植：国际网页会话那一路、`web_search` / `web_fetch` 代跑工具（`wb_webtools`）、剩余用量优先调度、桌面凭据解密导入、价格估算、智能体配置、更新检查。
 - 目录：`upstream_effort_of`（按目录钉死思考档位改写请求）、模型封锁表、`/u/<ref>/v1/models`（定址路由）。
 - TLS 指纹（JA3/JA4）：仍是 Go 标准 `crypto/tls`，与旧版 Python 的 OpenSSL 指纹不同（风险 R1）；**只在模拟上游上验证过，没连真实上游账号**，是否会被识别未验证。
 - 本机没有 C 编译器，`go test -race` 跑不了，需在 CI（Linux）补。

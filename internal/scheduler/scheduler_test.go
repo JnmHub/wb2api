@@ -74,7 +74,8 @@ func newFx(t *testing.T, specs ...map[string]any) *fx {
 	st := settings.Open(dir)
 	client := &ops.Client{Pool: f.pool, Up: upstream.NewManager(upstream.DefaultTimeouts()), Settings: st,
 		Activity: &activity.Log{Dir: dir}, BaseOverride: srv.URL}
-	f.s = &Scheduler{Pool: f.pool, Ops: client, Refresher: refresher{f}, Settings: st, Stagger: func() time.Duration { return 0 }}
+	f.s = &Scheduler{Pool: f.pool, Ops: client, Refresher: refresher{f}, Settings: st,
+		Stagger: func() time.Duration { return 0 }, Pause: func(time.Duration) {}}
 	return f
 }
 
@@ -112,11 +113,15 @@ func TestCycleDoesTheDailyChores(t *testing.T) {
 	if len(f.refresh) != 1 || f.refresh[0] != "soon" {
 		t.Errorf("only the nearly expired token is kept alive: %v", f.refresh)
 	}
-	// a second pass the same day does nothing more
-	before := len(f.calls)
+	// a second pass the same day does no more daily chore (the streak keeper
+	// still reads its state; that is idempotent and the legacy scheduler does it
+	// on every cycle too).
+	beforeCheckin := f.called("daily-checkin")
+	beforeReport := f.called("/v2/report")
+	beforeChat := f.called("chat/completions")
 	f.s.Cycle(context.Background(), "again")
-	if len(f.calls) != before {
-		t.Errorf("each chore runs at most once a day: %v", f.calls[before:])
+	if f.called("daily-checkin") != beforeCheckin || f.called("/v2/report") != beforeReport || f.called("chat/completions") != beforeChat {
+		t.Errorf("each daily chore runs at most once a day: %v", f.calls)
 	}
 	st := f.s.Status()
 	joined := strings.Join(st.Logs, "|")

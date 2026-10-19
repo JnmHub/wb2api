@@ -281,4 +281,8 @@ func (o *Operations) Register(mux *http.ServeMux, wrap func(http.Handler) http.H
 	mux.Handle("GET /api/v2/scheduler", h(o.schedulerGet))
 	mux.Handle("PATCH /api/v2/scheduler", h(o.schedulerPatch))
 	mux.Handle("POST /api/v2/scheduler/trigger", h(o.schedulerTrigger))
+	mux.Handle("GET /api/v2/tasks", h(o.tasksGet))
+	mux.Handle("POST /api/v2/tasks/run", h(o.tasksRun))
+	mux.Handle("POST /api/v2/tasks/travel", h(o.tasksTravel))
+	mux.Handle("POST /api/v2/tasks/streak-bonus", h(o.tasksStreak))
 }

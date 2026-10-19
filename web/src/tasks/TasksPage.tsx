@@ -1,6 +1,16 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ApiError, get, patch, post, type ActivityList, type ActivityRow, type SchedulerStatus } from '../api'
+import {
+  ApiError,
+  get,
+  patch,
+  post,
+  type ActivityList,
+  type ActivityRow,
+  type GrowthRun,
+  type SchedulerStatus,
+  type TasksSnapshot,
+} from '../api'
 import { Toggle } from '../components/Modal'
 
 const taskLabel: Record<string, string> = { checkin: '国内签到', daily_chat: '国际每日活跃', activity_report: '国内活跃上报' }
@@ -27,8 +37,126 @@ export function TasksPage() {
   return (
     <div className="page">
       <SchedulerCard />
+      <GrowthCard />
       <ActivityCard />
     </div>
+  )
+}
+
+const taskStatusLabel: Record<string, string> = {
+  not_accepted: '未接取',
+  accepted: '进行中',
+  completed: '待领奖',
+  claimed: '已领取',
+}
+
+/** CN growth centre: snapshot, the full auto-run, cat travel and the streak keeper. */
+function GrowthCard() {
+  const qc = useQueryClient()
+  const [uid, setUid] = useState('')
+  const [output, setOutput] = useState<string[] | null>(null)
+  const q = useQuery({
+    queryKey: ['tasks-snapshot', uid],
+    queryFn: () => get<TasksSnapshot>('/api/v2/tasks' + (uid ? '?uid=' + encodeURIComponent(uid) : '')),
+    retry: false,
+    refetchInterval: 60_000,
+  })
+  const act = useMutation({
+    mutationFn: (what: 'run' | 'travel' | 'streak-bonus') => post<GrowthRun>('/api/v2/tasks/' + what, { uid }),
+    onSuccess: (r) => {
+      const lines = r.logs?.length ? r.logs : (r.msg ?? '').split('\n').filter(Boolean)
+      if (r.credit_added) lines.unshift(`本轮共获得 ${r.credit_added} 积分`)
+      setOutput(lines)
+      qc.invalidateQueries({ queryKey: ['tasks-snapshot'] })
+    },
+    onError: (e) => setOutput([(e as Error).message]),
+  })
+  const snap = q.data
+  if (q.isError) {
+    return <section className="card sec dim">{(q.error as Error).message}</section>
+  }
+  const travelState: Record<string, string> = { idle: '在家', traveling: '旅行中', arrived: '已归来（待领奖）', unknown: '未知' }
+  return (
+    <section className="card sec">
+      <div className="row">
+        <h3>国内成长任务</h3>
+        {snap && <span className="dim">{snap.account.nickname || snap.account.uid.slice(0, 8)}</span>}
+        {snap && snap.accounts.length > 1 && (
+          <select className="select" value={uid || snap.account.uid} onChange={(e) => setUid(e.target.value)} aria-label="选择账号">
+            {snap.accounts.map((a) => (
+              <option key={a.uid} value={a.uid}>
+                {a.nickname || a.uid.slice(0, 8)}
+              </option>
+            ))}
+          </select>
+        )}
+        <span className="spacer" />
+        <button className="btn sm" disabled={act.isPending || !snap} onClick={() => act.mutate('travel')}>
+          猫猫旅行
+        </button>
+        <button className="btn sm" disabled={act.isPending || !snap} onClick={() => act.mutate('streak-bonus')}>
+          连登管家
+        </button>
+        <button className="btn sm primary" disabled={act.isPending || !snap} onClick={() => act.mutate('run')}>
+          {act.isPending ? '执行中…' : '全自动跑一轮'}
+        </button>
+      </div>
+      {!snap && !q.isError && <div className="dim">加载中…</div>}
+      {snap && (
+        <>
+          <div className="row dim">
+            <span>连登 {snap.summary.streak_days} 天</span>
+            <span>能量 {snap.summary.energy}</span>
+            <span>猫猫：{travelState[snap.summary.travel.state] ?? snap.summary.travel.state}</span>
+            {snap.summary.travel.daily_limit_reached ? <span>今日旅行额度已用完</span> : null}
+            {snap.account.enterprise ? <span className="badge cooling">企业版无成长体系</span> : null}
+          </div>
+          <div className="scroll">
+            <table className="t">
+              <thead>
+                <tr>
+                  <th>任务</th>
+                  <th>状态</th>
+                  <th className="num">进度</th>
+                  <th className="num">奖励</th>
+                </tr>
+              </thead>
+              <tbody>
+                {snap.tasks.map((t) => (
+                  <tr key={t.code}>
+                    <td title={t.description}>{t.title || t.code}</td>
+                    <td>
+                      <span className={'badge ' + (t.status === 'claimed' ? 'ready' : t.status === 'completed' ? 'cooling' : 'intl')}>
+                        {taskStatusLabel[t.status] ?? t.status}
+                      </span>
+                    </td>
+                    <td className="num">
+                      {t.current}/{t.target || '—'}
+                    </td>
+                    <td className="num">+{t.reward_credit}</td>
+                  </tr>
+                ))}
+                {snap.tasks.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="dim" style={{ textAlign: 'center', padding: 24 }}>
+                      没有可执行的成长任务
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <div className="dim">全自动跑一轮会接取任务并上报最小事件（每次写入间隔 1 秒），需要桌面端操作的任务会跳过。</div>
+        </>
+      )}
+      {output && (
+        <div className="actionresult" role="status">
+          {output.map((l, i) => (
+            <div key={i}>{l}</div>
+          ))}
+        </div>
+      )}
+    </section>
   )
 }
 

@@ -42,7 +42,9 @@ type Scheduler struct {
 	Windows *quota.Windows
 	// Stagger is the pause between accounts (default 2–5 s random).
 	Stagger func() time.Duration
-	Now     func() time.Time
+	// Pause replaces the one-second spacing between one account's chores (tests).
+	Pause func(time.Duration)
+	Now   func() time.Time
 
 	mu       sync.Mutex
 	running  bool
@@ -73,6 +75,25 @@ func (s *Scheduler) stagger() time.Duration {
 		return s.Stagger()
 	}
 	return 2*time.Second + time.Duration(rand.Int63n(int64(3*time.Second)))
+}
+
+func (s *Scheduler) pause(d time.Duration) {
+	if s.Pause != nil {
+		s.Pause(d)
+		return
+	}
+	if d > 0 {
+		time.Sleep(d)
+	}
+}
+
+func hoursInclude(hours []int, h int) bool {
+	for _, x := range hours {
+		if x == h {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Scheduler) note(format string, a ...any) {
@@ -145,12 +166,16 @@ func (s *Scheduler) Cycle(ctx context.Context, reason string) {
 	defer func() { s.mu.Lock(); s.running = false; s.mu.Unlock() }()
 
 	s.note("开始执行任务 (%s)...", reason)
+	hour := s.now().Hour()
+	sched := s.Settings.ScheduleHours()
+	travelHours := hoursInclude(sched["travel"], hour)
+	nightHours := hoursInclude(sched["cat"], hour)
 	accs := append([]*pool.Account(nil), s.Pool.All()...)
 	if len(accs) == 0 {
 		s.note("暂无可用的活跃账号，跳过本次巡检")
 		return
 	}
-	var kept, checkin, report, chat int
+	var kept, checkin, report, chat, travel int
 	for i, acc := range accs {
 		if ctx.Err() != nil {
 			return
@@ -199,6 +224,7 @@ func (s *Scheduler) Cycle(ctx context.Context, reason string) {
 				} else {
 					s.note("! 账号 [%s] 自动签到未成功: %s", uid8, firstNonEmpty(res.Error, res.Msg))
 				}
+				s.pause(time.Second)
 			}
 			if s.Ops.CanReportActivity(acc) {
 				res := s.Ops.ReportActivity(ctx, acc, "scheduler")
@@ -207,6 +233,31 @@ func (s *Scheduler) Cycle(ctx context.Context, reason string) {
 					s.note("✓ 账号 [%s] %s", uid8, res.Msg)
 				} else {
 					s.note("! 账号 [%s] 对话活跃上报失败: %s", uid8, firstNonEmpty(res.Error, res.Msg))
+				}
+				s.pause(time.Second)
+			}
+			if travelHours {
+				res := s.Ops.CatTravel(ctx, acc)
+				if res.OK {
+					travel++
+					s.note("✓ 账号 [%s] 猫猫日常: %s", uid8, res.Msg)
+				} else {
+					s.note("! 账号 [%s] 猫猫日常失败: %s", uid8, firstNonEmpty(res.Error, res.Msg))
+				}
+				s.pause(time.Second)
+			}
+			if res := s.Ops.RunStreakBonus(ctx, acc); res.OK {
+				s.note("账号 [%s] 连登管家: %s", uid8, res.Msg)
+			} else {
+				s.note("! 账号 [%s] 连登管家失败: %s", uid8, firstNonEmpty(res.Error, res.Msg))
+			}
+			s.pause(time.Second)
+			if nightHours {
+				res := s.Ops.NightGrowth(ctx, acc)
+				if res.OK {
+					s.note("账号 [%s] 夜猫子: %s", uid8, res.Msg)
+				} else {
+					s.note("! 账号 [%s] 夜猫子失败: %s", uid8, firstNonEmpty(res.Error, res.Msg))
 				}
 			}
 		case realm.Intl:
@@ -222,7 +273,7 @@ func (s *Scheduler) Cycle(ctx context.Context, reason string) {
 		}
 	}
 	s.mu.Lock()
-	s.lastNote = fmt.Sprintf("Token保活 %d，国内签到 %d，活跃上报 %d，国际活跃 %d", kept, checkin, report, chat)
+	s.lastNote = fmt.Sprintf("Token保活 %d，国内签到 %d，活跃上报 %d，猫猫日常 %d，国际活跃 %d", kept, checkin, report, travel, chat)
 	s.mu.Unlock()
 	s.note("巡检完成：%s", s.lastNote)
 }

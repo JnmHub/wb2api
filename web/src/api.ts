@@ -304,3 +304,37 @@ export interface LoginPoll {
   uid?: string
   nickname?: string
 }
+
+export interface GrowthTask {
+  code: string
+  title: string
+  description: string
+  jump_url: string
+  status: string
+  type: string
+  current: number
+  target: number
+  reward_credit: number
+  reward_energy: number
+}
+
+export interface GrowthSummary {
+  energy: number
+  streak_days: number
+  travel: { state: string; daily_limit_reached?: boolean }
+}
+
+export interface TasksSnapshot {
+  account: { uid: string; nickname: string; realm: string; enterprise: boolean }
+  accounts: { uid: string; nickname: string; realm: string; enterprise: boolean }[]
+  tasks: GrowthTask[]
+  summary: GrowthSummary
+}
+
+export interface GrowthRun {
+  ok: boolean
+  credit_added?: number
+  logs?: string[]
+  msg?: string
+  accounts_count?: number
+}
