@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { Button, Card, Input, Select, Space, Switch, Tag, Typography } from 'antd'
+import { Download, Pause, Play, Trash2 } from 'lucide-react'
 import { del, get, type LogEntry, type LogList } from '../api'
 
 const MAX_KEPT = 2000
@@ -73,48 +75,69 @@ export function LogsPage() {
     void poll.refetch()
   }
   return (
-    <div className="page logs">
-      <div className="toolbar">
-        <select className="select" value={level} onChange={(e) => setLevel(e.target.value)} aria-label="级别">
-          <option value="">全部级别</option>
-          <option value="WARN">警告及以上</option>
-          <option value="ERROR">仅错误</option>
-        </select>
-        <select className="select" value={tag} onChange={(e) => setTag(e.target.value)} aria-label="模块">
-          <option value="">全部模块</option>
-          {tags.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
+    <div className="page">
+      <div className="page-head">
+        <div>
+          <Typography.Title level={3} style={{ margin: 0 }}>
+            日志
+          </Typography.Title>
+          <Typography.Text type="secondary">
+            {lines.length} 行{paused ? '（已暂停）' : ''} · 内存环形缓冲，重启后清空
+          </Typography.Text>
+        </div>
+        <Space wrap>
+          <Space size={6}>
+            <Switch size="small" checked={follow} onChange={setFollow} />
+            <Typography.Text type="secondary">跟随最新</Typography.Text>
+          </Space>
+          <Button icon={paused ? <Play size={14} /> : <Pause size={14} />} onClick={() => setPaused((p) => !p)}>
+            {paused ? '继续' : '暂停'}
+          </Button>
+          <Button icon={<Download size={14} />} href={'/api/v2/logs/export?' + params} download>
+            导出
+          </Button>
+          <Button danger icon={<Trash2 size={14} />} onClick={clear}>
+            清空
+          </Button>
+        </Space>
+      </div>
+
+      <Card styles={{ body: { padding: 12 } }} style={{ marginBottom: 12 }}>
+        <Space wrap size={10}>
+          <Select
+            value={level}
+            style={{ width: 150 }}
+            onChange={setLevel}
+            options={[
+              { value: '', label: '全部级别' },
+              { value: 'WARN', label: '警告及以上' },
+              { value: 'ERROR', label: '仅错误' },
+            ]}
+          />
+          <Select
+            value={tag}
+            style={{ width: 160 }}
+            onChange={setTag}
+            options={[{ value: '', label: '全部模块' }, ...tags.map((t) => ({ value: t, label: t }))]}
+          />
+          <Input.Search allowClear style={{ width: 260 }} placeholder="搜索日志" value={q} onChange={(e) => setQ(e.target.value)} />
+          {paused && <Tag color="warning">已暂停刷新</Tag>}
+        </Space>
+      </Card>
+
+      <Card styles={{ body: { padding: 0 } }}>
+        <div className="logbox mono" ref={box} role="log" aria-live="off" style={{ borderRadius: 8 }}>
+          {shown.map((e) => (
+            <div key={e.id} className={'logline ' + e.level.toLowerCase()}>
+              <span className="dim">{e.time}</span> <span className={'lvl ' + e.level.toLowerCase()}>{e.level}</span>{' '}
+              <span className="tag">[{e.tag}]</span> <span className="msg">{e.msg}</span>
+            </div>
           ))}
-        </select>
-        <input className="input" style={{ width: 240 }} placeholder="搜索日志" value={q} onChange={(e) => setQ(e.target.value)} aria-label="搜索日志" />
-        <label className="toggle compact">
-          <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} /> 跟随最新
-        </label>
-        <button className="btn sm" onClick={() => setPaused((p) => !p)}>
-          {paused ? '继续' : '暂停'}
-        </button>
-        <span className="spacer" />
-        <span className="dim">
-          {lines.length} 行{paused ? '（已暂停）' : ''} · 内存环形缓冲，重启后清空
-        </span>
-        <a className="btn sm" href={'/api/v2/logs/export?' + params} download>
-          导出
-        </a>
-        <button className="btn sm danger" onClick={clear}>
-          清空
-        </button>
-      </div>
-      <div className="card logbox mono" ref={box} role="log" aria-live="off">
-        {shown.map((e) => (
-          <div key={e.id} className={'logline ' + e.level.toLowerCase()}>
-            <span className="dim">{e.time}</span> <span className={'lvl ' + e.level.toLowerCase()}>{e.level}</span>{' '}
-            <span className="tag">[{e.tag}]</span> <span className="msg">{e.msg}</span>
-          </div>
-        ))}
-        {shown.length === 0 && <div className="dim pad">{poll.isPending ? '加载中…' : poll.isError ? '读取失败' : '没有符合条件的日志'}</div>}
-      </div>
+          {shown.length === 0 && (
+            <div className="dim pad">{poll.isPending ? '加载中…' : poll.isError ? '读取失败' : '没有符合条件的日志'}</div>
+          )}
+        </div>
+      </Card>
     </div>
   )
 }

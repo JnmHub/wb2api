@@ -236,6 +236,19 @@ body {
   .app-header {
     padding: 0 12px;
   }
+  .page-head {
+    align-items: flex-start;
+  }
+  .toolbar-card .ant-segmented {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  .toolbar-card .ant-segmented-group {
+    flex-wrap: nowrap;
+  }
+  .app-page {
+    overflow-x: hidden;
+  }
 }
 
 /* Dark compatibility for the not-yet-migrated page internals. The old pages were

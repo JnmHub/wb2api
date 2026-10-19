@@ -1,15 +1,6 @@
-import { useMemo } from 'react'
-import { Breadcrumb, Button, Layout, Menu, Tooltip } from 'antd'
-import {
-  Activity,
-  Gauge,
-  ListChecks,
-  Moon,
-  ScrollText,
-  Settings,
-  Sun,
-  Users,
-} from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { Breadcrumb, Button, Drawer, Layout, Menu, Tooltip } from 'antd'
+import { Activity, Gauge, ListChecks, Menu as MenuIcon, Moon, ScrollText, Settings, Sun, Users } from 'lucide-react'
 import { useThemeMode } from './theme'
 
 export type Tab = 'accounts' | 'usage' | 'settings' | 'logs' | 'tasks'
@@ -36,6 +27,41 @@ const NAV = [
   },
 ]
 
+function Brand() {
+  return (
+    <div className="app-brand">
+      <span className="app-brand-mark">
+        <Activity size={16} />
+      </span>
+      <span className="app-brand-name">WB2API</span>
+      <span className="app-brand-tag">HUB</span>
+    </div>
+  )
+}
+
+function NavMenus({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
+  return (
+    <div className="app-nav">
+      {NAV.map((g) => (
+        <Menu
+          key={g.key}
+          mode="inline"
+          selectedKeys={[tab]}
+          onClick={(e) => onTab(e.key as Tab)}
+          style={{ background: 'transparent' }}
+          items={[
+            {
+              type: 'group',
+              label: g.label,
+              children: g.items.map((i) => ({ key: i.key, label: i.label, icon: i.icon })),
+            },
+          ]}
+        />
+      ))}
+    </div>
+  )
+}
+
 export function AppShell({
   tab,
   onTab,
@@ -50,40 +76,45 @@ export function AppShell({
   children: React.ReactNode
 }) {
   const { mode, setMode } = useThemeMode()
+  const [mobile, setMobile] = useState(false)
+  const [navOpen, setNavOpen] = useState(false)
   const current = useMemo(() => NAV.flatMap((g) => g.items).find((i) => i.key === tab), [tab])
   const group = useMemo(() => NAV.find((g) => g.items.some((i) => i.key === tab))?.label ?? '运行', [tab])
+  const go = (t: Tab) => {
+    setNavOpen(false)
+    onTab(t)
+  }
   return (
     <Layout className="app-shell">
-      <Layout.Sider width={214} className="app-sider" theme={mode} breakpoint="lg" collapsedWidth={0}>
-        <div className="app-brand">
-          <span className="app-brand-mark">
-            <Activity size={16} />
-          </span>
-          <span className="app-brand-name">WB2API</span>
-          <span className="app-brand-tag">HUB</span>
-        </div>
-        <div className="app-nav">
-          {NAV.map((g) => (
-            <Menu
-              key={g.key}
-              mode="inline"
-              selectedKeys={[tab]}
-              onClick={(e) => onTab(e.key as Tab)}
-              style={{ background: 'transparent' }}
-              items={[
-                {
-                  type: 'group',
-                  label: g.label,
-                  children: g.items.map((i) => ({ key: i.key, label: i.label, icon: i.icon })),
-                },
-              ]}
-            />
-          ))}
-        </div>
+      <Layout.Sider
+        width={214}
+        className="app-sider app-sider-desktop"
+        theme={mode}
+        breakpoint="lg"
+        collapsedWidth={0}
+        trigger={null}
+        onBreakpoint={setMobile}
+      >
+        <Brand />
+        <NavMenus tab={tab} onTab={go} />
         <div className="app-sider-foot">WorkBuddy 账号池与用量网关</div>
       </Layout.Sider>
+      <Drawer
+        placement="left"
+        width={248}
+        open={mobile && navOpen}
+        onClose={() => setNavOpen(false)}
+        closable={false}
+        styles={{ body: { padding: 0 } }}
+      >
+        <Brand />
+        <NavMenus tab={tab} onTab={go} />
+      </Drawer>
       <Layout>
         <Layout.Header className="app-header">
+          {mobile && (
+            <Button type="text" aria-label="打开导航" icon={<MenuIcon size={18} />} onClick={() => setNavOpen(true)} />
+          )}
           <Breadcrumb items={[{ title: group }, { title: current?.label ?? '' }]} />
           <span className="spacer" />
           <Tooltip title={mode === 'dark' ? '切换浅色' : '切换深色'}>
