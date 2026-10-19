@@ -1,6 +1,9 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { get, post, type PricingCost, type PricingStatus } from '../api'
+import { Button, Card, Input, Space, Table, Tag, Typography } from 'antd'
+import type { ColumnsType } from 'antd/es/table'
+import { RefreshCw } from 'lucide-react'
+import { get, post, type PricingCost, type PricingCostRow, type PricingStatus } from '../api'
 import { num, tokens } from '../format'
 
 /**
@@ -27,77 +30,85 @@ export function PricingCard({ range, realm }: { range: string; realm: string }) 
       qc.invalidateQueries({ queryKey: ['pricing-cost'] })
     },
   })
-  const s = status.data
   const c = cost.data
-  const rows = (c?.models ?? []).slice(0, 8)
-  return (
-    <section className="card sec">
-      <div className="row">
-        <b>价格估算</b>
-        {s?.stale && <span className="badge cooling">目录已过期</span>}
-        {s && s.models > 0 && <span className="dim">OpenRouter {num(s.models)} 个模型 · 汇率 {s.usd_cny}</span>}
-        <span className="spacer" />
-        {c && (
+  const rows = c?.models ?? []
+  const columns: ColumnsType<PricingCostRow> = [
+    { title: '模型', dataIndex: 'model', ellipsis: true, render: (v: string) => <span className="mono">{v}</span> },
+    { title: '请求', dataIndex: 'requests', width: 76, align: 'right', render: (v: number) => num(v) },
+    {
+      title: 'Token',
+      width: 96,
+      align: 'right',
+      render: (_, r) => tokens(r.prompt_tokens + r.completion_tokens),
+    },
+    {
+      title: '等值成本',
+      width: 170,
+      align: 'right',
+      render: (_, r) =>
+        r.priced ? (
           <span>
-            <b>{cny(c.totals.cost_cny)}</b> <span className="dim">/ {usd(c.totals.cost_usd)}</span>
+            ¥{money(r.cost_cny)} <Typography.Text type="secondary">/ ${money(r.cost_usd)}</Typography.Text>
+            {r.source !== 'exact' && <Tag style={{ marginLeft: 6 }}>{r.source}</Tag>}
           </span>
-        )}
-        <button className="btn sm" disabled={refresh.isPending} onClick={() => refresh.mutate()}>
-          {refresh.isPending ? '刷新中…' : '刷新价格'}
-        </button>
-      </div>
-      <p className="dim" style={{ margin: '4px 0 8px' }}>
-        按 OpenRouter 公布的模型级单价估算等值 API 成本，不是实际扣费；缓存命中按缓存读取价、其余输入按未命中价。汇率固定为目录里的 usd_cny。
-      </p>
-      {refresh.isError && <div className="err">{(refresh.error as Error).message}</div>}
-      {s?.error && <div className="dim">上次刷新失败：{s.error}</div>}
-      {c && (
-        <div className="row dim">
-          <span>{num(c.totals.priced_models)} 个模型已定价</span>
-          {c.totals.unpriced_models > 0 && <span className="badge cooling">{num(c.totals.unpriced_models)} 个未定价</span>}
-        </div>
-      )}
-      {rows.length === 0 && <div className="dim pad">这个区间还没有用量。</div>}
-      {rows.map((r) => (
-        <div key={r.model} className="row" style={{ borderTop: '1px solid var(--border)', padding: '6px 0' }}>
-          <span className="mono">{r.model}</span>
-          <span className="dim">
-            {num(r.requests)} 次 · {tokens(r.prompt_tokens + r.completion_tokens)} tokens
-          </span>
-          <span className="spacer" />
-          {r.priced ? (
-            <span>
-              {cny(r.cost_cny)} <span className="dim">/ {usd(r.cost_usd)}</span>
-              {r.source !== 'exact' && <span className="dim">（{r.source}）</span>}
-            </span>
-          ) : (
-            <span className="row">
-              <input
-                className="input mono"
-                style={{ width: 220 }}
-                placeholder="OpenRouter ID，如 z-ai/glm-5.3-flash"
-                value={mapping[r.model] ?? ''}
-                onChange={(e) => setMapping({ ...mapping, [r.model]: e.target.value })}
-              />
-              <button
-                className="btn sm"
-                disabled={!mapping[r.model]?.trim() || map.isPending}
-                onClick={() => map.mutate({ model: r.model, or_id: mapping[r.model].trim() })}
-              >
-                映射
-              </button>
-            </span>
+        ) : (
+          <Space.Compact>
+            <Input
+              size="small"
+              style={{ width: 190 }}
+              placeholder="OpenRouter ID"
+              value={mapping[r.model] ?? ''}
+              onChange={(e) => setMapping({ ...mapping, [r.model]: e.target.value })}
+            />
+            <Button size="small" disabled={!mapping[r.model]?.trim() || map.isPending} onClick={() => map.mutate({ model: r.model, or_id: mapping[r.model].trim() })}>
+              映射
+            </Button>
+          </Space.Compact>
+        ),
+    },
+  ]
+  return (
+    <Card
+      title="价格估算"
+      style={{ marginBottom: 12 }}
+      extra={
+        <Space>
+          {c && (
+            <Typography.Text>
+              <b>¥{money(c.totals.cost_cny)}</b> <Typography.Text type="secondary">/ ${money(c.totals.cost_usd)}</Typography.Text>
+            </Typography.Text>
           )}
-        </div>
-      ))}
-      {map.isError && <div className="err">{(map.error as Error).message}</div>}
-    </section>
+          {status.data?.stale && <Tag color="warning">目录已过期</Tag>}
+          <Button size="small" icon={<RefreshCw size={13} />} loading={refresh.isPending} onClick={() => refresh.mutate()}>
+            刷新价格
+          </Button>
+        </Space>
+      }
+      styles={{ body: { padding: rows.length ? 0 : 16 } }}
+    >
+      <Typography.Paragraph type="secondary" style={{ padding: '12px 16px 0', margin: 0 }}>
+        按 OpenRouter 公布的模型级单价估算等值 API 成本，不是实际扣费；缓存命中按缓存读取价。汇率固定为目录里的 usd_cny。
+        {c && ` 已定价 ${c.totals.priced_models} 个模型${c.totals.unpriced_models ? `，未定价 ${c.totals.unpriced_models} 个` : ''}。`}
+        {status.data?.error && ` 上次刷新失败：${status.data.error}`}
+      </Typography.Paragraph>
+      {refresh.isError && <Typography.Text type="danger">{String(refresh.error)}</Typography.Text>}
+      {map.isError && <Typography.Text type="danger">{String(map.error)}</Typography.Text>}
+      {rows.length === 0 ? (
+        <Typography.Text type="secondary">这个区间还没有用量。</Typography.Text>
+      ) : (
+        <Table<PricingCostRow>
+          rowKey="model"
+          size="small"
+          columns={columns}
+          dataSource={rows.slice(0, 8)}
+          pagination={false}
+          style={{ marginTop: 8 }}
+        />
+      )}
+    </Card>
   )
 }
 
-function cny(v: number) {
-  return '¥' + (v < 0.01 && v > 0 ? v.toFixed(4) : v.toFixed(2))
-}
-function usd(v: number) {
-  return '$' + (v < 0.01 && v > 0 ? v.toFixed(4) : v.toFixed(2))
+function money(v: number) {
+  return v < 0.01 && v > 0 ? v.toFixed(4) : v.toFixed(2)
 }
