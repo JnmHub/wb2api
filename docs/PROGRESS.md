@@ -165,9 +165,9 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 - **P2/P3 已完成（账号页）**：账号页改用 antd 的 PageHeader + 统计卡（全部/可用/冷却/风控/需登录）+ 工具栏（搜索、区域、排序、状态 Segmented）+ `Table`（100/页服务端分页、行选择、状态 Badge、区域 Tag、积分/有效期列、行内更多操作）；批量操作仍复用原 BatchBar（功能保留，样式后续统一）。浅色 / 深色截图均已核对。
 - **P4 已完成（用量页）**：8 张统计卡（请求/成功率/总 Token/输出/缓存/首字/速度/积分）、`@ant-design/charts` 的 Token 趋势图（浅/深主题）、价格估算卡（总价、逐模型成本、未定价映射）、按模型/账号/Key/区域的明细表、剩余用量估算表（Progress 占用条）。浅色 / 深色截图均已核对。
 - 页面内部其余部分仍是旧组件：账号抽屉与添加/导入/导出/桌面导入弹窗、设置 / 日志 / 任务页。
-- **P5 完成**：日志页、任务页、设置页、账号详情抽屉均 antd 化。设置页的出口、模型清单、API Key、限额、探针、模型封锁、更新检查、每日活跃、上游与提示词、代理槽、智能体都是 antd 控件；账号详情改为 antd `Drawer`（Descriptions、操作按钮、测试账号、删除确认、结果 Alert）。
-- **P6 进行中**：五个页面路由级 `React.lazy` 分包；Sarasa Mono SC 的拉丁/常用中日韩核心分片（400/700）已打包；`test-setup` 补了 jsdom 的 `matchMedia`/`ResizeObserver`；新增 `tools/uitest/smoke.mjs`（可用 `npm run uitest`）通过 CDP 驱动 headless Edge 做真实浏览器回归：登录、五个页面、浅/深主题、账号抽屉、添加账号弹窗、新建 Key 弹窗、日志暂停，并逐页截图。当前全部通过。
-- 仍差：导入 / 桌面导入两个弹窗的内部表单还是旧控件（外层已是 antd `Modal`，添加账号与导出已完整 antd 化）；手机端已截图账号、用量、设置、日志、任务，但还需要最终逐页对比与细节修正；`uitest` 只覆盖主要路径，未覆盖每个表单字段的提交。
+- **P5 完成**：所有页面、详情抽屉与弹窗均为 antd：账号、用量、设置、日志、任务、添加账号、导入、导出、桌面导入、Key 编辑、账号详情。用量页新增 antd `DatePicker.RangePicker`（对应后端 `range=custom&since&until`），预设区间与自定义日期可切换，趋势粒度按跨度自动选择小时/天。
+- **P6 进行中**：五个页面路由级 `React.lazy` 分包；Sarasa Mono SC 核心分片已打包；新增 `tools/uitest/smoke.mjs`（`npm run uitest`）通过 CDP 驱动 headless Edge 做真实浏览器回归：登录、五个页面、浅/深主题、账号抽屉、添加账号 / 导入 / 导出 / 桌面导入弹窗、新建 Key 弹窗、日志暂停，并逐页截图。当前全部通过。
+- 仍差：批量操作条（BatchBar）仍是旧标记；手机端逐页截图已做但还缺与参考的并排细节核对；`uitest` 未逐字段提交表单。
 
 ## 还没做
 

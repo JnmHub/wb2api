@@ -10,9 +10,8 @@ import { num, tokens } from '../format'
  * Estimated API-equivalent cost of the selected range, priced from OpenRouter's
  * catalogue. Unpriced models can be mapped by hand without leaving the card.
  */
-export function PricingCard({ range, realm }: { range: string; realm: string }) {
+export function PricingCard({ base }: { base: string }) {
   const qc = useQueryClient()
-  const base = `range=${range}${realm ? `&realm=${realm}` : ''}`
   const status = useQuery({ queryKey: ['pricing'], queryFn: () => get<PricingStatus>('/api/v2/pricing'), retry: false })
   const cost = useQuery({ queryKey: ['pricing-cost', base], queryFn: () => get<PricingCost>(`/api/v2/pricing/cost?${base}`), retry: false })
   const refresh = useMutation({

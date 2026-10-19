@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Card, Col, Progress, Row, Segmented, Select, Space, Statistic, Table, Tag, Typography } from 'antd'
+import { Card, Col, DatePicker, Progress, Row, Segmented, Select, Space, Statistic, Table, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import dayjs from 'dayjs'
 import { Line } from '@ant-design/charts'
 import { get, type RemainingPayload, type RemainingRow, type SeriesPoint, type UsageAgg, type UsageSummary } from '../api'
 import { credit, ms, num, pct, span, tokens } from '../format'
@@ -20,10 +21,14 @@ export function UsagePage() {
   const { mode } = useThemeMode()
   const [range, setRange] = useState<Range>('today')
   const [realm, setRealm] = useState('')
-  const base = `range=${range}${realm ? `&realm=${realm}` : ''}`
+  const [dates, setDates] = useState<[string, string] | null>(null)
+  const base = dates
+    ? `range=custom&since=${dates[0]}&until=${dates[1]}${realm ? `&realm=${realm}` : ''}`
+    : `range=${range}${realm ? `&realm=${realm}` : ''}`
   const live = { refetchInterval: 10_000, refetchIntervalInBackground: false }
   const sum = useQuery({ queryKey: ['usage', base], queryFn: () => get<UsageSummary>(`/api/v2/usage/summary?${base}`), ...live })
-  const bucket = range === 'today' ? 'hour' : 'day'
+  const spanDays = dates ? Math.max(1, (Date.parse(dates[1]) - Date.parse(dates[0])) / 86_400_000) : 0
+  const bucket = dates ? (spanDays <= 2 ? 'hour' : 'day') : range === 'today' ? 'hour' : 'day'
   const series = useQuery({
     queryKey: ['usage-series', base, bucket],
     queryFn: () => get<{ points: SeriesPoint[] }>(`/api/v2/usage/series?${base}&bucket=${bucket}`),
@@ -48,7 +53,24 @@ export function UsagePage() {
           </Typography.Text>
         </div>
         <Space wrap>
-          <Segmented value={range} onChange={(v) => setRange(v as Range)} options={RANGES} />
+          <Segmented
+            value={dates ? 'custom' : range}
+            onChange={(v) => {
+              if (v === 'custom') return
+              setDates(null)
+              setRange(v as Range)
+            }}
+            options={RANGES}
+          />
+          <DatePicker.RangePicker
+            value={dates ? [dayjs(dates[0]), dayjs(dates[1])] : null}
+            onChange={(v) => {
+              if (v && v[0] && v[1]) setDates([v[0].format('YYYY-MM-DD'), v[1].format('YYYY-MM-DD')])
+              else setDates(null)
+            }}
+            allowClear
+            placeholder={['开始日期', '结束日期']}
+          />
           <Select
             value={realm}
             style={{ width: 128 }}
@@ -95,7 +117,7 @@ export function UsagePage() {
         )}
       </Card>
 
-      <PricingCard range={range} realm={realm} />
+      <PricingCard base={base} />
 
       {sum.data && sum.data.queue.dropped > 0 && (
         <Tag color="warning" style={{ marginBottom: 12 }}>

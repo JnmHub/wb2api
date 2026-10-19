@@ -194,17 +194,25 @@ async function main() {
     failures.push('no account row to open')
   }
 
-  // Add-account dialog.
+  // Add-account / import / export / desktop-import dialogs.
   await evaluate(`location.hash = '#/accounts'`)
   await sleep(600)
-  if (await clickText('button', '添加账号')) {
-    await sleep(600)
-    if (!(await evaluate(`document.body.innerText.includes('添加账号')`))) failures.push('add-account dialog missing')
-    await shot('add-account')
-    await evaluate(`document.querySelector('.modal .close, .modal button[aria-label="关闭"], .ant-modal-close')?.click()`)
+  const dialogs = [
+    { button: '添加账号', expect: '开始登录', name: 'add-account' },
+    { button: '导入', expect: '预演', name: 'import' },
+    { button: '导出', expect: '包含 Token', name: 'export' },
+    { button: '桌面导入', expect: 'at-rest 密钥', name: 'desktop-import' },
+  ]
+  for (const d of dialogs) {
+    if (!(await clickText('button', d.button))) {
+      failures.push(`${d.name}: button not found`)
+      continue
+    }
+    await sleep(500)
+    if (!(await evaluate(`document.body.innerText.includes(${JSON.stringify(d.expect)})`))) failures.push(`${d.name}: dialog content missing`)
+    await shot(d.name)
+    await evaluate(`document.querySelector('.ant-modal-close')?.click()`)
     await sleep(300)
-  } else {
-    failures.push('add-account button not found')
   }
 
   // Key editor.
