@@ -24,6 +24,7 @@ import (
 
 	"wb2api/internal/gateway/leak"
 	"wb2api/internal/gateway/openai"
+	"wb2api/internal/panelauth"
 	"wb2api/internal/pool"
 	"wb2api/internal/refresh"
 	"wb2api/internal/store/accounts"
@@ -47,6 +48,7 @@ func main() {
 	legacyFilter := flag.Bool("legacy-leak-filter", os.Getenv("WB_LEGACY_LEAK_FILTER") == "1", "use the legacy hold policy of the tool-call leak filter")
 	maxAttempts := flag.Int("max-attempts", 5, "account failover attempts per request")
 	perAccount := flag.Int("per-account-inflight", 0, "max concurrent requests per account (0 = unlimited)")
+	panelPassword := flag.String("panel-password", os.Getenv("WB_PANEL_PASSWORD"), "set the dashboard password at start-up")
 	debug := flag.Bool("debug", os.Getenv("WB_DEBUG") == "1", "expose /debug/runtime")
 	flag.Parse()
 
@@ -90,7 +92,25 @@ func main() {
 		}
 	}
 
+	if *panelPassword != "" {
+		if err := st.SetPanelPassword(*panelPassword); err != nil {
+			log.Error("cannot set the panel password", "err", err)
+		}
+	}
+	sessions, err := panelauth.OpenStore(*accountsDir)
+	if err != nil {
+		log.Error("cannot open the panel session store", "err", err)
+		os.Exit(1)
+	}
+	sessions.StartFlusher(15 * time.Second)
+	defer sessions.Close()
+	auth := &panelauth.Auth{
+		Store: sessions, Pass: st, Proxies: panelauth.TrustedProxiesFromEnv(),
+		RequireChange: os.Getenv("WB_ALLOW_DEFAULT_PASSWORD") != "1",
+	}
+
 	mux := http.NewServeMux()
+	auth.Register(mux, "/api/v2/session")
 	mux.Handle("/v1/chat/completions", h)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

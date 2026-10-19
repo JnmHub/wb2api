@@ -17,10 +17,11 @@ import (
 
 // NonAccountFiles live next to the credentials but are not accounts.
 var NonAccountFiles = map[string]bool{
-	"settings.json":      true,
-	"active_realm.json":  true,
-	"model_windows.json": true,
-	"quota_scan.json":    true,
+	"settings.json":       true,
+	"panel_sessions.json": true,
+	"active_realm.json":   true,
+	"model_windows.json":  true,
+	"quota_scan.json":     true,
 }
 
 // LoadError describes one unreadable account file (loading continues past it).

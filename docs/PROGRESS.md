@@ -20,6 +20,7 @@
 | `internal/upstream/wire` | 自写 HTTP/1.1 客户端：线上字节顺序与拼写完全可控（与旧版 `http.client` 同一形状）、按账号独立连接池、过期连接安全重试、取消即断开、CONNECT 代理 | 10 个测试，含原始字节断言 |
 | `internal/refresh` | token 后台刷新：提前量+抖动、有界并发、同账号单飞、失败指数退避、401/无 token 标记需重新登录 | 9 个测试；`Pick` 在刷新进行中不被阻塞 |
 | `internal/risk` | 风控连坐保护：11140 识别、账号停放、窗口内多账号受限则整区域暂停 | 单测 |
+| `internal/panelauth` | **面板登录持久化**：HttpOnly+SameSite=Lax Cookie（HTTPS/可信反代下加 Secure）、服务端会话落盘且只存令牌哈希、滑动续期（记住我 30 天 / 否则 12 小时空闲）、CSRF 头、JSON-only 写请求、登录限流（可信反代下按真实客户端 IP 分桶，伪造头无效）、已登录设备列表/撤销、改密撤销其他设备、默认密码强制先改 | 14 个测试 + **真实二进制重启验证**：登录→杀进程→重启→同一 Cookie 仍是 200 |
 | `cmd/hub` `cmd/mockup` `cmd/loadtest` | 网关、模拟上游、压测器 | 手动跑通 |
 
 `go vet`、`gofmt` 干净；`go test ./...` 全绿。本机没有 C 编译器，`-race` 跑不了，需在 CI（Linux）补。
