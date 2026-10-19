@@ -1,0 +1,121 @@
+[
+ {
+  "file": "intl-uid-1.json",
+  "uid": "intl-uid-1",
+  "nickname": "Alice",
+  "domain": "www.workbuddy.ai",
+  "realm": "intl",
+  "platform": "CLI",
+  "product": "vscode",
+  "enterprise_id": "",
+  "access_token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAiaW50bC11aWQtMSIsICJleHAiOiAxNzkwMDAwMDAwLCAiaXNzIjogImh0dHBzOi8vd3d3LndvcmtidWRkeS5haS8ifQ.sig",
+  "refresh_token": "r1",
+  "expires_at": 1790000000,
+  "source": "oauth",
+  "proxy_slot": "slot-1",
+  "proxy_legacy": "http://p:1",
+  "enabled": true,
+  "weight": 3,
+  "note": "批量号 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "disabled_models": [
+   "gpt-5.5"
+  ],
+  "restricted_until": 0.0,
+  "credits": {
+   "remain": 100,
+   "total": 200,
+   "packages": [
+    {
+     "n": "a"
+    }
+   ]
+  },
+  "last_checkin": "2026-10-01 00:00:00",
+  "last_daily_chat": null,
+  "last_activity_report": null,
+  "model_caps": {
+   "hy3": {
+    "at": 1500000000.0,
+    "reset": 1600000000.0
+   }
+  }
+ },
+ {
+  "file": "cn-uid-2.json",
+  "uid": "cn-uid-2",
+  "nickname": "",
+  "domain": "copilot.tencent.com",
+  "realm": "cn",
+  "platform": "CLI",
+  "product": "workbuddy",
+  "enterprise_id": "ent-7",
+  "access_token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAiY24tdWlkLTIiLCAiZXhwIjogMTc5MDAwMDAwMCwgImlzcyI6ICJodHRwczovL3d3dy53b3JrYnVkZHkuY24vIiwgImVudGVycHJpc2VfaWQiOiAiZW50LTcifQ.sig",
+  "refresh_token": "r2",
+  "expires_at": 1790000000,
+  "source": "oauth",
+  "proxy_slot": "",
+  "proxy_legacy": "",
+  "enabled": false,
+  "weight": 100,
+  "note": "",
+  "disabled_models": [],
+  "restricted_until": 1790001234.5,
+  "credits": null,
+  "last_checkin": null,
+  "last_daily_chat": null,
+  "last_activity_report": null,
+  "model_caps": {}
+ },
+ {
+  "file": "weird_uid_with_spaces.json",
+  "uid": "weird/uid with spaces",
+  "nickname": "",
+  "domain": "www.codebuddy.cn",
+  "realm": "cn",
+  "platform": "CLI",
+  "product": "workbuddy",
+  "enterprise_id": "",
+  "access_token": "plain",
+  "refresh_token": "",
+  "expires_at": 0,
+  "source": "oauth",
+  "proxy_slot": "",
+  "proxy_legacy": "",
+  "enabled": true,
+  "weight": 7,
+  "note": "",
+  "disabled_models": [],
+  "restricted_until": 0.0,
+  "credits": null,
+  "last_checkin": null,
+  "last_daily_chat": null,
+  "last_activity_report": null,
+  "model_caps": {}
+ },
+ {
+  "file": "zero-weight.json",
+  "uid": "zero-weight",
+  "nickname": "",
+  "domain": "www.workbuddy.ai",
+  "realm": "intl",
+  "platform": "CLI",
+  "product": "workbuddy",
+  "enterprise_id": "",
+  "access_token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAiaW50bC11aWQtMSIsICJleHAiOiAxNzkwMDAwMDAwLCAiaXNzIjogImh0dHBzOi8vd3d3LndvcmtidWRkeS5haS8ifQ.sig",
+  "refresh_token": "",
+  "expires_at": 1790000000,
+  "source": "oauth",
+  "proxy_slot": "",
+  "proxy_legacy": "",
+  "enabled": true,
+  "weight": 1,
+  "note": "",
+  "disabled_models": [],
+  "restricted_until": 0.0,
+  "credits": null,
+  "last_checkin": null,
+  "last_daily_chat": null,
+  "last_activity_report": null,
+  "model_caps": {}
+ }
+]

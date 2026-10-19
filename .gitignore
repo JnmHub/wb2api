@@ -1,0 +1,9 @@
+/bin/
+*.exe
+*.test
+*.out
+__pycache__/
+legacy/python/__pycache__/
+/dist/
+node_modules/
+/web/dist/

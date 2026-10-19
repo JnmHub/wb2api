@@ -1,0 +1,37 @@
+[
+ {
+  "realm": "intl",
+  "model": "hy3",
+  "out": true
+ },
+ {
+  "realm": "cn",
+  "model": "hy3",
+  "out": true
+ },
+ {
+  "realm": "cn",
+  "model": "deepseek-v4.1-flash",
+  "out": false
+ },
+ {
+  "realm": "intl",
+  "model": "deepseek-v4.1-flash",
+  "out": true
+ },
+ {
+  "realm": "",
+  "model": "hy3",
+  "out": false
+ },
+ {
+  "realm": "intl",
+  "model": "",
+  "out": false
+ },
+ {
+  "realm": "x",
+  "model": "hy3",
+  "out": false
+ }
+]

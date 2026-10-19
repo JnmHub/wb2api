@@ -1,0 +1,842 @@
+[
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTEiLCAiZXhwIjogMTc5MDAwMDAwMCwgImlzcyI6ICJodHRwczovL3d3dy53b3JrYnVkZHkuYWkveCJ9.sig",
+  "domain": null,
+  "exp": 1790000000,
+  "uid": "uid-1",
+  "iss": "https://www.workbuddy.ai/x",
+  "ent": "",
+  "evidence": "intl",
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTEiLCAiZXhwIjogMTc5MDAwMDAwMCwgImlzcyI6ICJodHRwczovL3d3dy53b3JrYnVkZHkuYWkveCJ9.sig",
+  "domain": "",
+  "exp": 1790000000,
+  "uid": "uid-1",
+  "iss": "https://www.workbuddy.ai/x",
+  "ent": "",
+  "evidence": "intl",
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTEiLCAiZXhwIjogMTc5MDAwMDAwMCwgImlzcyI6ICJodHRwczovL3d3dy53b3JrYnVkZHkuYWkveCJ9.sig",
+  "domain": "www.workbuddy.ai",
+  "exp": 1790000000,
+  "uid": "uid-1",
+  "iss": "https://www.workbuddy.ai/x",
+  "ent": "",
+  "evidence": "intl",
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTEiLCAiZXhwIjogMTc5MDAwMDAwMCwgImlzcyI6ICJodHRwczovL3d3dy53b3JrYnVkZHkuYWkveCJ9.sig",
+  "domain": "copilot.tencent.com",
+  "exp": 1790000000,
+  "uid": "uid-1",
+  "iss": "https://www.workbuddy.ai/x",
+  "ent": "",
+  "evidence": "intl",
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTEiLCAiZXhwIjogMTc5MDAwMDAwMCwgImlzcyI6ICJodHRwczovL3d3dy53b3JrYnVkZHkuYWkveCJ9.sig",
+  "domain": "www.codebuddy.cn",
+  "exp": 1790000000,
+  "uid": "uid-1",
+  "iss": "https://www.workbuddy.ai/x",
+  "ent": "",
+  "evidence": "intl",
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "www.codebuddy.cn"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTEiLCAiZXhwIjogMTc5MDAwMDAwMCwgImlzcyI6ICJodHRwczovL3d3dy53b3JrYnVkZHkuYWkveCJ9.sig",
+  "domain": "other.example",
+  "exp": 1790000000,
+  "uid": "uid-1",
+  "iss": "https://www.workbuddy.ai/x",
+  "ent": "",
+  "evidence": "intl",
+  "realm": "intl",
+  "domain_for": {
+   "intl": "other.example",
+   "cn": "other.example"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTIiLCAiZXhwIjogMTc5MDAwMDAwMCwgImlzcyI6ICJodHRwczovL3d3dy53b3JrYnVkZHkuY24veCIsICJlbnRlcnByaXNlX2lkIjogImVudC05In0.sig",
+  "domain": null,
+  "exp": 1790000000,
+  "uid": "uid-2",
+  "iss": "https://www.workbuddy.cn/x",
+  "ent": "ent-9",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTIiLCAiZXhwIjogMTc5MDAwMDAwMCwgImlzcyI6ICJodHRwczovL3d3dy53b3JrYnVkZHkuY24veCIsICJlbnRlcnByaXNlX2lkIjogImVudC05In0.sig",
+  "domain": "",
+  "exp": 1790000000,
+  "uid": "uid-2",
+  "iss": "https://www.workbuddy.cn/x",
+  "ent": "ent-9",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTIiLCAiZXhwIjogMTc5MDAwMDAwMCwgImlzcyI6ICJodHRwczovL3d3dy53b3JrYnVkZHkuY24veCIsICJlbnRlcnByaXNlX2lkIjogImVudC05In0.sig",
+  "domain": "www.workbuddy.ai",
+  "exp": 1790000000,
+  "uid": "uid-2",
+  "iss": "https://www.workbuddy.cn/x",
+  "ent": "ent-9",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTIiLCAiZXhwIjogMTc5MDAwMDAwMCwgImlzcyI6ICJodHRwczovL3d3dy53b3JrYnVkZHkuY24veCIsICJlbnRlcnByaXNlX2lkIjogImVudC05In0.sig",
+  "domain": "copilot.tencent.com",
+  "exp": 1790000000,
+  "uid": "uid-2",
+  "iss": "https://www.workbuddy.cn/x",
+  "ent": "ent-9",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTIiLCAiZXhwIjogMTc5MDAwMDAwMCwgImlzcyI6ICJodHRwczovL3d3dy53b3JrYnVkZHkuY24veCIsICJlbnRlcnByaXNlX2lkIjogImVudC05In0.sig",
+  "domain": "www.codebuddy.cn",
+  "exp": 1790000000,
+  "uid": "uid-2",
+  "iss": "https://www.workbuddy.cn/x",
+  "ent": "ent-9",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "www.codebuddy.cn"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTIiLCAiZXhwIjogMTc5MDAwMDAwMCwgImlzcyI6ICJodHRwczovL3d3dy53b3JrYnVkZHkuY24veCIsICJlbnRlcnByaXNlX2lkIjogImVudC05In0.sig",
+  "domain": "other.example",
+  "exp": 1790000000,
+  "uid": "uid-2",
+  "iss": "https://www.workbuddy.cn/x",
+  "ent": "ent-9",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "other.example",
+   "cn": "other.example"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTMiLCAiaXNzIjogImh0dHBzOi8vY29waWxvdC50ZW5jZW50LmNvbSJ9.sig",
+  "domain": null,
+  "exp": 0,
+  "uid": "uid-3",
+  "iss": "https://copilot.tencent.com",
+  "ent": "",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTMiLCAiaXNzIjogImh0dHBzOi8vY29waWxvdC50ZW5jZW50LmNvbSJ9.sig",
+  "domain": "",
+  "exp": 0,
+  "uid": "uid-3",
+  "iss": "https://copilot.tencent.com",
+  "ent": "",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTMiLCAiaXNzIjogImh0dHBzOi8vY29waWxvdC50ZW5jZW50LmNvbSJ9.sig",
+  "domain": "www.workbuddy.ai",
+  "exp": 0,
+  "uid": "uid-3",
+  "iss": "https://copilot.tencent.com",
+  "ent": "",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTMiLCAiaXNzIjogImh0dHBzOi8vY29waWxvdC50ZW5jZW50LmNvbSJ9.sig",
+  "domain": "copilot.tencent.com",
+  "exp": 0,
+  "uid": "uid-3",
+  "iss": "https://copilot.tencent.com",
+  "ent": "",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTMiLCAiaXNzIjogImh0dHBzOi8vY29waWxvdC50ZW5jZW50LmNvbSJ9.sig",
+  "domain": "www.codebuddy.cn",
+  "exp": 0,
+  "uid": "uid-3",
+  "iss": "https://copilot.tencent.com",
+  "ent": "",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "www.codebuddy.cn"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTMiLCAiaXNzIjogImh0dHBzOi8vY29waWxvdC50ZW5jZW50LmNvbSJ9.sig",
+  "domain": "other.example",
+  "exp": 0,
+  "uid": "uid-3",
+  "iss": "https://copilot.tencent.com",
+  "ent": "",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "other.example",
+   "cn": "other.example"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTQiLCAiZXhwIjogImJhZCJ9.sig",
+  "domain": null,
+  "exp": 0,
+  "uid": "uid-4",
+  "iss": "",
+  "ent": "",
+  "evidence": null,
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTQiLCAiZXhwIjogImJhZCJ9.sig",
+  "domain": "",
+  "exp": 0,
+  "uid": "uid-4",
+  "iss": "",
+  "ent": "",
+  "evidence": null,
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTQiLCAiZXhwIjogImJhZCJ9.sig",
+  "domain": "www.workbuddy.ai",
+  "exp": 0,
+  "uid": "uid-4",
+  "iss": "",
+  "ent": "",
+  "evidence": "intl",
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTQiLCAiZXhwIjogImJhZCJ9.sig",
+  "domain": "copilot.tencent.com",
+  "exp": 0,
+  "uid": "uid-4",
+  "iss": "",
+  "ent": "",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTQiLCAiZXhwIjogImJhZCJ9.sig",
+  "domain": "www.codebuddy.cn",
+  "exp": 0,
+  "uid": "uid-4",
+  "iss": "",
+  "ent": "",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "www.codebuddy.cn"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTQiLCAiZXhwIjogImJhZCJ9.sig",
+  "domain": "other.example",
+  "exp": 0,
+  "uid": "uid-4",
+  "iss": "",
+  "ent": "",
+  "evidence": null,
+  "realm": "intl",
+  "domain_for": {
+   "intl": "other.example",
+   "cn": "other.example"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTUiLCAiaXNzIjogImh0dHBzOi8vd3d3LmNvZGVidWRkeS5haSJ9.sig",
+  "domain": null,
+  "exp": 0,
+  "uid": "uid-5",
+  "iss": "https://www.codebuddy.ai",
+  "ent": "",
+  "evidence": "intl",
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTUiLCAiaXNzIjogImh0dHBzOi8vd3d3LmNvZGVidWRkeS5haSJ9.sig",
+  "domain": "",
+  "exp": 0,
+  "uid": "uid-5",
+  "iss": "https://www.codebuddy.ai",
+  "ent": "",
+  "evidence": "intl",
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTUiLCAiaXNzIjogImh0dHBzOi8vd3d3LmNvZGVidWRkeS5haSJ9.sig",
+  "domain": "www.workbuddy.ai",
+  "exp": 0,
+  "uid": "uid-5",
+  "iss": "https://www.codebuddy.ai",
+  "ent": "",
+  "evidence": "intl",
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTUiLCAiaXNzIjogImh0dHBzOi8vd3d3LmNvZGVidWRkeS5haSJ9.sig",
+  "domain": "copilot.tencent.com",
+  "exp": 0,
+  "uid": "uid-5",
+  "iss": "https://www.codebuddy.ai",
+  "ent": "",
+  "evidence": "intl",
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTUiLCAiaXNzIjogImh0dHBzOi8vd3d3LmNvZGVidWRkeS5haSJ9.sig",
+  "domain": "www.codebuddy.cn",
+  "exp": 0,
+  "uid": "uid-5",
+  "iss": "https://www.codebuddy.ai",
+  "ent": "",
+  "evidence": "intl",
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "www.codebuddy.cn"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAidWlkLTUiLCAiaXNzIjogImh0dHBzOi8vd3d3LmNvZGVidWRkeS5haSJ9.sig",
+  "domain": "other.example",
+  "exp": 0,
+  "uid": "uid-5",
+  "iss": "https://www.codebuddy.ai",
+  "ent": "",
+  "evidence": "intl",
+  "realm": "intl",
+  "domain_for": {
+   "intl": "other.example",
+   "cn": "other.example"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA1fQ.sig",
+  "domain": null,
+  "exp": 5,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": null,
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA1fQ.sig",
+  "domain": "",
+  "exp": 5,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": null,
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA1fQ.sig",
+  "domain": "www.workbuddy.ai",
+  "exp": 5,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": "intl",
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA1fQ.sig",
+  "domain": "copilot.tencent.com",
+  "exp": 5,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA1fQ.sig",
+  "domain": "www.codebuddy.cn",
+  "exp": 5,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "www.codebuddy.cn"
+  }
+ },
+ {
+  "token": "eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA1fQ.sig",
+  "domain": "other.example",
+  "exp": 5,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": null,
+  "realm": "intl",
+  "domain_for": {
+   "intl": "other.example",
+   "cn": "other.example"
+  }
+ },
+ {
+  "token": "garbage",
+  "domain": null,
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": null,
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "garbage",
+  "domain": "",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": null,
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "garbage",
+  "domain": "www.workbuddy.ai",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": "intl",
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "garbage",
+  "domain": "copilot.tencent.com",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "garbage",
+  "domain": "www.codebuddy.cn",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "www.codebuddy.cn"
+  }
+ },
+ {
+  "token": "garbage",
+  "domain": "other.example",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": null,
+  "realm": "intl",
+  "domain_for": {
+   "intl": "other.example",
+   "cn": "other.example"
+  }
+ },
+ {
+  "token": "",
+  "domain": null,
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": null,
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "",
+  "domain": "",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": null,
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "",
+  "domain": "www.workbuddy.ai",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": "intl",
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "",
+  "domain": "copilot.tencent.com",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "",
+  "domain": "www.codebuddy.cn",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "www.codebuddy.cn"
+  }
+ },
+ {
+  "token": "",
+  "domain": "other.example",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": null,
+  "realm": "intl",
+  "domain_for": {
+   "intl": "other.example",
+   "cn": "other.example"
+  }
+ },
+ {
+  "token": "a.b",
+  "domain": null,
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": null,
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "a.b",
+  "domain": "",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": null,
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "a.b",
+  "domain": "www.workbuddy.ai",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": "intl",
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "a.b",
+  "domain": "copilot.tencent.com",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "a.b",
+  "domain": "www.codebuddy.cn",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "www.codebuddy.cn"
+  }
+ },
+ {
+  "token": "a.b",
+  "domain": "other.example",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": null,
+  "realm": "intl",
+  "domain_for": {
+   "intl": "other.example",
+   "cn": "other.example"
+  }
+ },
+ {
+  "token": "a.%%%.c",
+  "domain": null,
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": null,
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "a.%%%.c",
+  "domain": "",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": null,
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "a.%%%.c",
+  "domain": "www.workbuddy.ai",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": "intl",
+  "realm": "intl",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "a.%%%.c",
+  "domain": "copilot.tencent.com",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "copilot.tencent.com"
+  }
+ },
+ {
+  "token": "a.%%%.c",
+  "domain": "www.codebuddy.cn",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": "cn",
+  "realm": "cn",
+  "domain_for": {
+   "intl": "www.workbuddy.ai",
+   "cn": "www.codebuddy.cn"
+  }
+ },
+ {
+  "token": "a.%%%.c",
+  "domain": "other.example",
+  "exp": 0,
+  "uid": "",
+  "iss": "",
+  "ent": "",
+  "evidence": null,
+  "realm": "intl",
+  "domain_for": {
+   "intl": "other.example",
+   "cn": "other.example"
+  }
+ }
+]

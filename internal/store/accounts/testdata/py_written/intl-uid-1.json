@@ -1,0 +1,41 @@
+{
+  "uid": "intl-uid-1",
+  "nickname": "Alice",
+  "domain": "www.workbuddy.ai",
+  "realm": "intl",
+  "platform": "CLI",
+  "product": "vscode",
+  "enterpriseId": "",
+  "accessToken": "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAiaW50bC11aWQtMSIsICJleHAiOiAxNzkwMDAwMDAwLCAiaXNzIjogImh0dHBzOi8vd3d3LndvcmtidWRkeS5haS8ifQ.sig",
+  "refreshToken": "r1",
+  "expiresAt": 1790000000,
+  "addedAt": 1790000000.5,
+  "source": "oauth",
+  "proxySlot": "slot-1",
+  "proxy": "http://p:1",
+  "enabled": true,
+  "weight": 3,
+  "note": "批量号 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "disabledModels": [
+    "gpt-5.5"
+  ],
+  "restrictedUntil": 0.0,
+  "credits": {
+    "remain": 100,
+    "total": 200,
+    "packages": [
+      {
+        "n": "a"
+      }
+    ]
+  },
+  "lastCheckin": "2026-10-01 00:00:00",
+  "lastDailyChat": null,
+  "lastActivityReport": null,
+  "modelCaps": {
+    "hy3": {
+      "at": 1500000000.0,
+      "reset": 1600000000.0
+    }
+  }
+}

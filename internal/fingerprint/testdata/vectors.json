@@ -1,0 +1,142 @@
+[
+ {
+  "uid": "",
+  "salt": "machine",
+  "id": "fc1f3f60-3c8b-4dc0-a839-42ea0169ab1e"
+ },
+ {
+  "uid": "",
+  "salt": "session",
+  "id": "be4befa7-ace5-45fd-a1f5-8bb31be975f8"
+ },
+ {
+  "uid": "",
+  "salt": "x",
+  "id": "b98cb5b4-76bb-4bdf-a0ff-441bb1cd0cc1"
+ },
+ {
+  "uid": "",
+  "salt": "",
+  "id": "fb9899c7-9cf6-4cfb-a10b-ab155bfb5d7f"
+ },
+ {
+  "uid": "u1",
+  "salt": "machine",
+  "id": "1c77b9ac-7fdc-4e92-ac94-595f68a05717"
+ },
+ {
+  "uid": "u1",
+  "salt": "session",
+  "id": "d4bf0937-989e-4311-add6-8b54baf87841"
+ },
+ {
+  "uid": "u1",
+  "salt": "x",
+  "id": "7a867274-4ec8-45c4-a27c-10aa2aab5afe"
+ },
+ {
+  "uid": "u1",
+  "salt": "",
+  "id": "b1fbf709-21f7-45dc-af12-7caf0e7f5158"
+ },
+ {
+  "uid": "1234567890abcdef",
+  "salt": "machine",
+  "id": "9aaef7c4-727e-45e8-a6dc-63565b87c580"
+ },
+ {
+  "uid": "1234567890abcdef",
+  "salt": "session",
+  "id": "1a38e1e0-6ba0-4d87-a81d-8e6916e55c1b"
+ },
+ {
+  "uid": "1234567890abcdef",
+  "salt": "x",
+  "id": "d993b881-03b0-4fda-a252-2fa7f1e0037f"
+ },
+ {
+  "uid": "1234567890abcdef",
+  "salt": "",
+  "id": "4e2bed3f-f8a5-48a2-a87c-0669bf9bba7b"
+ },
+ {
+  "uid": "用户-中文",
+  "salt": "machine",
+  "id": "23564333-8002-4844-a787-560e1978680c"
+ },
+ {
+  "uid": "用户-中文",
+  "salt": "session",
+  "id": "7321c01e-25b3-4085-a8ef-b505249e7ae5"
+ },
+ {
+  "uid": "用户-中文",
+  "salt": "x",
+  "id": "005c374b-f856-4dea-adc2-f60106e9ab24"
+ },
+ {
+  "uid": "用户-中文",
+  "salt": "",
+  "id": "33613575-cd88-4123-a256-f7e90eee8cf2"
+ },
+ {
+  "uid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "salt": "machine",
+  "id": "55563759-fd75-48b9-a387-daa1d3ebda78"
+ },
+ {
+  "uid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "salt": "session",
+  "id": "5b1f525e-d30f-49d7-afbb-f6ba40847f87"
+ },
+ {
+  "uid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "salt": "x",
+  "id": "04497964-f883-4d6e-a5c7-14cdfaa7705e"
+ },
+ {
+  "uid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "salt": "",
+  "id": "5b792fad-0669-4f9f-a5f7-39b7ecd6ab9d"
+ },
+ {
+  "uid": "UID_with-dash.and.dot",
+  "salt": "machine",
+  "id": "c125723b-a146-471a-ad5f-a4a4b8116b04"
+ },
+ {
+  "uid": "UID_with-dash.and.dot",
+  "salt": "session",
+  "id": "0c5bf340-360d-4c9d-af2f-2859f2de06ab"
+ },
+ {
+  "uid": "UID_with-dash.and.dot",
+  "salt": "x",
+  "id": "b82e4cfe-c68d-47d9-af6d-3c980f8efbb3"
+ },
+ {
+  "uid": "UID_with-dash.and.dot",
+  "salt": "",
+  "id": "b0998a9d-a338-4293-ab14-7a795259edb2"
+ },
+ {
+  "uid": "anonymous",
+  "salt": "machine",
+  "id": "fc1f3f60-3c8b-4dc0-a839-42ea0169ab1e"
+ },
+ {
+  "uid": "anonymous",
+  "salt": "session",
+  "id": "be4befa7-ace5-45fd-a1f5-8bb31be975f8"
+ },
+ {
+  "uid": "anonymous",
+  "salt": "x",
+  "id": "b98cb5b4-76bb-4bdf-a0ff-441bb1cd0cc1"
+ },
+ {
+  "uid": "anonymous",
+  "salt": "",
+  "id": "fb9899c7-9cf6-4cfb-a10b-ab155bfb5d7f"
+ }
+]
