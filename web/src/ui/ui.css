@@ -246,6 +246,19 @@ body {
   color: var(--ant-color-text-secondary, #52525b);
 }
 
+.catline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--ant-color-border-secondary, #ececf0);
+  flex-wrap: wrap;
+}
+
+.catline:first-child {
+  border-top: 0;
+}
+
 /* The old page components keep their own layout; in the antd shell they must
    not add a second scroll container or their own padding. */
 .app-page > .page,

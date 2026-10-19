@@ -165,9 +165,9 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 - **P2/P3 已完成（账号页）**：账号页改用 antd 的 PageHeader + 统计卡（全部/可用/冷却/风控/需登录）+ 工具栏（搜索、区域、排序、状态 Segmented）+ `Table`（100/页服务端分页、行选择、状态 Badge、区域 Tag、积分/有效期列、行内更多操作）；批量操作仍复用原 BatchBar（功能保留，样式后续统一）。浅色 / 深色截图均已核对。
 - **P4 已完成（用量页）**：8 张统计卡（请求/成功率/总 Token/输出/缓存/首字/速度/积分）、`@ant-design/charts` 的 Token 趋势图（浅/深主题）、价格估算卡（总价、逐模型成本、未定价映射）、按模型/账号/Key/区域的明细表、剩余用量估算表（Progress 占用条）。浅色 / 深色截图均已核对。
 - 页面内部其余部分仍是旧组件：账号抽屉与添加/导入/导出/桌面导入弹窗、设置 / 日志 / 任务页。
-- **P5 进行中**：日志页已换成 antd（页头、级别/模块下拉、搜索、跟随/暂停开关、导出/清空按钮、等宽日志区）；手机端导航改为汉堡按钮 + 左侧 Drawer，断点以下侧栏隐藏，统计卡与工具栏自动换行。设置页加了 antd 页头、出口 `Segmented`、antd Switch 版 `Toggle`，并把所有分区统一成 antd 卡片外观；API Key 列表改为 antd `Table`（复制/编辑/删除行内操作、启用 Switch、已删除 Key 折叠区、antd 编辑弹窗），限额行改为 `InputNumber` + 按钮。任务页已全部 antd 化：调度器卡（状态 Tag、立即巡检、Switch、整点输入、日志）、成长任务卡（账号选择、三个动作、antd 任务表、结果 Alert）、活动历史（筛选 + antd Table 分页）。
-- **P6 部分完成**：五个页面改为路由级 `React.lazy` 代码分割（用量/图表的 ~435 KB gzip 块只在打开用量页时加载），首屏不再带上 charts；`test-setup` 为 jsdom 补了 `matchMedia`/`ResizeObserver`，antd 组件可在测试里渲染。
-- 接下来：设置页剩余内部区块（探针/模型封锁/上游/代理/更新/智能体）的 antd 化、逐页截图回归（含手机端）与字体打包。
+- **P5 基本完成**：日志页、任务页、设置页均 antd 化。设置页的出口、模型清单、API Key、限额、探针、模型封锁、更新检查、每日活跃、上游与提示词、代理槽、智能体都是 antd `Card`/`Table`/`Input`/`InputNumber`/`Select`/`Switch`/`Button`；任务页的调度器、成长任务、活动历史也全部换成 antd。
+- **P6 进行中**：五个页面改为路由级 `React.lazy` 代码分割（用量/图表的 ~435 KB gzip 块只在打开用量页时加载）；`test-setup` 为 jsdom 补了 `matchMedia`/`ResizeObserver`。已截图核对登录、账号、用量、设置、任务在浅/深色下的表现，以及 390px 手机端账号页。
+- 接下来：手机端其余页面截图与修正、Sarasa Mono SC 字体打包、真实浏览器交互回归（登录/弹窗/抽屉/表单提交）、最终视觉核对。
 
 ## 还没做
 

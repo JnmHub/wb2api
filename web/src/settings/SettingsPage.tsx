@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, InputNumber, Segmented, Typography } from 'antd'
+import { Button, Card, Col, Input, InputNumber, Row, Segmented, Select, Space, Tag, Typography } from 'antd'
 import { ApiError, get, patch, post, type SettingsView, type UpdateStatus } from '../api'
 import { Toggle } from '../components/Modal'
 import { AgentsSection } from './AgentsSection'
@@ -145,30 +145,29 @@ function DailyChatSection({ s }: { s: SettingsView }) {
   const [timeout, setTimeout] = useState(String(s.daily_chat_web_timeout))
   const dirty = attempts !== String(s.daily_chat_web_attempts) || timeout !== String(s.daily_chat_web_timeout)
   return (
-    <section className="card sec">
-      <h3>国际版每日活跃</h3>
-      <p className="dim">
-        网页通道会创建会话、接上沙箱并驱动一轮 agent 对话；只有真正跑完的会话才计入每日活跃积分（30/50 积分任务），所以它比桌面端那次“Hi”更重要。首轮没跑完会按“次数”重试，第 N 轮等待是首轮的 2^(N-1) 倍。
-      </p>
-      <div className="row">
-        <div className="field">
-          <label>最多尝试次数</label>
-          <input className="input" type="number" min={1} max={5} value={attempts} onChange={(e) => setAttempts(e.target.value)} aria-label="网页会话最多尝试次数" />
-        </div>
-        <div className="field">
-          <label>首轮等待（秒）</label>
-          <input className="input" type="number" min={30} max={600} value={timeout} onChange={(e) => setTimeout(e.target.value)} aria-label="网页会话首轮等待秒数" />
-        </div>
-        <button
-          className="btn sm primary"
-          disabled={!dirty || save.isPending}
-          onClick={() => save.mutate({ daily_chat_web_attempts: Number(attempts), daily_chat_web_timeout: Number(timeout) })}
-        >
+    <Card
+      title="国际版每日活跃"
+      extra={
+        <Button size="small" type="primary" disabled={!dirty} loading={save.isPending} onClick={() => save.mutate({ daily_chat_web_attempts: Number(attempts), daily_chat_web_timeout: Number(timeout) })}>
           保存
-        </button>
-      </div>
-      {save.isError && <div className="err">{(save.error as Error).message}</div>}
-    </section>
+        </Button>
+      }
+    >
+      <Typography.Paragraph type="secondary">
+        网页通道会创建会话、接上沙箱并驱动一轮 agent 对话；只有真正跑完的会话才计入每日活跃积分（30/50 积分任务），所以它比桌面端那次“Hi”更重要。首轮没跑完会按“次数”重试，第 N 轮等待是首轮的 2^(N-1) 倍。
+      </Typography.Paragraph>
+      <Row gutter={12}>
+        <Col xs={24} md={8}>
+          <Typography.Text type="secondary">最多尝试次数</Typography.Text>
+          <InputNumber min={1} max={5} style={{ width: '100%' }} value={Number(attempts)} onChange={(v) => setAttempts(String(v ?? 1))} aria-label="网页会话最多尝试次数" />
+        </Col>
+        <Col xs={24} md={8}>
+          <Typography.Text type="secondary">首轮等待（秒）</Typography.Text>
+          <InputNumber min={30} max={600} style={{ width: '100%' }} value={Number(timeout)} onChange={(v) => setTimeout(String(v ?? 30))} aria-label="网页会话首轮等待秒数" />
+        </Col>
+      </Row>
+      {save.isError && <Typography.Text type="danger">{String(save.error)}</Typography.Text>}
+    </Card>
   )
 }
 
@@ -222,24 +221,26 @@ function CatalogSection({ s }: { s: SettingsView }) {
   })
   const label: Record<string, string> = { remote: '上游 API 实时', cache: '本机桌面缓存文件', legacy: '桌面缓存（宽松解析）', bundled: '内置快照' }
   return (
-    <section className="card sec">
-      <h3>模型清单</h3>
-      <p className="dim">/v1/models 的内容。优先从上游 /v3/config 取，每 5 分钟缓存；这里可以手动刷新（同一出口 30 秒冷却）。</p>
-      <div className="catalogs">
+    <Card title="模型清单" extra={<Typography.Text type="secondary">同一出口 30 秒冷却</Typography.Text>}>
+      <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+        /v1/models 的内容。优先从上游 /v3/config 取，每 5 分钟缓存；这里可以手动刷新。
+      </Typography.Paragraph>
+      <Space direction="vertical" size={0} style={{ width: '100%' }}>
         {(s.catalog ?? []).map((c) => (
-          <div key={c.realm} className="catrow">
+          <div key={c.realm} className="catline">
             <b>{c.realm === 'intl' ? '国际版' : '国内版'}</b>
             <span>{label[c.source] ?? c.source}</span>
-            <span className="dim">{c.count ? c.count + ' 个模型' : ''}</span>
+            <span className="dim">{c.count ? c.count + ' 个模型' : '暂无'}</span>
             <span className="dim">{c.fetched_at ? new Date(c.fetched_at * 1000).toLocaleString() : ''}</span>
-            <button className="btn sm" disabled={refresh.isPending} onClick={() => refresh.mutate(c.realm)}>
-              刷新
-            </button>
+            <span className="spacer" />
             {msg[c.realm] && <span className="dim">{msg[c.realm]}</span>}
+            <Button size="small" loading={refresh.isPending} onClick={() => refresh.mutate(c.realm)}>
+              刷新
+            </Button>
           </div>
         ))}
-      </div>
-    </section>
+      </Space>
+    </Card>
   )
 }
 
@@ -251,44 +252,44 @@ function ProbeSection({ s }: { s: SettingsView }) {
     mutationFn: () => post<{ ok: boolean; sent: number; msg: string }>('/api/v2/quota-scan/run', {}),
   })
   return (
-    <section className="card sec">
-      <h3>额度窗口探针</h3>
-      <p className="dim" style={{ margin: 0 }}>
-        上游按 24 小时窗口给「账号 × 模型」配额，撞到 429 时会给一个重置时刻。网关会在那一刻发一个最小请求：通了就说明这条配额线已经重新开始计时，仍然 429 就按 15 秒重试（最多 20 次）。它只影响已经限额的配额线，不额外消耗正常请求的额度。
-      </p>
+    <Card
+      title="额度窗口探针"
+      extra={
+        <Typography.Text type="secondary">撞到 429 后才生效，不额外消耗正常请求额度</Typography.Text>
+      }
+    >
+      <Typography.Paragraph type="secondary">
+        上游按 24 小时窗口给「账号 × 模型」配额，撞到 429 时会给一个重置时刻。网关会在那一刻发一个最小请求：通了就说明这条配额线已经重新开始计时，仍然 429 就按 15 秒重试（最多 20 次）。
+      </Typography.Paragraph>
       <Toggle
         label="启用额度窗口探针"
         hint="默认开启。关掉后不再自动探测，已限额的模型要等下一次真实请求命中才会重新计时。"
         checked={s.window_probe}
         onChange={(v) => save.mutate({ window_probe: v })}
       />
-      <div className="field">
-        <label>主动查询的模型（每 6 小时体检一次，逗号分隔；留空 = 关闭）</label>
-        <input
-          className="input mono"
-          value={models}
-          onChange={(e) => setModels(e.target.value)}
-          placeholder="hy3, deepseek-v4.1-flash"
-        />
-        <div className="dim hint">
+      <div style={{ marginTop: 12 }}>
+        <Typography.Text type="secondary">主动查询的模型（每 6 小时体检一次，逗号分隔；留空 = 关闭）</Typography.Text>
+        <Input className="mono" value={models} onChange={(e) => setModels(e.target.value)} placeholder="hy3, deepseek-v4.1-flash" />
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           只查勾选的模型；已有 429 窗口的配额线交给上面的窗口探针，不重复查询。每次查询会消耗该账号极少量额度。
-        </div>
+        </Typography.Text>
       </div>
-      <div className="row end">
-        <button className="btn sm" disabled={run.isPending} onClick={() => run.mutate()}>
-          {run.isPending ? '查询中…' : '立即查询'}
-        </button>
-        <button
-          className="btn primary sm"
+      <Space style={{ marginTop: 12 }}>
+        <Button size="small" loading={run.isPending} onClick={() => run.mutate()}>
+          立即查询
+        </Button>
+        <Button
+          size="small"
+          type="primary"
           disabled={!dirty || save.isPending}
           onClick={() => save.mutate({ quota_scan_models: models.split(/[\s,]+/).filter(Boolean) })}
         >
           保存查询模型
-        </button>
-      </div>
-      {run.data && <div className="dim">{run.data.msg}</div>}
-      {run.isError && <div className="err">{(run.error as Error).message}</div>}
-    </section>
+        </Button>
+      </Space>
+      {run.data && <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>{run.data.msg}</Typography.Paragraph>}
+      {run.isError && <Typography.Text type="danger">{String(run.error)}</Typography.Text>}
+    </Card>
   )
 }
 
@@ -298,30 +299,30 @@ function ModelsSection({ s }: { s: SettingsView }) {
   const [sub, setSub] = useState(s.banned_substring)
   const dirty = models !== s.banned_models.join('\n') || sub !== s.banned_substring
   return (
-    <section className="card sec">
-      <h3>模型封锁</h3>
-      <p className="dim" style={{ margin: 0 }}>
-        命中的模型在网关本机直接返回 400，不会发往上游；同时从 `/v1/models` 列表里隐藏。精确名单优先于封锁子串，白名单（`allowed_models` / `allowed_prefixes`，默认空）又会覆盖两者。
-      </p>
-      <div className="field">
-        <label>精确封锁的模型（每行一个，大小写不敏感）</label>
-        <textarea className="input mono" rows={4} value={models} onChange={(e) => setModels(e.target.value)} placeholder={'gpt-5.5\ndeepseek-v4-pro'} />
-      </div>
-      <div className="field">
-        <label>封锁子串（模型名包含它就拒绝，留空 = 关闭）</label>
-        <input className="input mono" value={sub} onChange={(e) => setSub(e.target.value)} placeholder="image-alpha" />
-      </div>
-      {save.isError && <div className="err">{(save.error as Error).message}</div>}
-      <div className="row end">
-        <button
-          className="btn primary"
+    <Card
+      title="模型封锁"
+      extra={
+        <Button
+          type="primary"
+          size="small"
           disabled={!dirty || save.isPending}
           onClick={() => save.mutate({ banned_models: models.split(/[\s,]+/).filter(Boolean), banned_substring: sub })}
         >
           保存封锁名单
-        </button>
+        </Button>
+      }
+    >
+      <Typography.Paragraph type="secondary">
+        命中的模型在网关本机直接返回 400，不会发往上游；同时从 `/v1/models` 列表里隐藏。精确名单优先于封锁子串，白名单（`allowed_models` / `allowed_prefixes`，默认空）又会覆盖两者。
+      </Typography.Paragraph>
+      <Typography.Text type="secondary">精确封锁的模型（每行一个，大小写不敏感）</Typography.Text>
+      <Input.TextArea className="mono" rows={4} value={models} onChange={(e) => setModels(e.target.value)} placeholder={'gpt-5.5\ndeepseek-v4-pro'} />
+      <div style={{ marginTop: 12 }}>
+        <Typography.Text type="secondary">封锁子串（模型名包含它就拒绝，留空 = 关闭）</Typography.Text>
+        <Input className="mono" value={sub} onChange={(e) => setSub(e.target.value)} placeholder="image-alpha" />
       </div>
-    </section>
+      {save.isError && <Typography.Text type="danger">{String(save.error)}</Typography.Text>}
+    </Card>
   )
 }
 
@@ -334,37 +335,37 @@ function UpdatesSection() {
   })
   const st = q.data
   return (
-    <section className="card sec">
-      <div className="row">
-        <h3>更新检查</h3>
-        <span className="spacer" />
-        <button className="btn sm" disabled={check.isPending} onClick={() => check.mutate()}>
-          {check.isPending ? '检查中…' : '立即检查'}
-        </button>
-      </div>
-      <p className="dim" style={{ margin: 0 }}>
+    <Card
+      title="更新检查"
+      extra={
+        <Button size="small" loading={check.isPending} onClick={() => check.mutate()}>
+          立即检查
+        </Button>
+      }
+    >
+      <Typography.Paragraph type="secondary">
         只查询 GitHub Releases 并显示版本，不会下载或替换任何文件。默认关闭；开启后后台每天最多检查一次。
-      </p>
-      {q.isError && <div className="dim">更新检查接口不可用。</div>}
+      </Typography.Paragraph>
+      {q.isError && <Typography.Text type="secondary">更新检查接口不可用。</Typography.Text>}
       {st && (
-        <div className="row dim">
-          <span>当前版本 {st.current_version}</span>
+        <Space wrap size={[12, 6]}>
+          <Typography.Text>当前版本 {st.current_version}</Typography.Text>
           {st.latest_version && (
-            <span>
+            <Typography.Text>
               最新 {st.latest_version}
-              {st.update_available ? <span className="badge cooling"> 有新版本</span> : null}
-            </span>
+              {st.update_available && <Tag color="warning" style={{ marginLeft: 6 }}>有新版本</Tag>}
+            </Typography.Text>
           )}
-          {st.last_attempt ? <span>上次检查 {st.last_attempt}</span> : <span>尚未检查</span>}
-          {st.last_error ? <span className="err">{st.last_error}</span> : null}
-          {st.release_url ? (
+          <Typography.Text type="secondary">{st.last_attempt ? `上次检查 ${st.last_attempt}` : '尚未检查'}</Typography.Text>
+          {st.last_error && <Typography.Text type="danger">{st.last_error}</Typography.Text>}
+          {st.release_url && (
             <a href={st.release_url} target="_blank" rel="noreferrer">
               发行页
             </a>
-          ) : null}
-        </div>
+          )}
+        </Space>
       )}
-    </section>
+    </Card>
   )
 }
 
@@ -382,54 +383,62 @@ function UpstreamSection({ s }: { s: SettingsView }) {
   }
   if (token) upstream.device_token = token
   return (
-    <section className="card sec">
-      <h3>上游与提示词</h3>
-      <div className="grid2">
-        <div className="field">
-          <label>响应头超时（秒）：连接 + 首字节</label>
-          <input className="input" type="number" min={1} value={hdr} onChange={(e) => setHdr(e.target.value)} />
-        </div>
-        <div className="field">
-          <label>流空闲超时（秒）：流中途静默多久算断</label>
-          <input className="input" type="number" min={1} value={idle} onChange={(e) => setIdle(e.target.value)} />
-        </div>
-        <div className="field">
-          <label>X-Device-Token（仅国内版发送）{s.upstream.device_token_set ? ' — 已设置' : ''}</label>
-          <input className="input" type="password" placeholder={s.upstream.device_token_set ? '留空 = 保持不变' : '可选'} value={token} onChange={(e) => setToken(e.target.value)} />
-        </div>
-        <div className="field">
-          <label>或设备 Token 文件路径</label>
-          <input className="input" value={tokenFile} onChange={(e) => setTokenFile(e.target.value)} />
-        </div>
-        <div className="field">
-          <label>系统提示词模式</label>
-          <select className="select" value={mode} onChange={(e) => setMode(e.target.value as typeof mode)}>
-            <option value="passthrough">透传客户端的系统提示词（默认）</option>
-            <option value="append">追加网关提示词</option>
-            <option value="custom">用网关提示词替换</option>
-          </select>
-        </div>
-        <div className="field">
-          <label>提示词文件（custom / append 模式，留空 = 内置中性提示词）</label>
-          <input className="input" value={file} onChange={(e) => setFile(e.target.value)} disabled={mode === 'passthrough'} />
-        </div>
-        <div className="field">
-          <label>积分后台刷新间隔（小时，0 = 关闭）</label>
-          <input className="input" type="number" min={0} step={0.5} value={credits} onChange={(e) => setCredits(e.target.value)} />
-        </div>
-      </div>
-      <div className="row end">
-        <button
-          className="btn primary"
-          disabled={save.isPending}
+    <Card
+      title="上游与提示词"
+      extra={
+        <Button
+          type="primary"
+          size="small"
+          loading={save.isPending}
           onClick={() => {
             save.mutate({ upstream, prompt: { mode, file }, credits_refresh_hours: Number(credits) })
             setToken('')
           }}
         >
           保存
-        </button>
-      </div>
-    </section>
+        </Button>
+      }
+    >
+      <Row gutter={[12, 12]}>
+        <Col xs={24} md={8}>
+          <Typography.Text type="secondary">响应头超时（秒）：连接 + 首字节</Typography.Text>
+          <InputNumber min={1} style={{ width: '100%' }} value={Number(hdr)} onChange={(v) => setHdr(String(v ?? 1))} />
+        </Col>
+        <Col xs={24} md={8}>
+          <Typography.Text type="secondary">流空闲超时（秒）：流中途静默多久算断</Typography.Text>
+          <InputNumber min={1} style={{ width: '100%' }} value={Number(idle)} onChange={(v) => setIdle(String(v ?? 1))} />
+        </Col>
+        <Col xs={24} md={8}>
+          <Typography.Text type="secondary">积分后台刷新间隔（小时，0 = 关闭）</Typography.Text>
+          <InputNumber min={0} step={0.5} style={{ width: '100%' }} value={Number(credits)} onChange={(v) => setCredits(String(v ?? 0))} />
+        </Col>
+        <Col xs={24} md={12}>
+          <Typography.Text type="secondary">X-Device-Token（仅国内版发送）{s.upstream.device_token_set ? ' — 已设置' : ''}</Typography.Text>
+          <Input.Password placeholder={s.upstream.device_token_set ? '留空 = 保持不变' : '可选'} value={token} onChange={(e) => setToken(e.target.value)} />
+        </Col>
+        <Col xs={24} md={12}>
+          <Typography.Text type="secondary">或设备 Token 文件路径</Typography.Text>
+          <Input value={tokenFile} onChange={(e) => setTokenFile(e.target.value)} />
+        </Col>
+        <Col xs={24} md={12}>
+          <Typography.Text type="secondary">系统提示词模式</Typography.Text>
+          <Select
+            style={{ width: '100%' }}
+            value={mode}
+            onChange={(v) => setMode(v as typeof mode)}
+            options={[
+              { value: 'passthrough', label: '透传客户端的系统提示词（默认）' },
+              { value: 'append', label: '追加网关提示词' },
+              { value: 'custom', label: '用网关提示词替换' },
+            ]}
+          />
+        </Col>
+        <Col xs={24} md={12}>
+          <Typography.Text type="secondary">提示词文件（custom / append 模式，留空 = 内置中性提示词）</Typography.Text>
+          <Input value={file} onChange={(e) => setFile(e.target.value)} disabled={mode === 'passthrough'} />
+        </Col>
+      </Row>
+      {save.isError && <Typography.Text type="danger">{String(save.error)}</Typography.Text>}
+    </Card>
   )
 }
