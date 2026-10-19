@@ -116,6 +116,8 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 | 面板资源 | 首页 + 哈希 JS 正常下发（363 KB 原始 → 108 KB gzip / **94 KB brotli**）；未知 `/api` 路径返回 JSON 404 |
 | 导入校验 | 非 JWT 的 `accessToken` 被报告为不合格行而不是整批失败；合法 JWT 预演与正式导入结果一致 |
 
+**真实账号与并发/协议测试**：见 [TEST_REPORT.md](TEST_REPORT.md)。13 项协议兼容检查（Chat Completions / Responses / Anthropic Messages 的流式、非流式、工具调用、`count_tokens`、定址路由、错误透传）在真实国内版账号上全部通过；单账号 12 并发 225 RPM / 231 TPS 无 429；模拟上游 200 并发、8k TPS 无错误。压测器 `cmd/loadtest` 新增 `-mode chat|responses|anthropic`、`-max` 与 RPM / TPS 统计。
+
 ### 这些数字**不能**证明什么
 - **TTFT（首字延迟）这次没有测准。** 压测器、模拟上游、网关同机运行，Windows 回环上瞬间建立几百条新连接本身就要几百毫秒（压测器直连模拟上游、不经过网关，在无 ramp 的 100 并发下也是 ~280 ms）。网关内部从进入处理到首个上游 chunk 的耗时（hub 侧）是 p50 ≈ 258 ms，其中大部分是网关→上游新建连接。需要在 Linux 上、用连接复用或独立机器重测。
 - 2000 并发时压测器自身和模拟上游已接近饱和（直连模拟上游时 p1 也只有 39.6），所以 2000 档的"每流速率"主要反映测试环境，不是网关上限。

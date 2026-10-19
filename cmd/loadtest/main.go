@@ -13,8 +13,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,14 +47,15 @@ func genAccounts(args []string) {
 }
 
 type sample struct {
-	status   int
-	ttft     time.Duration
-	total    time.Duration
-	chunks   int
-	rate     float64 // chunks/s between first and last chunk
-	maxGap   time.Duration
-	err      string
-	finished bool
+	status     int
+	ttft       time.Duration
+	total      time.Duration
+	chunks     int
+	completion int64 // completion tokens reported by the stream (0 = unknown)
+	rate       float64
+	maxGap     time.Duration
+	err        string
+	finished   bool
 }
 
 func pct(d []time.Duration, p float64) time.Duration {
@@ -77,6 +80,8 @@ func main() {
 	key := flag.String("key", "", "API key")
 	statsURL := flag.String("stats", "", "gateway /debug/runtime URL to sample")
 	ramp := flag.Duration("ramp", 0, "spread stream starts over this duration")
+	mode := flag.String("mode", "chat", "protocol: chat | responses | anthropic")
+	maxTokens := flag.Int("max", 0, "max output tokens sent to the gateway (0 = omit; anthropic defaults to 64)")
 	flag.Parse()
 
 	total := *reqs
@@ -85,7 +90,14 @@ func main() {
 	}
 	tr := &http.Transport{MaxIdleConns: *conc * 2, MaxIdleConnsPerHost: *conc * 2, DisableCompression: true}
 	client := &http.Client{Transport: tr}
-	body, _ := json.Marshal(map[string]any{"model": *model, "stream": true, "messages": []map[string]string{{"role": "user", "content": "hi"}}})
+	body := requestBody(*mode, *model, *maxTokens)
+	urlPath := *url
+	switch *mode {
+	case "responses":
+		urlPath = replacePath(*url, "/v1/responses")
+	case "anthropic":
+		urlPath = replacePath(*url, "/v1/messages")
+	}
 
 	var (
 		wg      sync.WaitGroup
@@ -131,7 +143,7 @@ func main() {
 				if int(next.Add(1)) > total {
 					return
 				}
-				s := oneStream(client, *url, *key, body, *tokens, *tps)
+				s := oneStream(client, urlPath, *key, body, *tokens, *tps, *mode)
 				mu.Lock()
 				samples = append(samples, s)
 				mu.Unlock()
@@ -146,6 +158,7 @@ func main() {
 	var rates []float64
 	errs := map[string]int{}
 	ok, chunks := 0, 0
+	var completionTokens int64
 	for _, s := range samples {
 		if s.err != "" || !s.finished {
 			e := s.err
@@ -157,6 +170,7 @@ func main() {
 		}
 		ok++
 		chunks += s.chunks
+		completionTokens += s.completion
 		ttft = append(ttft, s.ttft)
 		gaps = append(gaps, s.maxGap)
 		rates = append(rates, s.rate)
@@ -168,11 +182,20 @@ func main() {
 	for e, c := range errs {
 		fmt.Printf("  error x%-5d: %s\n", c, e)
 	}
+	if wall > 0 {
+		fmt.Printf("RPM           : %.0f requests/min\n", float64(len(samples))/wall.Minutes())
+	}
 	if ok > 0 {
 		fmt.Printf("TTFT          : p50 %v  p99 %v  max %v\n", pct(ttft, .5).Round(time.Microsecond), pct(ttft, .99).Round(time.Microsecond), ttft[len(ttft)-1].Round(time.Microsecond))
 		fmt.Printf("longest stall : p50 %v  p99 %v  max %v (largest gap between two chunks of one stream)\n", pct(gaps, .5).Round(time.Millisecond), pct(gaps, .99).Round(time.Millisecond), gaps[len(gaps)-1].Round(time.Millisecond))
 		fmt.Printf("stream rate   : p1 %.1f  p50 %.1f  chunks/s per stream (asked: %d)\n", rates[int(.01*float64(len(rates)-1))], rates[len(rates)/2], *tps)
 		fmt.Printf("throughput    : %.0f chunks/s total\n", float64(chunks)/wall.Seconds())
+		if completionTokens > 0 {
+			fmt.Printf("TPS           : %.1f completion tokens/s (%.0f total)\n", float64(completionTokens)/wall.Seconds(), float64(completionTokens))
+		}
+		if ok > 0 {
+			fmt.Printf("per request   : %.1f completion tokens\n", float64(completionTokens)/float64(ok))
+		}
 	}
 	if *statsURL != "" {
 		fmt.Printf("gateway peak goroutines (sampled): %d\n", peakG.Load())
@@ -185,14 +208,60 @@ func main() {
 	}
 }
 
-func oneStream(c *http.Client, url, key string, body []byte, tokens, tps int) sample {
+var usageTokens = regexp.MustCompile(`"(?:completion_tokens|output_tokens)":\s*"?([0-9]+)"?`)
+
+func requestBody(mode, model string, maxTokens int) []byte {
+	switch mode {
+	case "responses":
+		m := map[string]any{"model": model, "input": "hi", "stream": true}
+		if maxTokens > 0 {
+			m["max_output_tokens"] = maxTokens
+		}
+		b, _ := json.Marshal(m)
+		return b
+	case "anthropic":
+		if maxTokens <= 0 {
+			maxTokens = 64
+		}
+		m := map[string]any{"model": model, "max_tokens": maxTokens, "stream": true,
+			"messages": []map[string]string{{"role": "user", "content": "hi"}}}
+		b, _ := json.Marshal(m)
+		return b
+	default:
+		m := map[string]any{"model": model, "stream": true, "messages": []map[string]string{{"role": "user", "content": "hi"}}}
+		if maxTokens > 0 {
+			m["max_tokens"] = maxTokens
+		}
+		b, _ := json.Marshal(m)
+		return b
+	}
+}
+
+// replacePath swaps the path of the gateway URL, keeping scheme/host.
+func replacePath(raw, path string) string {
+	i := strings.Index(raw, "://")
+	if i < 0 {
+		return path
+	}
+	rest := raw[i+3:]
+	j := strings.IndexByte(rest, '/')
+	if j < 0 {
+		return raw + path
+	}
+	return raw[:i+3] + rest[:j] + path
+}
+
+func oneStream(c *http.Client, url, key string, body []byte, tokens, tps int, mode string) sample {
 	var s sample
 	start := time.Now()
 	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Mock-Tokens", strconv.Itoa(tokens))
 	req.Header.Set("X-Mock-TPS", strconv.Itoa(tps))
-	if key != "" {
+	if mode == "anthropic" {
+		req.Header.Set("x-api-key", key)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	} else if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
 	resp, err := c.Do(req)
@@ -211,19 +280,47 @@ func oneStream(c *http.Client, url, key string, body []byte, tokens, tps int) sa
 	var first, last time.Time
 	for {
 		line, err := br.ReadBytes('\n')
-		if len(line) > 0 && bytes.HasPrefix(line, []byte("data: ")) {
-			now := time.Now()
-			if bytes.HasPrefix(line, []byte("data: [DONE]")) {
+		if len(line) > 0 {
+			if mode == "anthropic" && bytes.Contains(line, []byte("event: message_stop")) {
 				s.finished = true
-			} else if bytes.Contains(line, []byte(`"content"`)) {
-				if first.IsZero() {
-					first = now
-					s.ttft = now.Sub(start)
-				} else if g := now.Sub(last); g > s.maxGap {
-					s.maxGap = g
+			}
+			if bytes.HasPrefix(line, []byte("data: ")) {
+				now := time.Now()
+				delta := false
+				switch mode {
+				case "chat":
+					if bytes.HasPrefix(line, []byte("data: [DONE]")) {
+						s.finished = true
+					} else if bytes.Contains(line, []byte(`"delta"`)) &&
+						(bytes.Contains(line, []byte(`"content"`)) || bytes.Contains(line, []byte(`"reasoning_content"`))) {
+						delta = true
+					}
+				case "responses":
+					if bytes.Contains(line, []byte(`"response.completed"`)) {
+						s.finished = true
+					} else if bytes.Contains(line, []byte(`"response.output_text.delta"`)) {
+						delta = true
+					}
+				case "anthropic":
+					if bytes.Contains(line, []byte(`"text_delta"`)) {
+						delta = true
+					}
 				}
-				last = now
-				s.chunks++
+				if delta {
+					if first.IsZero() {
+						first = now
+						s.ttft = now.Sub(start)
+					} else if g := now.Sub(last); g > s.maxGap {
+						s.maxGap = g
+					}
+					last = now
+					s.chunks++
+				}
+				if m := usageTokens.FindSubmatch(line); m != nil {
+					if n, perr := strconv.ParseInt(string(m[1]), 10, 64); perr == nil && n > s.completion {
+						s.completion = n
+					}
+				}
 			}
 		}
 		if err != nil {
