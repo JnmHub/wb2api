@@ -258,6 +258,25 @@ async function main() {
     }
     await sleep(500)
     if (!(await evaluate(`document.body.innerText.includes(${JSON.stringify(d.expect)})`))) failures.push(`${d.name}: dialog content missing`)
+    if (d.name === 'import') {
+      const injected = await evaluate(`(() => {
+        const input = document.querySelector('.ant-modal input[type=file]');
+        if (!input) return false;
+        const dt = new DataTransfer();
+        dt.items.add(new File(['{"accounts":[]}'], 'import-a.json', { type: 'application/json' }));
+        dt.items.add(new File(['{"accounts":[]}'], 'import-b.json', { type: 'application/json' }));
+        input.files = dt.files;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      })()`)
+      if (!injected) {
+        failures.push('import: file input not found')
+      } else {
+        await sleep(700)
+        if (!(await evaluate(`document.body.innerText.includes('将按顺序导入 2 个文件')`))) failures.push('import: multiple files were not accepted')
+        await shot('import-multi')
+      }
+    }
     await shot(d.name)
     await evaluate(`document.querySelector('.ant-modal-close')?.click()`)
     await sleep(300)

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Button, Card, Collapse, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Typography } from 'antd'
+import { Button, Card, Collapse, Input, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { Copy, Pencil, Plus, Trash2 } from 'lucide-react'
 import { del, get, patch, post, type KeyView, type SettingsView } from '../api'
@@ -70,13 +70,6 @@ export function KeysSection({ s }: { s: SettingsView }) {
         ) : (
           <Typography.Text type="secondary">不限模型</Typography.Text>
         ),
-    },
-    {
-      title: '并发',
-      dataIndex: 'concurrency_limit',
-      width: 100,
-      responsive: ['md'],
-      render: (v: number) => (v ? `≤ ${v}` : '不限'),
     },
     {
       title: '启用',
@@ -168,7 +161,6 @@ function KeyEditor(props: { initial: KeyView | null; onClose: () => void; onSave
   const [name, setName] = useState(k?.name ?? '')
   const [realm, setRealm] = useState<string>(k?.realm ?? '')
   const [models, setModels] = useState((k?.models ?? []).join('\n'))
-  const [conc, setConc] = useState<number>(k?.concurrency_limit ?? 0)
   const [secret, setSecret] = useState('')
   const m = useMutation({
     mutationFn: async () => {
@@ -176,7 +168,6 @@ function KeyEditor(props: { initial: KeyView | null; onClose: () => void; onSave
         name,
         realm,
         models: models.split(/[\s,]+/).filter(Boolean),
-        concurrency_limit: conc || 0,
       }
       if (!k) {
         if (secret.trim()) body.key = secret.trim()
@@ -214,10 +205,6 @@ function KeyEditor(props: { initial: KeyView | null; onClose: () => void; onSave
               { value: 'cn', label: '国内版' },
             ]}
           />
-        </div>
-        <div>
-          <Typography.Text type="secondary">并发上限（0 = 不限）</Typography.Text>
-          <InputNumber style={{ width: '100%' }} min={0} value={conc} onChange={(v) => setConc(v ?? 0)} />
         </div>
         {!k && (
           <div>
