@@ -250,8 +250,8 @@ export function AccountsPage() {
               可用 <b>{credit(sum?.credits?.available ?? 0)}</b>
             </div>
             <div className="credit-meta">
-              今日消耗 {credit(sum?.credits?.today_used ?? 0)} · 7 天到期 {credit(sum?.credits?.expiring_7d ?? 0)} · 0 积分{' '}
-              {sum?.credits?.zero ?? 0} 个
+              今日消耗 {credit(sum?.credits?.today_used ?? 0)} · 可用账号 {sum?.by_status?.ready ?? 0}/{sum?.total ?? 0} · 7 天到期{' '}
+              {credit(sum?.credits?.expiring_7d ?? 0)} · 0 积分 {sum?.credits?.zero ?? 0} 个
             </div>
           </Card>
         </Col>
