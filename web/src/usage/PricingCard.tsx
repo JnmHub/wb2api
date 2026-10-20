@@ -31,6 +31,7 @@ export function PricingCard({ base }: { base: string }) {
   })
   const c = cost.data
   const rows = c?.models ?? []
+  const unpriced = rows.filter((r) => !r.priced)
   const columns: ColumnsType<PricingCostRow> = [
     { title: '模型', dataIndex: 'model', ellipsis: true, render: (v: string) => <span className="mono">{v}</span> },
     { title: '请求', dataIndex: 'requests', width: 76, align: 'right', render: (v: number) => num(v) },
@@ -51,18 +52,7 @@ export function PricingCard({ base }: { base: string }) {
             {r.source !== 'exact' && <Tag style={{ marginLeft: 6 }}>{r.source}</Tag>}
           </span>
         ) : (
-          <Space.Compact>
-            <Input
-              size="small"
-              style={{ width: 190 }}
-              placeholder="OpenRouter ID"
-              value={mapping[r.model] ?? ''}
-              onChange={(e) => setMapping({ ...mapping, [r.model]: e.target.value })}
-            />
-            <Button size="small" disabled={!mapping[r.model]?.trim() || map.isPending} onClick={() => map.mutate({ model: r.model, or_id: mapping[r.model].trim() })}>
-              映射
-            </Button>
-          </Space.Compact>
+          <Tag color="warning">未定价</Tag>
         ),
     },
   ]
@@ -95,14 +85,42 @@ export function PricingCard({ base }: { base: string }) {
       {rows.length === 0 ? (
         <Typography.Text type="secondary">这个区间还没有用量。</Typography.Text>
       ) : (
-        <Table<PricingCostRow>
-          rowKey="model"
-          size="small"
-          columns={columns}
-          dataSource={rows.slice(0, 8)}
-          pagination={false}
-          style={{ marginTop: 8 }}
-        />
+        <>
+          <Table<PricingCostRow>
+            rowKey="model"
+            size="small"
+            columns={columns}
+            dataSource={rows.slice(0, 8)}
+            pagination={false}
+            style={{ marginTop: 8 }}
+          />
+          {unpriced.length > 0 && (
+            <div className="pricing-map">
+              <Typography.Text type="secondary">为未定价模型指定 OpenRouter ID（例如 z-ai/glm-5.3-flash），保存后立刻重新计价。</Typography.Text>
+              {unpriced.slice(0, 10).map((r) => (
+                <div className="pricing-map-row" key={r.model}>
+                  <span className="mono pricing-map-model">{r.model}</span>
+                  <Input
+                    size="small"
+                    placeholder="OpenRouter ID"
+                    value={mapping[r.model] ?? ''}
+                    onChange={(e) => setMapping({ ...mapping, [r.model]: e.target.value })}
+                    onPressEnter={() => mapping[r.model]?.trim() && map.mutate({ model: r.model, or_id: mapping[r.model].trim() })}
+                  />
+                  <Button
+                    size="small"
+                    type="primary"
+                    disabled={!mapping[r.model]?.trim() || map.isPending}
+                    onClick={() => map.mutate({ model: r.model, or_id: mapping[r.model].trim() })}
+                  >
+                    映射
+                  </Button>
+                </div>
+              ))}
+              {unpriced.length > 10 && <Typography.Text type="secondary">还有 {unpriced.length - 10} 个未定价模型，先处理最常用的这些。</Typography.Text>}
+            </div>
+          )}
+        </>
       )}
     </Card>
   )
