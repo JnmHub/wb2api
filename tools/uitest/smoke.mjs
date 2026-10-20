@@ -194,6 +194,15 @@ async function main() {
     await sleep(500)
     if (!(await text()).includes('已选')) failures.push('batch bar did not appear after selecting a row')
     await shot('batch-bar')
+    if (await clickText('button', '导出选中')) {
+      await sleep(500)
+      if (!(await text()).includes('导出选中的 1 个账号')) failures.push('selected export did not pass the uid list')
+      await shot('export-selected')
+      await evaluate(`document.querySelector('.ant-modal-close')?.click()`)
+      await sleep(250)
+    } else {
+      failures.push('batch export button missing')
+    }
     if (!(await clickText('button', '取消选择'))) failures.push('batch bar clear button missing')
     await sleep(200)
   } else {

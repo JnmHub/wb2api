@@ -256,7 +256,8 @@ func staleErr(err error) bool {
 	}
 	s := err.Error()
 	return strings.Contains(s, "connection reset") || strings.Contains(s, "broken pipe") ||
-		strings.Contains(s, "forcibly closed") || strings.Contains(s, "connection aborted")
+		strings.Contains(s, "forcibly closed") || strings.Contains(s, "connection aborted") ||
+		strings.Contains(s, "was aborted") // Windows wsarecv after the peer closed a keep-alive connection
 }
 
 // Do sends r and returns the response with its headers read. The caller owns
@@ -369,28 +370,38 @@ type wireBody struct {
 	c        *wireConn
 	stop     func() bool
 	reusable bool
-	eof      bool
-	done     bool
+
+	mu   sync.Mutex
+	eof  bool
+	done bool
 }
 
 func (b *wireBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	if err == io.EOF {
+		b.mu.Lock()
 		b.eof = true
+		b.mu.Unlock()
 	}
 	return n, err
 }
 
 func (b *wireBody) Close() error {
+	b.mu.Lock()
 	if b.done {
+		b.mu.Unlock()
 		return nil
 	}
 	b.done = true
+	eof := b.eof
+	b.mu.Unlock()
 	_ = b.ReadCloser.Close()
 	// stop() reports false when the cancel hook already ran, i.e. the socket
 	// was closed under us and must not be pooled.
 	alive := b.stop()
-	if b.eof && b.reusable && alive && b.c.br.Buffered() == 0 {
+	// Only pool when the reader observed EOF before Close: a reader that is
+	// still in flight may otherwise have unread bytes in the connection.
+	if eof && b.reusable && alive && b.c.br.Buffered() == 0 {
 		b.w.putIdle(b.c)
 		return nil
 	}

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -360,5 +361,12 @@ func TestManagerGivesEachAccountItsOwnWire(t *testing.T) {
 	}
 	if m.Wire("a", "http://p:1") == a1 {
 		t.Fatal("a proxy change must produce a different wire")
+	}
+}
+
+func TestStaleErrWindowsAbort(t *testing.T) {
+	err := errors.New("read tcp 127.0.0.1:1->127.0.0.1:2: wsarecv: An established connection was aborted by the software in your host machine.")
+	if !staleErr(err) {
+		t.Fatal("a Windows wsarecv abort of a pooled connection must be retried")
 	}
 }
