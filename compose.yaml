@@ -13,6 +13,7 @@ services:
       # Set a strong password before exposing the panel. Empty means the
       # built-in default "admin" and a forced password change on first login.
       WB_PANEL_PASSWORD: ${WB_PANEL_PASSWORD:-}
+      WB_MAX_BODY_MB: ${WB_MAX_BODY_MB:-16}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - ./data:/data

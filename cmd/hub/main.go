@@ -77,7 +77,17 @@ func main() {
 	catalogDir := flag.String("catalog-dir", envOr("WB_PROXY_CATALOG_DIR", "catalog"), "archive directory for the last /v3/config responses")
 	noModelsDev := flag.Bool("no-modelsdev", os.Getenv("WB_NO_MODELSDEV") == "1", "never contact models.dev for context/output limits")
 	debug := flag.Bool("debug", os.Getenv("WB_DEBUG") == "1", "expose /debug/runtime")
+	maxBodyMB := flag.Int("max-body-mb", func() int {
+		n, _ := strconv.Atoi(envOr("WB_MAX_BODY_MB", "16"))
+		if n < 1 {
+			return 16
+		}
+		return n
+	}(), "per-request body ceiling in MiB (default 16)")
 	flag.Parse()
+	if *maxBodyMB > 1024 {
+		*maxBodyMB = 1024
+	}
 
 	if *lan && *host == "127.0.0.1" {
 		*host = "0.0.0.0"
@@ -122,6 +132,7 @@ func main() {
 	h := &openai.Handler{
 		Pool: p, Up: up, Settings: st, Log: log, Refresher: refresher, Persist: persist,
 		UpstreamOverride: *upstreamOverride, MaxAttempts: *maxAttempts, FilterMode: mode,
+		MaxBody: int64(*maxBodyMB) << 20,
 	}
 	realmSw := realmswitch.Open(*accountsDir, "intl")
 	h.CurrentRealm = realmSw.Get

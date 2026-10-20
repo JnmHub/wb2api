@@ -151,7 +151,7 @@ npm run uitest -- --url http://127.0.0.1:18888 --password real-test
   handler，已改为按请求量扩容；不是网关长上下文传输 bug。
 - Docker：`docker compose config` 校验通过；本机只有 Docker CLI，Docker daemon 未安装，
   因此镜像构建未在本机执行。GitHub Actions `release` 工作流已真实跑通，
-  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 至 v2.0.8。
+  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 至 v2.0.9。
 - **CI 真跑出了两个真实问题**：GitHub 的 `-race` 发现 `wireBody` 的 `eof/done` 与 ACP
   扫描协程并发读写（已加锁，并且只有 Close 前已观察到 EOF 才归还连接）；Windows runner
   上的 `wsarecv: ... was aborted` 未被识别为陈旧连接（已加入重试判断并补测试）。
@@ -244,7 +244,14 @@ You are a coding agent powered by X.   -> You are an assistant built on X.
   `deepseek-v4.1-flash` 返回 **429**（当日模型额度用尽，不再出现 11128），说明 WAF 拦截已解除；
 - 工具说明等后续内容未被改写。
 
-## 14. 复现
+## 14. 单请求体上限
+
+三套协议共用 `Handler.MaxBody`，默认 **16 MiB**，在解析 JSON 前用
+`http.MaxBytesReader` 拦截，因此超限返回 `413 payload too large`，不会进入上游。
+现在可用 `-max-body-mb N` 或 `WB_MAX_BODY_MB=N` 调整（1–1024 MiB），重启生效；
+Docker Compose 也会透传 `WB_MAX_BODY_MB`。`TestBodyTooLarge` 覆盖自定义上限下的 413。
+
+## 15. 复现
 
 ```powershell
 # 模拟并发基准（自带 mock 与假账号池）

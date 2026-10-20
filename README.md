@@ -81,13 +81,14 @@ services:
 | `-catalog-dir` | `catalog` | 模型目录缓存 |
 | `-panel-password` | 空 | 面板密码，也可用 `WB_PANEL_PASSWORD` |
 | `-max-attempts` | `5` | 单请求最多切换账号次数 |
+| `-max-body-mb` | `16` | 单请求体上限（MiB）；也可用 `WB_MAX_BODY_MB` |
 | `-per-account-inflight` | `0` | 单账号并发上限，0 = 不限（网关不额外限制） |
 | `-no-modelsdev` | 关 | 不访问 models.dev 的额度数据 |
 | `-debug` | 关 | 暴露 `/debug/runtime` |
 
 常用环境变量：`WB_ACCOUNTS_DIR`、`WB_PROXY_USAGE_DIR`、
 `WB_PROXY_CATALOG_DIR`、`WB_PANEL_PASSWORD`、`WB_UPDATE_REPO`、
-`WB_TLS_PROFILE=go`（退回 Go 标准 TLS 指纹）。
+`WB_MAX_BODY_MB`、`WB_TLS_PROFILE=go`（退回 Go 标准 TLS 指纹）。
 批量账号操作（刷新积分、签到、每日活跃、批量检测）默认最多 4 个并发上游请求。
 在“设置 → 批量账号任务”里可以直接调整并发数（1–16）和每个账号操作后的间隔
 （0–60000 毫秒），保存立即生效，不需要重启；账号很多、批量任务影响正常请求时，

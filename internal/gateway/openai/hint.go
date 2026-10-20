@@ -19,7 +19,7 @@ func gatewayHint(status int, message string) string {
 	}
 	switch {
 	case status == 413 && has("payload too large"):
-		return "single request body exceeds the gateway cap (16 MB by default); raise it and restart"
+		return "single request body exceeds the gateway cap; raise -max-body-mb (or WB_MAX_BODY_MB) and restart"
 	case status == 503 && has("concurrent chat limit"):
 		return "gateway is busy at its concurrency limit; retry shortly"
 	case has("11133", "model_param_invalid", "invalid request parameters"):
