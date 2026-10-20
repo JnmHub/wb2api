@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -25,8 +26,21 @@ type Prober interface {
 }
 
 // upstreamSlots bounds how many vendor-facing account calls run at once: each
-// one is a real request, so a big batch must not become a burst.
-var upstreamSlots = make(chan struct{}, 4)
+// one is a real request, so a big batch must not become a burst. Operators with
+// several hundred accounts can lower this and add a gap between calls so the
+// vendor does not rate-limit the IP that normal gateway traffic uses too.
+var (
+	upstreamSlots = make(chan struct{}, opsEnvInt("WB_OPS_CONCURRENCY", 4, 1, 16))
+	opsInterval   = time.Duration(opsEnvInt("WB_OPS_INTERVAL_MS", 0, 0, 60000)) * time.Millisecond
+)
+
+func opsEnvInt(name string, def, min, max int) int {
+	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
+	if err != nil || n < min || n > max {
+		return def
+	}
+	return n
+}
 
 func withSlot(ctx context.Context, f func() error) error {
 	select {
@@ -35,7 +49,14 @@ func withSlot(ctx context.Context, f func() error) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return f()
+	err := f()
+	if opsInterval > 0 {
+		select {
+		case <-time.After(opsInterval):
+		case <-ctx.Done():
+		}
+	}
+	return err
 }
 
 func resultErr(r ops.Result) error {

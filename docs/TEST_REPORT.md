@@ -151,7 +151,7 @@ npm run uitest -- --url http://127.0.0.1:18888 --password real-test
   handler，已改为按请求量扩容；不是网关长上下文传输 bug。
 - Docker：`docker compose config` 校验通过；本机只有 Docker CLI，Docker daemon 未安装，
   因此镜像构建未在本机执行。GitHub Actions `release` 工作流已真实跑通，
-  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 至 v2.0.4。
+  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 至 v2.0.6。
 - **CI 真跑出了两个真实问题**：GitHub 的 `-race` 发现 `wireBody` 的 `eof/done` 与 ACP
   扫描协程并发读写（已加锁，并且只有 Close 前已观察到 EOF 才归还连接）；Windows runner
   上的 `wsarecv: ... was aborted` 未被识别为陈旧连接（已加入重试判断并补测试）。
@@ -194,7 +194,26 @@ npm run uitest -- --url http://127.0.0.1:18888 --password real-test
 账号详情会显示 `unavailable_reason`（例如“熔断 剩余 30m”“余额保护 剩余 16h”），
 便于区分“冷却”与“额度限制”。新增 `TestStateShowsBreakerAndBalanceAsCooling`。
 
-## 12. 复现
+## 12. 450 账号批量任务的性能实测
+
+用 mock 上游 + 450 个国际版账号复现“批量刷积分时正常聊天是否变慢”：
+
+- 上游 `/v2/billing/meter/get-user-resource` 人为延迟 500ms，批量刷新 450 个账号约 68s；
+- 批量运行期间同时跑 100 个聊天流（c=10，200 token，50 tok/s）：
+  - 基线 TTFT：p50 **584µs**、p99 **270.9ms**
+  - 批量期间：p50 **591µs**、p99 **214.0ms**
+  - 吞吐：496 → 486 chunks/s（约 -2%）
+  - 单流 chunk 间隔：p50 24ms → 59ms
+- 批量任务完成后 attempts=450、failed=0。
+
+结论：网关请求路径没有被批量任务阻塞，首字延迟基本不变；影响主要是上游带宽/流式平滑度。
+真实网络里 450 个账号的批量操作是对**同一个出口 IP** 的持续请求，供应商可能因此对
+正常模型请求限速；这不是网关内部锁。需要更温和时可用
+`WB_OPS_CONCURRENCY=2`、`WB_OPS_INTERVAL_MS=100`（批量变慢，突发更小）。
+积分刷新遇到的 `HTTP 500 {"code":10000,...}` 是上游账单接口返回的 500（带 requestId），
+不是网关错误；现在 CN 账单查询会重试一次，仍失败才会把这个账号记入失败清单。
+
+## 13. 复现
 
 ```powershell
 # 模拟并发基准（自带 mock 与假账号池）

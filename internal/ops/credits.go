@@ -294,7 +294,7 @@ func codeOf(o *jsonx.Obj) any { return o.Get("code") }
 func (c *Client) creditsCN(ctx context.Context, acc *pool.Account) (map[string]any, error) {
 	rec := acc.Record()
 	base := c.billingBase(rec.Realm)
-	s, err := c.billingCall(ctx, acc, base+resourceSummaryPath, []byte("{}"), true, creditsHTTPTimeout, 1)
+	s, err := c.billingCall(ctx, acc, base+resourceSummaryPath, []byte("{}"), true, creditsHTTPTimeout, 2)
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +325,7 @@ func (c *Client) creditsCN(ctx context.Context, acc *pool.Account) (map[string]a
 			body.Set("NeedRenewInfo", true)
 		}
 		b, _ := jsonx.MarshalPy(body)
-		res, err := c.billingCall(ctx, acc, base+path, b, true, creditsHTTPTimeout, 1)
+		res, err := c.billingCall(ctx, acc, base+path, b, true, creditsHTTPTimeout, 2)
 		if err != nil {
 			return nil
 		}

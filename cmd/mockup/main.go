@@ -151,10 +151,22 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:19000", "listen address")
 	tokens := flag.Int("tokens", 200, "default tokens per stream")
 	tps := flag.Int("tps", 50, "default tokens per second per stream (0 = as fast as possible)")
+	creditsDelay := flag.Duration("credits-delay", 0, "artificial latency of the credit endpoint (perf tests)")
 	flag.Parse()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v2/chat/completions", handleChat(*tokens, *tps))
+	mux.HandleFunc("/v2/billing/meter/get-user-resource", func(w http.ResponseWriter, r *http.Request) {
+		if *creditsDelay > 0 {
+			select {
+			case <-time.After(*creditsDelay):
+			case <-r.Context().Done():
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"code":0,"data":{"Response":{"Data":{"Accounts":[{"CycleCapacitySize":1000,"CycleCapacityRemain":900,"CycleCapacityUsed":100,"CycleEndTime":"2030-01-01 00:00:00"}]}}}}`)
+	})
 	mux.HandleFunc("/v3/config", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"code":0,"data":{"agents":[{"name":"cli","models":["glm-5.3","hy3","mock-new","default-model"]}],`+
