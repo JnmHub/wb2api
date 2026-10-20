@@ -232,6 +232,7 @@ export function AccountsPage() {
       <Row gutter={12} className="stat-row">
         <StatTile label="全部账号" value={num(sum?.total)} dot="var(--ant-color-text-tertiary)" />
         <StatTile label="可用" value={num(count('ready'))} dot="#10b981" />
+        <StatTile label="无积分" value={num(count('no_credit'))} dot="#ef4444" />
         <StatTile label="冷却中" value={num(count('cooling'))} dot="#f59e0b" />
         <StatTile label="风控限制" value={num(count('restricted'))} dot="#ef4444" />
         <StatTile label="需重新登录" value={num(count('need_login'))} dot="#ef4444" />
