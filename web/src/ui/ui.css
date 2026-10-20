@@ -327,6 +327,25 @@ body {
     bottom: 12px;
     width: auto;
   }
+  /* The legacy limit grid is five fixed columns; on a phone it becomes the
+     label row followed by global/intl/cn inputs and a full-width save. */
+  .lhead {
+    display: none;
+  }
+  .lrow {
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 6px;
+  }
+  .lrow > div:first-child {
+    grid-column: 1 / -1;
+  }
+  .lrow .ant-input-number {
+    width: 100% !important;
+  }
+  .lrow > .ant-btn {
+    grid-column: 1 / -1;
+    justify-self: end;
+  }
 }
 
 /* The old page components keep their own layout; in the antd shell they must

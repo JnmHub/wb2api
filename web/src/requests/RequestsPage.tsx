@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Badge, Button, Card, Descriptions, Drawer, Grid, Input, Segmented, Select, Space, Table, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { RefreshCw, Search } from 'lucide-react'
+import { Download, RefreshCw, Search } from 'lucide-react'
 import { get, type UsageRequest, type UsageRequestPage } from '../api'
 import { credit, ms, num, pct, realmLabel, tokens } from '../format'
 
@@ -44,6 +44,41 @@ export function RequestsPage() {
       }),
     [rows, outcome],
   )
+  const exportCSV = () => {
+    const header = ['time', 'outcome', 'status', 'model', 'account', 'key', 'stream', 'prompt_tokens', 'completion_tokens', 'reasoning_tokens', 'cached_tokens', 'total_tokens', 'credit', 'elapsed_ms', 'ttft_ms', 'gen_ms', 'tokens_per_sec', 'reasoning_effort', 'estimated', 'error']
+    const lines = filtered.map((r) =>
+      [
+        new Date(r.at).toISOString(),
+        r.outcome,
+        r.status,
+        r.model,
+        r.account,
+        r.key,
+        r.stream,
+        r.prompt_tokens,
+        r.completion_tokens,
+        r.reasoning_tokens,
+        r.cached_tokens,
+        r.total_tokens,
+        r.credit,
+        r.elapsed_ms,
+        r.ttft_ms ?? '',
+        r.gen_ms ?? '',
+        r.tokens_per_sec,
+        r.reasoning_effort,
+        r.usage_estimated,
+        r.error,
+      ]
+        .map((v) => `"${String(v).replaceAll('"', '""')}"`)
+        .join(','),
+    )
+    const blob = new Blob(['\ufeff' + [header.join(','), ...lines].join('\n')], { type: 'text/csv;charset=utf-8' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `requests-${range}-${new Date().toISOString().slice(0, 19).replaceAll(':', '-')}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
 
   const columns: ColumnsType<UsageRequest> = useMemo(
     () => [
@@ -133,6 +168,9 @@ export function RequestsPage() {
           />
           <Input allowClear prefix={<Search size={14} />} placeholder="模型" value={model} onChange={(e) => setModel(e.target.value)} style={{ width: 180 }} />
           <Input allowClear placeholder="账号 UID" value={account} onChange={(e) => setAccount(e.target.value)} style={{ width: 220 }} />
+          <Button icon={<Download size={14} />} onClick={exportCSV} disabled={filtered.length === 0}>
+            导出 CSV
+          </Button>
           <Button icon={<RefreshCw size={14} />} onClick={() => q.refetch()}>
             刷新
           </Button>
