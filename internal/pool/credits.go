@@ -50,6 +50,27 @@ func truthy(v any) bool {
 	return true
 }
 
+// CreditExpiringWithin sums the remaining credits of packages that expire
+// within the given number of days (0 when none). Packages without expiry, or
+// already expired, are ignored.
+func (a *Account) CreditExpiringWithin(days float64) float64 {
+	pkgs, _ := a.Record().Credits["packages"].([]any)
+	total := 0.0
+	for _, raw := range pkgs {
+		m, ok := raw.(map[string]any)
+		if !ok || truthy(m["no_expiry"]) || truthy(m["is_expired"]) {
+			continue
+		}
+		left, ok1 := toNumber(m["days_left"])
+		remain, ok2 := toNumber(m["remain"])
+		if !ok1 || !ok2 || left < 0 || left > days || remain <= 0 {
+			continue
+		}
+		total += remain
+	}
+	return total
+}
+
 // CreditRemain is the cached remaining balance (ok=false when never fetched).
 func (a *Account) CreditRemain() (float64, bool) {
 	return toNumber(a.Record().Credits["remain"])

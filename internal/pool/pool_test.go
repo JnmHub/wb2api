@@ -165,3 +165,43 @@ func BenchmarkPick100(b *testing.B)        { benchPick(b, 100, 0) }
 func BenchmarkPick1000(b *testing.B)       { benchPick(b, 1000, 0) }
 func BenchmarkPick5000(b *testing.B)       { benchPick(b, 5000, 0) }
 func BenchmarkPick5000Cool90(b *testing.B) { benchPick(b, 5000, 0.9) }
+
+func TestZeroCreditIsNotSchedulable(t *testing.T) {
+	now := time.Now()
+	recs := mkRecs(2, time.Hour)
+	recs[0].Credits = map[string]any{"remain": 0}
+	recs[1].Credits = map[string]any{"remain": 3.5}
+	p := New(recs)
+	if got := p.All()[0].State(now); got != StatusNoCredit {
+		t.Fatalf("zero-credit state = %s", got)
+	}
+	for i := 0; i < 20; i++ {
+		a := p.Pick("intl", "m", nil)
+		if a == nil || a.UID != recs[1].UID {
+			t.Fatalf("picked %v, want only the funded account", a)
+		}
+	}
+	solo := New([]*accounts.Record{recs[0]})
+	if a := solo.Pick("intl", "m", nil); a != nil {
+		t.Fatalf("an exhausted account must not be picked: %v", a.UID)
+	}
+	// Unknown balances are still eligible (the panel cannot know them yet).
+	recs[0].Credits = nil
+	if a := New([]*accounts.Record{recs[0]}).Pick("intl", "m", nil); a == nil {
+		t.Fatal("an account with unknown credits should remain eligible")
+	}
+}
+
+func TestCreditExpiringWithin(t *testing.T) {
+	rec := mkRecs(1, time.Hour)[0]
+	rec.Credits = map[string]any{"remain": 10, "packages": []any{
+		map[string]any{"days_left": 3, "remain": 4},
+		map[string]any{"days_left": 30, "remain": 6},
+		map[string]any{"days_left": 1, "remain": 2, "no_expiry": true},
+		map[string]any{"days_left": 2, "remain": 5, "is_expired": true},
+	}}
+	a := New([]*accounts.Record{rec}).All()[0]
+	if got := a.CreditExpiringWithin(7); got != 4 {
+		t.Fatalf("expiring within 7d = %v, want 4", got)
+	}
+}

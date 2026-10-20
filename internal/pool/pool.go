@@ -111,6 +111,12 @@ func (a *Account) Ready(model string, now time.Time) bool {
 	if a.guard.reserve.Load() || a.guard.dailyToken.Load() {
 		return false
 	}
+	// A known, exhausted balance must not serve any model (including free ones):
+	// the account would only produce upstream 402s until the balance is topped
+	// up or the daily reset restores it.
+	if remain, ok := a.CreditRemain(); ok && remain <= 0 {
+		return false
+	}
 	if max := a.maxInflight.Load(); max > 0 && a.inflight.Load() >= max {
 		return false
 	}

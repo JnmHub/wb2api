@@ -156,6 +156,45 @@ body {
   margin-bottom: 12px;
 }
 
+.credit-row {
+  margin-bottom: 12px;
+}
+
+.credit-card {
+  height: 100%;
+  border-radius: var(--ant-border-radius-lg, 10px);
+}
+
+.credit-card.current {
+  border-color: var(--ant-color-primary, #005d8f);
+  box-shadow: 0 0 0 1px var(--ant-color-primary, #005d8f) inset;
+}
+
+.credit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.credit-big {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--ant-color-success, #059669);
+  margin: 2px 0;
+}
+
+.credit-sub {
+  font-size: 13px;
+}
+
+.credit-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--ant-color-text-tertiary, #8b97ab);
+}
+
 .stat-tile .ant-statistic-title {
   margin-bottom: 2px;
 }

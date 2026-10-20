@@ -100,6 +100,7 @@ export function AccountsPage() {
     { value: 'ready', label: `可用 ${count('ready')}` },
     { value: 'cooling', label: `冷却 ${count('cooling')}` },
     { value: 'restricted', label: `风控 ${count('restricted')}` },
+    { value: 'no_credit', label: `无积分 ${count('no_credit')}` },
     { value: 'need_login', label: `需登录 ${count('need_login')}` },
     { value: 'disabled', label: `停用 ${count('disabled')}` },
   ]
@@ -134,7 +135,7 @@ export function AccountsPage() {
       width: 120,
       render: (_: unknown, a: Account) => (
         <Badge
-          status={a.status === 'ready' ? 'success' : a.status === 'cooling' || a.status === 'expiring' ? 'warning' : a.status === 'restricted' || a.status === 'need_login' ? 'error' : 'default'}
+          status={a.status === 'ready' ? 'success' : a.status === 'cooling' || a.status === 'expiring' || a.status === 'no_credit' ? 'warning' : a.status === 'restricted' || a.status === 'need_login' ? 'error' : 'default'}
           text={statusLabel[a.status] ?? a.status}
         />
       ),
@@ -234,6 +235,55 @@ export function AccountsPage() {
         <StatTile label="冷却中" value={num(count('cooling'))} dot="#f59e0b" />
         <StatTile label="风控限制" value={num(count('restricted'))} dot="#ef4444" />
         <StatTile label="需重新登录" value={num(count('need_login'))} dot="#ef4444" />
+      </Row>
+
+      <Row gutter={[12, 12]} className="credit-row">
+        <Col xs={24} lg={8}>
+          <Card size="small" className="credit-card" styles={{ body: { padding: 14 } }}>
+            <div className="credit-head">
+              <Typography.Text type="secondary">总剩余积分</Typography.Text>
+              <Tag>{sum?.keys ?? 0} 个 Key</Tag>
+            </div>
+            <div className="credit-big">{credit(sum?.credits?.remain ?? 0)}</div>
+            <div className="credit-sub">
+              可用 <b>{credit(sum?.credits?.available ?? 0)}</b>
+            </div>
+            <div className="credit-meta">
+              今日消耗 {credit(sum?.credits?.today_used ?? 0)} · 7 天到期 {credit(sum?.credits?.expiring_7d ?? 0)} · 0 积分{' '}
+              {sum?.credits?.zero ?? 0} 个
+            </div>
+          </Card>
+        </Col>
+        {(['intl', 'cn'] as const).map((r) => {
+          const c = sum?.by_realm_credits?.[r]
+          const current = filters.realm === r
+          return (
+            <Col xs={24} lg={8} key={r}>
+              <Card
+                size="small"
+                className={'credit-card' + (current ? ' current' : '')}
+                styles={{ body: { padding: 14 } }}
+                onClick={() => setFilters((f) => ({ ...f, realm: f.realm === r ? '' : r }))}
+                style={{ cursor: 'pointer' }}
+              >
+                <div className="credit-head">
+                  <Space size={6}>
+                    <b>{realmLabel[r]}</b>
+                    {current && <Tag color="processing">当前视图</Tag>}
+                  </Space>
+                  <Tag>{c?.keys ?? 0} 个 Key</Tag>
+                </div>
+                <div className="credit-big">{credit(c?.remain ?? 0)}</div>
+                <div className="credit-sub">
+                  可用 <b>{credit(c?.available ?? 0)}</b>
+                </div>
+                <div className="credit-meta">
+                  可用账号 {c?.ready ?? 0}/{c?.total ?? 0} · 0 积分 {c?.zero ?? 0} 个 · 7 天到期 {credit(c?.expiring_7d ?? 0)}
+                </div>
+              </Card>
+            </Col>
+          )
+        })}
       </Row>
 
       <Card className="toolbar-card" styles={{ body: { padding: 12 } }}>

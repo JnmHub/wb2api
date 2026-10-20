@@ -20,6 +20,7 @@ import (
 	"wb2api/internal/realm"
 	"wb2api/internal/refresh"
 	"wb2api/internal/store/accounts"
+	"wb2api/internal/store/settings"
 )
 
 // TokenRefresher is what the accounts API needs from the refresher.
@@ -33,6 +34,7 @@ type TokenRefresher interface {
 type Accounts struct {
 	Pool      *pool.Pool
 	Today     *Today
+	Store     *settings.Store
 	Persist   func(*accounts.Record) error
 	Delete    func(*accounts.Record) error
 	Refresher TokenRefresher
@@ -164,7 +166,7 @@ func parseQuery(r *http.Request) (query, error) {
 		for _, p := range strings.Split(s, ",") {
 			p = strings.TrimSpace(p)
 			switch pool.Status(p) {
-			case pool.StatusDisabled, pool.StatusNeedLogin, pool.StatusRestricted, pool.StatusCooling, pool.StatusExpiring, pool.StatusReady:
+			case pool.StatusDisabled, pool.StatusNeedLogin, pool.StatusRestricted, pool.StatusCooling, pool.StatusExpiring, pool.StatusNoCredit, pool.StatusReady:
 				q.status[pool.Status(p)] = true
 			default:
 				return q, fmt.Errorf("unknown status %q", p)
@@ -346,6 +348,15 @@ func (a *Accounts) summary(w http.ResponseWriter, r *http.Request) {
 	byStatus := map[string]int{}
 	byRealm := map[string]map[string]int{}
 	var tokens, requests int64
+	var todayCredit float64
+	credits := map[string]any{"remain": 0.0, "available": 0.0, "expiring_7d": 0.0, "today_used": 0.0, "known": 0, "zero": 0}
+	realmCredits := map[string]map[string]any{}
+	creditOf := func(realm string) map[string]any {
+		if realmCredits[realm] == nil {
+			realmCredits[realm] = map[string]any{"remain": 0.0, "available": 0.0, "expiring_7d": 0.0, "total": 0, "ready": 0, "zero": 0, "keys": 0}
+		}
+		return realmCredits[realm]
+	}
 	for _, acc := range a.Pool.All() {
 		st := string(acc.State(now))
 		byStatus[st]++
@@ -356,10 +367,45 @@ func (a *Accounts) summary(w http.ResponseWriter, r *http.Request) {
 		d := a.Today.Get(acc.UID)
 		tokens += d.Tokens
 		requests += d.Requests
+		todayCredit += d.Credit
+
+		rc := creditOf(acc.Realm)
+		rc["total"] = rc["total"].(int) + 1
+		if st == string(pool.StatusReady) {
+			rc["ready"] = rc["ready"].(int) + 1
+		}
+		if remain, known := acc.CreditRemain(); known {
+			credits["known"] = credits["known"].(int) + 1
+			credits["remain"] = credits["remain"].(float64) + remain
+			rc["remain"] = rc["remain"].(float64) + remain
+			if st == string(pool.StatusReady) {
+				credits["available"] = credits["available"].(float64) + remain
+				rc["available"] = rc["available"].(float64) + remain
+			}
+			if remain <= 0 {
+				credits["zero"] = credits["zero"].(int) + 1
+				rc["zero"] = rc["zero"].(int) + 1
+			}
+			if exp := acc.CreditExpiringWithin(7); exp > 0 {
+				credits["expiring_7d"] = credits["expiring_7d"].(float64) + exp
+				rc["expiring_7d"] = rc["expiring_7d"].(float64) + exp
+			}
+		}
+	}
+	credits["today_used"] = todayCredit
+	keys := 0
+	if a.Store != nil {
+		for _, k := range a.Store.APIKeys(false) {
+			keys++
+			if k.Realm != "" {
+				creditOf(k.Realm)["keys"] = creditOf(k.Realm)["keys"].(int) + 1
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total": a.Pool.Len(), "by_status": byStatus, "by_realm": byRealm,
-		"today": map[string]any{"tokens": tokens, "requests": requests},
+		"today":   map[string]any{"tokens": tokens, "requests": requests, "credit": todayCredit},
+		"credits": credits, "by_realm_credits": realmCredits, "keys": keys,
 	})
 }
 

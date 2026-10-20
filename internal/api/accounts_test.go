@@ -411,3 +411,36 @@ func TestListAtScale(t *testing.T) {
 		t.Errorf("too slow: %v", per)
 	}
 }
+
+func TestSummaryCredits(t *testing.T) {
+	f := newFixture(t, 1)
+	acc := f.acc.Pool.All()[0]
+	rec := *acc.Record()
+	rec.Credits = map[string]any{"remain": 12.5, "packages": []any{
+		map[string]any{"days_left": 2, "remain": 4},
+		map[string]any{"days_left": 30, "remain": 8.5},
+	}}
+	acc.SetRecord(&rec)
+	code, out := f.do(t, "GET", "/api/v2/accounts/summary", "")
+	if code != http.StatusOK {
+		t.Fatalf("summary: %d %v", code, out)
+	}
+	cr, _ := out["credits"].(map[string]any)
+	if cr == nil || cr["remain"].(float64) != 12.5 || cr["available"].(float64) != 12.5 || cr["expiring_7d"].(float64) != 4 {
+		t.Fatalf("credits = %#v", cr)
+	}
+	if cr["zero"].(float64) != 0 {
+		t.Fatalf("zero = %v", cr["zero"])
+	}
+	rec.Credits = map[string]any{"remain": 0}
+	acc.SetRecord(&rec)
+	_, out = f.do(t, "GET", "/api/v2/accounts/summary", "")
+	cr = out["credits"].(map[string]any)
+	if cr["zero"].(float64) != 1 || cr["available"].(float64) != 0 {
+		t.Fatalf("exhausted summary = %#v", cr)
+	}
+	st := out["by_status"].(map[string]any)
+	if st["no_credit"].(float64) != 1 {
+		t.Fatalf("status = %#v", st)
+	}
+}

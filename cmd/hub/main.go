@@ -221,7 +221,7 @@ func main() {
 	bus := events.New(512)
 	jobMgr := &jobs.Manager{Workers: 4, OnProgress: func(j jobs.Job) { bus.Publish("job.progress", j) }}
 	accountsAPI := &api.Accounts{
-		Pool: p, Today: today, Persist: persist, Refresher: refresher, Jobs: jobMgr, Bus: bus,
+		Pool: p, Today: today, Store: st, Persist: persist, Refresher: refresher, Jobs: jobMgr, Bus: bus,
 		Delete: accounts.Delete,
 	}
 	activityLog := &activity.Log{Dir: *usageDir}

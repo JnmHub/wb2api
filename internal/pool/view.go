@@ -144,6 +144,7 @@ const (
 	StatusRestricted Status = "restricted"
 	StatusCooling    Status = "cooling"
 	StatusExpiring   Status = "expiring" // token about to expire; the refresher is on it
+	StatusNoCredit   Status = "no_credit"
 	StatusReady      Status = "ready"
 )
 
@@ -164,6 +165,9 @@ func (a *Account) State(now time.Time) Status {
 	}
 	if exp := a.expiresAt.Load(); exp != 0 && exp-now.Unix() <= 120 {
 		return StatusExpiring
+	}
+	if remain, ok := a.CreditRemain(); ok && remain <= 0 {
+		return StatusNoCredit
 	}
 	return StatusReady
 }

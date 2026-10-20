@@ -71,7 +71,7 @@ export interface SessionInfo {
   using_default_password: boolean
 }
 
-export type Status = 'ready' | 'expiring' | 'cooling' | 'restricted' | 'need_login' | 'disabled'
+export type Status = 'ready' | 'expiring' | 'cooling' | 'restricted' | 'need_login' | 'disabled' | 'no_credit'
 
 export interface Account {
   uid: string
@@ -119,7 +119,20 @@ export interface AccountSummary {
   total: number
   by_status: Partial<Record<Status, number>>
   by_realm: Record<string, Partial<Record<Status, number>>>
-  today: { tokens: number; requests: number }
+  today: { tokens: number; requests: number; credit?: number }
+  credits?: {
+    remain: number
+    available: number
+    expiring_7d: number
+    today_used: number
+    known: number
+    zero: number
+  }
+  by_realm_credits?: Record<
+    string,
+    { remain: number; available: number; expiring_7d: number; total: number; ready: number; zero: number; keys: number }
+  >
+  keys?: number
 }
 
 export interface Job {

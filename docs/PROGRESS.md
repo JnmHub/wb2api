@@ -168,6 +168,7 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 - **P5 完成**：所有页面、详情抽屉与弹窗均为 antd：账号、用量、设置、日志、任务、添加账号、导入、导出、桌面导入、Key 编辑、账号详情。用量页新增 antd `DatePicker.RangePicker`（对应后端 `range=custom&since&until`），预设区间与自定义日期可切换，趋势粒度按跨度自动选择小时/天。
 - **P6 完成**：五个页面之外新增 **请求记录**（按时间/结果/区域/模型/账号筛选，行点击打开请求详情抽屉：token、缓存、首字、生成耗时、排队、TPS、思考档位、用量来源）和 **模型** 页（`GET /api/v2/models` 面板专用目录，展示能力标签、上下文/最大输出、思考档位）。用量页补充 **模型用量环形图** 与自定义日期范围；日志查看器修复深色模式下白底问题；请求记录在手机端改为卡片列表。批量操作条、JobToast、全部弹窗/抽屉均为 antd；Sarasa Mono SC 核心分片已打包；`tools/uitest/smoke.mjs`（`npm run uitest`）覆盖登录、全部页面、主题、批量选择、请求详情、账号抽屉、全部账号弹窗、Key 编辑、日志暂停，全部通过并逐页截图。
 - 已知偏差：视觉是按参考的 token/组件语言复刻，不是逐像素克隆（品牌字标、页面文案、功能菜单按本项目实际能力调整）；`uitest` 覆盖主要路径，未逐字段提交每个表单。
+- **积分与调度**：账号页新增积分概览（总剩余、可用积分、今日消耗、7 天到期、0 积分账号、每个区域的剩余/可用/账号数/Key 数），`GET /api/v2/accounts/summary` 返回 `credits`、`by_realm_credits` 与 `keys`。**已知余额为 0 的账号状态变为“无积分”，`Ready` 直接返回 false，不再参与任何模型的调度**（免费模型也不调度）；余额未知的账号仍可参与，等待刷新。批量操作条保留批量启用/停用，并有“更多操作 → 签到（仅国内版）/每日活跃（仅国际版）”等任务；smoke 会打开该菜单确认签到入口存在。
 - **并发与发布**：按 Key 的并发限制已移除（字段保留但忽略），网关转发所有请求；新增 100 并发非流式 + 48 并发流式的 200 KB 长上下文测试，逐字节校验无截断。账号支持勾选后导出（含批量条“导出选中”），导入支持一次选多个 JSON 文件并按顺序合并报告。公开仓库 <https://github.com/JnmHub/wb2api>（作者 JnmHub），更新检查指向该仓库；`release.yml` 已产出 v2.0.0 / v2.0.1 的 Linux amd64/arm64 二进制与 sha256。提供多阶段 `Dockerfile`、`compose.yaml`、`.dockerignore`；本机无 Docker daemon，只校验了 compose 配置，镜像未本机构建。CI 的 `-race` 抓到并修复了 `wireBody` 的并发读写，Windows runner 抓到并修复了 `wsarecv ... was aborted` 未重试问题。
 
 ## 还没做

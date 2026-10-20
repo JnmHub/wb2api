@@ -57,6 +57,7 @@ export const statusLabel: Record<string, string> = {
   restricted: '风控限制',
   need_login: '需重新登录',
   disabled: '已停用',
+  no_credit: '无积分',
 }
 
 export const realmLabel: Record<string, string> = { intl: '国际版', cn: '国内版' }

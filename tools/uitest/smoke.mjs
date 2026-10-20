@@ -194,6 +194,15 @@ async function main() {
     await sleep(500)
     if (!(await text()).includes('已选')) failures.push('batch bar did not appear after selecting a row')
     await shot('batch-bar')
+    if (await clickText('button', '更多操作')) {
+      await sleep(400)
+      if (!(await evaluate(`document.body.innerText.includes('签到（仅国内版）')`))) failures.push('batch overflow menu is missing check-in')
+      await shot('batch-more')
+      await evaluate(`document.body.click()`)
+      await sleep(200)
+    } else {
+      failures.push('batch overflow menu missing')
+    }
     if (await clickText('button', '导出选中')) {
       await sleep(500)
       if (!(await text()).includes('导出选中的 1 个账号')) failures.push('selected export did not pass the uid list')

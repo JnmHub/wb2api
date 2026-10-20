@@ -16,8 +16,8 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
   并发不设网关侧上限（由上游决定）。
 - **运营**：国内签到/活跃上报/成长任务/猫猫旅行/连登管家，国际每日活跃
   （桌面 + 网页 ACP 会话），OAuth 登录，积分刷新，账号导入导出。
-- **可观测**：请求记录、用量趋势、模型用量、价格估算、日志、活动历史、
-  逐请求详情、CSV 导出、后台任务进度。
+- **可观测**：账号积分总览（剩余/可用/到期/零积分）、请求记录、用量趋势、模型用量、
+  价格估算、日志、活动历史、逐请求详情、CSV 导出、后台任务进度。
 - **接入工具**：导入 WorkBuddy 桌面客户端凭据（手工密钥）、一键接管 Claude
   Code / Codex / OpenCode / DSH / Crush / ZCode 的本机配置。
 - **本地 web 工具**：可选在网关侧执行 Responses 的 `web_search` / `web_fetch`。

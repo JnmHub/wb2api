@@ -157,7 +157,21 @@ npm run uitest -- --url http://127.0.0.1:18888 --password real-test
   上的 `wsarecv: ... was aborted` 未被识别为陈旧连接（已加入重试判断并补测试）。
   修复后 `ci`（Windows 普通测试 + Ubuntu `-race`）和 `release` 均通过。
 
-## 10. 复现
+## 10. 积分统计与零积分调度
+
+- `GET /api/v2/accounts/summary` 新增 `credits`（remain/available/expiring_7d/today_used/known/zero）、
+  `by_realm_credits`（每个区域的 remain/available/expiring_7d/total/ready/zero/keys）和 `keys`。
+  真实账号实测返回 `remain=2321.16`、`available=2321.16`、`keys=1`。
+- 账号页展示总剩余积分、可用积分、今日消耗、7 天到期、0 积分账号，以及国际版/国内版区域卡
+  （剩余、可用、可用账号 x/y、0 积分、Key 数）；点击区域卡可切换筛选。
+- **零积分不调度**：`pool.Account.State` 新增 `no_credit`，`Ready` 对已知 `remain <= 0` 的账号
+  直接返回 false（免费模型也不放行）。`TestZeroCreditIsNotSchedulable` 验证该账号不会被 `Pick`，
+  `TestSummaryCredits` 验证 summary 的 zero/available/no_credit 计数，`TestCreditExpiringWithin`
+  验证 7 天到期求和。余额未知的账号仍可参与调度（无法判断时不应误杀）。
+- 批量任务：批量启用/停用、签到（仅国内版）、每日活跃（仅国际版）仍在批量条“更多操作”中；
+  smoke 会展开该菜单并断言签到入口存在。
+
+## 11. 复现
 
 ```powershell
 # 模拟并发基准（自带 mock 与假账号池）
