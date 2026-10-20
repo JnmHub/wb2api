@@ -196,7 +196,7 @@ async function main() {
     await shot('batch-bar')
     if (await clickText('button', '更多操作')) {
       await sleep(400)
-      if (!(await evaluate(`document.body.innerText.includes('签到（仅国内版）')`))) failures.push('batch overflow menu is missing check-in')
+      if (!(await evaluate(`document.body.innerText.includes('签到（仅国内版')`))) failures.push('batch overflow menu is missing check-in')
       await shot('batch-more')
       await evaluate(`document.body.click()`)
       await sleep(200)

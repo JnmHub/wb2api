@@ -444,3 +444,23 @@ func TestSummaryCredits(t *testing.T) {
 		t.Fatalf("status = %#v", st)
 	}
 }
+
+func TestBatchRealmFilter(t *testing.T) {
+	f := newFixture(t, 4)
+	all := []string{}
+	for _, a := range f.acc.Pool.All() {
+		all = append(all, a.UID)
+	}
+	got, msg := f.acc.filterBatchRealm("checkin", all)
+	if len(got) != 1 || got[0] != "acct-0003" || msg != "" {
+		t.Fatalf("checkin filter = %v %q", got, msg)
+	}
+	got, msg = f.acc.filterBatchRealm("daily_chat", all)
+	if len(got) != 3 || msg != "" {
+		t.Fatalf("daily filter = %v %q", got, msg)
+	}
+	got, msg = f.acc.filterBatchRealm("checkin", all[:3])
+	if len(got) != 0 || msg == "" {
+		t.Fatalf("empty checkin filter = %v %q", got, msg)
+	}
+}

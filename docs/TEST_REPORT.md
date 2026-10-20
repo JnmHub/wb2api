@@ -169,7 +169,10 @@ npm run uitest -- --url http://127.0.0.1:18888 --password real-test
   `TestSummaryCredits` 验证 summary 的 zero/available/no_credit 计数，`TestCreditExpiringWithin`
   验证 7 天到期求和。余额未知的账号仍可参与调度（无法判断时不应误杀）。
 - 批量任务：批量启用/停用、签到（仅国内版）、每日活跃（仅国际版）仍在批量条“更多操作”中；
-  smoke 会展开该菜单并断言签到入口存在。
+  smoke 会展开该菜单并断言签到入口存在。**混选两个区域时，签到会先过滤掉国际版账号
+  （企业国内版也跳过），每日活跃会过滤掉国内版账号**，不再把“checkin is only available
+  for CN realm accounts”记成失败；如果所选账号没有任何可执行对象，接口直接返回明确提示。
+  `TestBatchRealmFilter` 覆盖这两个过滤方向与空结果。
 
 ## 11. 账号冷却的触发条件
 

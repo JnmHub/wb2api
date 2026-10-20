@@ -712,7 +712,12 @@ func (a *Accounts) batch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	targets, mismatch := a.filterBatchRealm(b.Action, targets)
 	if len(targets) == 0 {
+		if mismatch != "" {
+			writeErr(w, http.StatusBadRequest, mismatch)
+			return
+		}
 		writeErr(w, http.StatusBadRequest, "no accounts match")
 		return
 	}
@@ -722,6 +727,34 @@ func (a *Accounts) batch(w http.ResponseWriter, r *http.Request) {
 	}
 	job := a.Jobs.Start(b.Action, targets, fn)
 	writeJSON(w, http.StatusAccepted, job)
+}
+
+// filterBatchRealm drops accounts the action cannot serve (check-in is CN-only,
+// daily activity is INTL-only). The batch is built from the selection, which
+// usually spans both realms; previously every miss became a job failure.
+func (a *Accounts) filterBatchRealm(action string, uids []string) ([]string, string) {
+	want, empty := "", ""
+	switch action {
+	case "checkin":
+		want, empty = realm.CN, "所选账号里没有可签到的国内版账号（签到仅支持非企业国内版）。"
+	case "daily_chat", "daily_chat_web":
+		want, empty = realm.Intl, "所选账号里没有国际版账号；每日活跃只支持国际版。"
+	default:
+		return uids, ""
+	}
+	out := make([]string, 0, len(uids))
+	for _, uid := range uids {
+		if acc := a.Pool.Get(uid); acc != nil && acc.Realm == want {
+			if want == realm.CN && ops.IsEnterprise(acc.Record()) {
+				continue
+			}
+			out = append(out, uid)
+		}
+	}
+	if len(out) == 0 {
+		return out, empty
+	}
+	return out, ""
 }
 
 func (a *Accounts) job(w http.ResponseWriter, r *http.Request) {
