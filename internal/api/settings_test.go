@@ -264,3 +264,17 @@ func TestPanelModelCatalogue(t *testing.T) {
 		t.Fatalf("model id missing: %v", first)
 	}
 }
+
+func TestOpsSettingsPatch(t *testing.T) {
+	f := newSettingsFixture(t)
+	code, out := f.do(t, "PATCH", "/api/v2/settings", `{"ops_concurrency":2,"ops_interval_ms":150}`)
+	if code != http.StatusOK {
+		t.Fatalf("patch: %d %v", code, out)
+	}
+	if out["ops_concurrency"] != float64(2) || out["ops_interval_ms"] != float64(150) {
+		t.Fatalf("ops settings = %v / %v", out["ops_concurrency"], out["ops_interval_ms"])
+	}
+	if code, _ := f.do(t, "PATCH", "/api/v2/settings", `{"ops_concurrency":0}`); code != http.StatusBadRequest {
+		t.Fatalf("zero concurrency must be rejected, got %d", code)
+	}
+}

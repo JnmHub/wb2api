@@ -35,6 +35,7 @@ type Accounts struct {
 	Pool      *pool.Pool
 	Today     *Today
 	Store     *settings.Store
+	Gate      *OpsGate
 	Persist   func(*accounts.Record) error
 	Delete    func(*accounts.Record) error
 	Refresher TokenRefresher

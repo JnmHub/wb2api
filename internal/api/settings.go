@@ -24,6 +24,7 @@ type Settings struct {
 	Realm   *realmswitch.Switch
 	Guards  *guards.Scanner
 	Catalog *catalog.Service
+	Ops     *OpsGate
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
@@ -105,6 +106,8 @@ func (s *Settings) snapshot() map[string]any {
 		"banned_substring":        s.Store.BannedSubstring(),
 		"daily_chat_web_attempts": s.Store.DailyChatWebAttempts(),
 		"daily_chat_web_timeout":  s.Store.DailyChatWebTimeout(),
+		"ops_concurrency":         s.Store.OpsConcurrency(),
+		"ops_interval_ms":         s.Store.OpsIntervalMS(),
 	}
 	if s.Catalog != nil {
 		out["catalog"] = s.Catalog.Status()
@@ -172,6 +175,8 @@ type settingsPatch struct {
 	BannedSubstring      *string                `json:"banned_substring"`
 	DailyChatWebAttempts *int                   `json:"daily_chat_web_attempts"`
 	DailyChatWebTimeout  *int                   `json:"daily_chat_web_timeout"`
+	OpsConcurrency       *int                   `json:"ops_concurrency"`
+	OpsIntervalMS        *int                   `json:"ops_interval_ms"`
 }
 
 type limitChange struct {
@@ -264,6 +269,21 @@ func (s *Settings) patch(w http.ResponseWriter, r *http.Request) {
 			fail(err)
 			return
 		}
+	}
+	if p.OpsConcurrency != nil {
+		if err := s.Store.SetOpsConcurrency(*p.OpsConcurrency); err != nil {
+			fail(err)
+			return
+		}
+	}
+	if p.OpsIntervalMS != nil {
+		if err := s.Store.SetOpsIntervalMS(*p.OpsIntervalMS); err != nil {
+			fail(err)
+			return
+		}
+	}
+	if (p.OpsConcurrency != nil || p.OpsIntervalMS != nil) && s.Ops != nil {
+		s.Ops.Configure(s.Store.OpsConcurrency(), time.Duration(s.Store.OpsIntervalMS())*time.Millisecond)
 	}
 	for key, ch := range p.Limits {
 		set := func(scope string, n *json.Number) error {

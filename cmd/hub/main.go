@@ -220,8 +220,9 @@ func main() {
 	(&api.Usage{DB: udb, Est: limits, Pricing: pricingStore}).Register(mux, auth.Require)
 	bus := events.New(512)
 	jobMgr := &jobs.Manager{Workers: 4, OnProgress: func(j jobs.Job) { bus.Publish("job.progress", j) }}
+	opsGate := api.NewOpsGate(st.OpsConcurrency(), time.Duration(st.OpsIntervalMS())*time.Millisecond)
 	accountsAPI := &api.Accounts{
-		Pool: p, Today: today, Store: st, Persist: persist, Refresher: refresher, Jobs: jobMgr, Bus: bus,
+		Pool: p, Today: today, Store: st, Gate: opsGate, Persist: persist, Refresher: refresher, Jobs: jobMgr, Bus: bus,
 		Delete: accounts.Delete,
 	}
 	activityLog := &activity.Log{Dir: *usageDir}
@@ -237,7 +238,7 @@ func main() {
 		Hold: func(realm string) time.Duration { return h.RiskHold(realm) },
 	}
 	(&api.Operations{Ops: opsClient, Pool: p, Prober: h, Scheduler: sched, Activity: activityLog, Scanner: scanner, AtRest: keyring, Agents: agentMgr}).Register(mux, auth.Require)
-	(&api.Settings{Store: st, Pool: p, Realm: realmSw, Guards: h.Guards, Catalog: cat}).Register(mux, auth.Require)
+	(&api.Settings{Store: st, Pool: p, Realm: realmSw, Guards: h.Guards, Catalog: cat, Ops: opsGate}).Register(mux, auth.Require)
 	checker := &updates.Checker{Current: version, Enabled: st.UpdateCheckEnabled, Store: st, Log: log}
 	(&api.Updates{Checker: checker}).Register(mux, auth.Require)
 	go func() {

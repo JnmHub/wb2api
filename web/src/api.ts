@@ -286,6 +286,8 @@ export interface SettingsView {
   banned_substring: string
   daily_chat_web_attempts: number
   daily_chat_web_timeout: number
+  ops_concurrency: number
+  ops_interval_ms: number
   proxy_slots: ProxySlot[]
   catalog?: CatalogStatus[]
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -25,40 +24,8 @@ type Prober interface {
 	Probe(ctx context.Context, acc *pool.Account, model string) openai.ProbeResult
 }
 
-// upstreamSlots bounds how many vendor-facing account calls run at once: each
-// one is a real request, so a big batch must not become a burst. Operators with
-// several hundred accounts can lower this and add a gap between calls so the
-// vendor does not rate-limit the IP that normal gateway traffic uses too.
-var (
-	upstreamSlots = make(chan struct{}, opsEnvInt("WB_OPS_CONCURRENCY", 4, 1, 16))
-	opsInterval   = time.Duration(opsEnvInt("WB_OPS_INTERVAL_MS", 0, 0, 60000)) * time.Millisecond
-)
-
-func opsEnvInt(name string, def, min, max int) int {
-	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
-	if err != nil || n < min || n > max {
-		return def
-	}
-	return n
-}
-
-func withSlot(ctx context.Context, f func() error) error {
-	select {
-	case upstreamSlots <- struct{}{}:
-		defer func() { <-upstreamSlots }()
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	err := f()
-	if opsInterval > 0 {
-		select {
-		case <-time.After(opsInterval):
-		case <-ctx.Done():
-		}
-	}
-	return err
-}
-
+// upstreamAction builds the job function of a batch action that talks to the
+// vendor.
 func resultErr(r ops.Result) error {
 	if r.OK {
 		return nil
@@ -81,7 +48,7 @@ func (a *Accounts) upstreamAction(b batchReq) (jobs.Func, error) {
 		if acc == nil {
 			return errors.New("account no longer exists")
 		}
-		return withSlot(ctx, func() error {
+		return a.Gate.Do(ctx, func() error {
 			switch b.Action {
 			case "refresh_credits":
 				return resultErr(a.Ops.FetchCredits(ctx, acc))

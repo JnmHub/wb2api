@@ -151,7 +151,7 @@ npm run uitest -- --url http://127.0.0.1:18888 --password real-test
   handler，已改为按请求量扩容；不是网关长上下文传输 bug。
 - Docker：`docker compose config` 校验通过；本机只有 Docker CLI，Docker daemon 未安装，
   因此镜像构建未在本机执行。GitHub Actions `release` 工作流已真实跑通，
-  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 至 v2.0.6。
+  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 至 v2.0.7。
 - **CI 真跑出了两个真实问题**：GitHub 的 `-race` 发现 `wireBody` 的 `eof/done` 与 ACP
   扫描协程并发读写（已加锁，并且只有 Close 前已观察到 EOF 才归还连接）；Windows runner
   上的 `wsarecv: ... was aborted` 未被识别为陈旧连接（已加入重试判断并补测试）。
@@ -208,8 +208,10 @@ npm run uitest -- --url http://127.0.0.1:18888 --password real-test
 
 结论：网关请求路径没有被批量任务阻塞，首字延迟基本不变；影响主要是上游带宽/流式平滑度。
 真实网络里 450 个账号的批量操作是对**同一个出口 IP** 的持续请求，供应商可能因此对
-正常模型请求限速；这不是网关内部锁。需要更温和时可用
-`WB_OPS_CONCURRENCY=2`、`WB_OPS_INTERVAL_MS=100`（批量变慢，突发更小）。
+正常模型请求限速；这不是网关内部锁。可以在“设置 → 批量账号任务”里调低并发
+（1–16）并增加每个账号操作后的间隔（0–60000ms），保存立即生效；`OpsGate` 支持运行时
+改限流参数，`TestOpsGateLimitsAndReconfigures` 覆盖“满员等待/扩容后放行”，
+`TestOpsSettingsPatch` 覆盖设置接口校验。
 积分刷新遇到的 `HTTP 500 {"code":10000,...}` 是上游账单接口返回的 500（带 requestId），
 不是网关错误；现在 CN 账单查询会重试一次，仍失败才会把这个账号记入失败清单。
 

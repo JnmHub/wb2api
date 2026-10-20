@@ -120,6 +120,7 @@ export function SettingsPage() {
       </Card>
 
       <DailyChatSection s={s} />
+      <OpsSection s={s} />
       <UpstreamSection s={s} />
       <ProbeSection s={s} />
       <ModelsSection s={s} />
@@ -127,6 +128,43 @@ export function SettingsPage() {
       <UpdatesSection />
       <ProxySection s={s} />
     </div>
+  )
+}
+
+function OpsSection({ s }: { s: SettingsView }) {
+  const save = useSaveSettings()
+  const [conc, setConc] = useState(s.ops_concurrency)
+  const [gap, setGap] = useState(s.ops_interval_ms)
+  const dirty = conc !== s.ops_concurrency || gap !== s.ops_interval_ms
+  return (
+    <Card
+      title="批量账号任务"
+      extra={
+        <Button type="primary" size="small" disabled={!dirty} loading={save.isPending} onClick={() => save.mutate({ ops_concurrency: conc, ops_interval_ms: gap })}>
+          保存
+        </Button>
+      }
+    >
+      <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+        刷新积分、签到、每日活跃、批量检测共用这两个限制。账号很多时调低并发、增加间隔，可以减轻对同一个出口 IP 的突发压力，
+        代价是批量任务耗时变长。正常模型请求不受这里影响。
+      </Typography.Paragraph>
+      <Space size={24} wrap>
+        <div>
+          <Typography.Text type="secondary">同时进行的上游请求（1–16）</Typography.Text>
+          <div style={{ marginTop: 4 }}>
+            <InputNumber min={1} max={16} value={conc} onChange={(v) => setConc(v ?? 4)} style={{ width: 160 }} />
+          </div>
+        </div>
+        <div>
+          <Typography.Text type="secondary">每个账号操作后的间隔（毫秒，0–60000）</Typography.Text>
+          <div style={{ marginTop: 4 }}>
+            <InputNumber min={0} max={60000} step={50} value={gap} onChange={(v) => setGap(v ?? 0)} style={{ width: 160 }} />
+          </div>
+        </div>
+      </Space>
+      {save.isError && <div className="err" style={{ marginTop: 8 }}>{String(save.error)}</div>}
+    </Card>
   )
 }
 
