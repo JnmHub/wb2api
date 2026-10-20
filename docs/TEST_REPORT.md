@@ -136,7 +136,7 @@ cd web
 npm run uitest -- --url http://127.0.0.1:18888 --password real-test
 ```
 
-覆盖并通过：登录、账号 / 用量 / 模型 / 请求记录 / 设置 / 日志 / 任务七个页面、浅色→深色切换、行选择/批量条、请求详情抽屉、账号详情抽屉、添加账号 / 导入 / 导出 / 桌面导入弹窗、新建 Key 弹窗、日志暂停/继续；同时收集 `Runtime.exceptionThrown`、`Log.entryAdded`、`console.error`，忽略登录前的 401 session 探测。截图输出到 `.scratch/uitest*/`（不提交）。2026-10-20 在真实 CN 账号上通过。
+覆盖并通过：登录、账号 / 用量 / 模型 / 请求记录 / 设置 / 日志 / 任务七个页面、浅色→深色切换、行选择/批量条、请求详情抽屉、账号详情抽屉、添加账号 / 导入（同时注入两个 JSON 文件）/ 导出（含选中账号）/ 桌面导入弹窗、新建 Key 弹窗、日志暂停/继续；同时收集 `Runtime.exceptionThrown`、`Log.entryAdded`、`console.error`，忽略登录前的 401 session 探测。截图输出到 `.scratch/uitest*/`（不提交）。2026-10-20 在真实 CN 账号上通过。
 
 ## 9. 并发上限与长上下文
 
@@ -151,7 +151,11 @@ npm run uitest -- --url http://127.0.0.1:18888 --password real-test
   handler，已改为按请求量扩容；不是网关长上下文传输 bug。
 - Docker：`docker compose config` 校验通过；本机只有 Docker CLI，Docker daemon 未安装，
   因此镜像构建未在本机执行。GitHub Actions `release` 工作流已真实跑通，
-  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0。
+  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 与 v2.0.1。
+- **CI 真跑出了两个真实问题**：GitHub 的 `-race` 发现 `wireBody` 的 `eof/done` 与 ACP
+  扫描协程并发读写（已加锁，并且只有 Close 前已观察到 EOF 才归还连接）；Windows runner
+  上的 `wsarecv: ... was aborted` 未被识别为陈旧连接（已加入重试判断并补测试）。
+  修复后 `ci`（Windows 普通测试 + Ubuntu `-race`）和 `release` 均通过。
 
 ## 10. 复现
 
