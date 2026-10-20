@@ -21,6 +21,13 @@ var sanitizeFeatures = []string{
 	"11128",
 }
 
+// Case-insensitive fingerprints are checked on the lowercased copy; their
+// canonical spelling ("AI agent") would never match a lowercase literal list.
+var sanitizeLowerFeatures = []string{
+	"an ai agent powered by",
+	"a coding agent powered by",
+}
+
 var sanitizeRewrites = [][2]string{
 	{"You are Claude Code, Anthropic's official CLI for Claude",
 		"You are Claude Code, Anthropic's official CLI tool for Claude"},
@@ -38,6 +45,13 @@ var (
 	sanitizeBareHdrRe = regexp.MustCompile(`(?i)x-anthropic-billing-header`)
 	sanitizeKVRe      = regexp.MustCompile(`(?i)\bcc_[a-z0-9_]+=[^;\r\n]*;?\s*`)
 	sanitizeOmoRe     = regexp.MustCompile(`(?i)Sisyphus-Junior - Focused executor from OhMyOpenCode`)
+	// DeepSeek Harness / similar clients introduce themselves with these exact
+	// sentences. The upstream WAF (11128) rejects the attribution clause, while
+	// the rest of the system prompt is a behaviour contract and must stay put.
+	// Only the opening clause is replaced; the model/product name, the sentence
+	// ending and everything after it are preserved byte for byte.
+	sanitizeDSHAgentRe = regexp.MustCompile(`(?i)You are an AI agent powered by`)
+	sanitizeDSHCoderRe = regexp.MustCompile(`(?i)You are a coding agent powered by`)
 )
 
 const (
@@ -64,7 +78,15 @@ func hasFingerprint(text string) bool {
 	} else {
 		low = strings.ToLower(text)
 	}
-	return strings.Contains(low, bareHdrLower) || strings.Contains(low, omoLower)
+	if strings.Contains(low, bareHdrLower) || strings.Contains(low, omoLower) {
+		return true
+	}
+	for _, f := range sanitizeLowerFeatures {
+		if strings.Contains(low, f) {
+			return true
+		}
+	}
+	return false
 }
 
 func sanitizeText(text string) string {
@@ -72,6 +94,8 @@ func sanitizeText(text string) string {
 		return text
 	}
 	text = sanitizeOmoRe.ReplaceAllLiteralString(text, "Sisyphus-Junior - Focused executor")
+	text = sanitizeDSHAgentRe.ReplaceAllLiteralString(text, "You are an AI assistant built on")
+	text = sanitizeDSHCoderRe.ReplaceAllLiteralString(text, "You are an assistant built on")
 	for _, r := range sanitizeRewrites {
 		text = strings.ReplaceAll(text, r[0], r[1])
 	}

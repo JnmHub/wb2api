@@ -151,7 +151,7 @@ npm run uitest -- --url http://127.0.0.1:18888 --password real-test
   handler，已改为按请求量扩容；不是网关长上下文传输 bug。
 - Docker：`docker compose config` 校验通过；本机只有 Docker CLI，Docker daemon 未安装，
   因此镜像构建未在本机执行。GitHub Actions `release` 工作流已真实跑通，
-  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 至 v2.0.7。
+  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 至 v2.0.8。
 - **CI 真跑出了两个真实问题**：GitHub 的 `-race` 发现 `wireBody` 的 `eof/done` 与 ACP
   扫描协程并发读写（已加锁，并且只有 Close 前已观察到 EOF 才归还连接）；Windows runner
   上的 `wsarecv: ... was aborted` 未被识别为陈旧连接（已加入重试判断并补测试）。
@@ -215,7 +215,36 @@ npm run uitest -- --url http://127.0.0.1:18888 --password real-test
 积分刷新遇到的 `HTTP 500 {"code":10000,...}` 是上游账单接口返回的 500（带 requestId），
 不是网关错误；现在 CN 账单查询会重试一次，仍失败才会把这个账号记入失败清单。
 
-## 13. 复现
+## 13. DSH 系统提示词 11128 指纹
+
+上游 WAF 会对客户端 system prompt 里的两句厂商归属句返回
+`400 {"code":11128,"msg":"Illegal API invocation from an unapproved channel"}`：
+
+```text
+You are an AI agent powered by DeepSeek Harness.
+You are a coding agent powered by the deepseek-v4.1-flash model.
+```
+
+已在 `internal/gateway/shape/sanitize.go` 增加极窄的、大小写不敏感的改写，只替换开头从句，
+保留模型/产品名、句末标点和后面的工具契约：
+
+```text
+You are an AI agent powered by X.      -> You are an AI assistant built on X.
+You are a coding agent powered by X.   -> You are an assistant built on X.
+```
+
+`has_fingerprint` 的快速路径也增加了小写判定串（`an ai agent powered by` /
+`a coding agent powered by`），否则原文的 `AI agent` 不会进入清洗分支。
+
+验证：
+
+- `TestDSHAgentFingerprintRewrite`（大小写、带点模型名、无句号、误伤边界）、
+  `TestDSHFingerprintIsDetectedCaseInsensitively`、`TestDSHSystemPromptKeepsToolContract`；
+- 真实 CN 账号：修复前同一请求 400/11128；重启后 `hy3` 返回 **200**；
+  `deepseek-v4.1-flash` 返回 **429**（当日模型额度用尽，不再出现 11128），说明 WAF 拦截已解除；
+- 工具说明等后续内容未被改写。
+
+## 14. 复现
 
 ```powershell
 # 模拟并发基准（自带 mock 与假账号池）
