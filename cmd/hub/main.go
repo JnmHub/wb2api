@@ -52,8 +52,9 @@ import (
 	"wb2api/internal/webui"
 )
 
-// version is what the update checker compares against.
-const version = "2.0.0"
+// version is what the update checker compares against; release builds inject
+// the tag with -X main.version=...
+var version = "2.0.0"
 
 func envOr(name, def string) string {
 	if v := os.Getenv(name); v != "" {

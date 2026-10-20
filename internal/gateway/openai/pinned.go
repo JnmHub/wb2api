@@ -7,8 +7,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
-	"sync/atomic"
 
 	"wb2api/internal/jsonx"
 	"wb2api/internal/pool"
@@ -118,23 +116,11 @@ func crossRealmMessage(model, reqRealm string, key *settings.APIKey) string {
 }
 
 // ----------------------------------------------------- per-key concurrency
-
-var keyConc sync.Map // key id -> *atomic.Int32 (requests in flight)
-
-// acquireKey takes a slot against the key's concurrency limit (0 = unlimited);
-// the returned release must be called when the request ends.
-func acquireKey(key *settings.APIKey) (ok bool, release func(), limit int) {
-	if key == nil || key.ID == "" || key.ConcurrencyLimit <= 0 {
-		return true, func() {}, 0
-	}
-	v, _ := keyConc.LoadOrStore(key.ID, new(atomic.Int32))
-	c := v.(*atomic.Int32)
-	if int(c.Add(1)) > key.ConcurrencyLimit {
-		c.Add(-1)
-		return false, func() {}, key.ConcurrencyLimit
-	}
-	return true, func() { c.Add(-1) }, key.ConcurrencyLimit
-}
+//
+// The gateway deliberately does not enforce a client-side concurrency cap:
+// every request is forwarded and upstream limits are handled by the normal
+// 429/cooldown machinery. The stored `concurrency_limit` field is kept for
+// compatibility with older settings but ignored.
 
 func pinnedRef(r *http.Request) string {
 	if a := PinnedFrom(r.Context()); a != nil {

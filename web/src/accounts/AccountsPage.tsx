@@ -302,7 +302,7 @@ export function AccountsPage() {
       {open && <AccountDrawer uid={open} onClose={() => setOpen(null)} />}
       {dialog === 'add' && <AddAccountModal onClose={() => setDialog(null)} />}
       {dialog === 'import' && <ImportModal onClose={() => setDialog(null)} />}
-      {dialog === 'export' && <ExportModal onClose={() => setDialog(null)} />}
+      {dialog === 'export' && <ExportModal uids={selection.allMatching ? [] : [...selection.uids]} onClose={() => setDialog(null)} />}
       {dialog === 'desktop' && <DesktopImportModal onClose={() => setDialog(null)} />}
 
       {(selected.size > 0 || selection.allMatching) && (
@@ -312,6 +312,7 @@ export function AccountsPage() {
           filters={filters}
           onClear={() => setSelection({ uids: new Set(), allMatching: false })}
           onSelectAllMatching={() => setSelection({ uids: new Set(), allMatching: true })}
+          onExport={() => setDialog('export')}
         />
       )}
     </div>

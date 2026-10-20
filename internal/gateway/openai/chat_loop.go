@@ -136,17 +136,9 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 		q.httpErr(http.StatusBadRequest, msg, "invalid_request_error")
 		return
 	}
-	if ok, release, limit := acquireKey(key); !ok {
-		name := key.Name
-		if name == "" {
-			name = key.ID
-		}
-		h.emit(UsageEvent{At: start, Model: q.model, KeyID: q.keyID, Stream: q.stream, Outcome: "failed", Status: http.StatusTooManyRequests, Elapsed: time.Since(start)})
-		q.httpErr(http.StatusTooManyRequests, fmt.Sprintf("Rate limit reached: API key '%s' reached its concurrency limit (%d in flight); retry shortly", name, limit), "rate_limit_error")
-		return
-	} else {
-		defer release()
-	}
+	// No client-side concurrency cap: the gateway forwards every request it
+	// receives and lets the upstream decide. Per-key concurrency_limit remains
+	// in the stored settings for compatibility but is not enforced.
 	q.sessionKey = extractSessionKey(r, payload)
 	if opts.sessionKey != "" {
 		q.sessionKey = opts.sessionKey

@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	DefaultRepo = "ardeyouxipianyi/workbuddy2api-hub"
+	DefaultRepo = "JnmHub/wb2api"
 	userAgent   = "wb2api-hub-update-check"
 	maxBody     = 2 << 20
 	interval    = 24 * time.Hour
@@ -47,6 +47,7 @@ type Status struct {
 	LastSuccess     bool    `json:"last_success"`
 	LastError       string  `json:"last_error"`
 	ReleaseURL      string  `json:"release_url"`
+	RepoURL         string  `json:"repo_url"`
 	PublishedAt     string  `json:"published_at"`
 	Skipped         string  `json:"skipped,omitempty"`
 }
@@ -128,7 +129,7 @@ func (c *Checker) current() string {
 
 // Status reads the persisted state without running a check.
 func (c *Checker) Status() Status {
-	st := Status{CurrentVersion: c.current(), Enabled: c.enabled()}
+	st := Status{CurrentVersion: c.current(), Enabled: c.enabled(), RepoURL: c.webBase() + "/" + c.repo()}
 	if c.Store != nil {
 		rec := c.Store.UpdateCheckState()
 		st.LastAttempt, _ = rec["last_attempt"].(string)
@@ -177,7 +178,7 @@ func (c *Checker) Check(ctx context.Context, manual bool) Status {
 	}
 
 	rel, err := c.fetch(ctx)
-	st := Status{CurrentVersion: c.current(), Enabled: c.enabled(), LastAttempt: now.Format("2006-01-02 15:04:05")}
+	st := Status{CurrentVersion: c.current(), Enabled: c.enabled(), LastAttempt: now.Format("2006-01-02 15:04:05"), RepoURL: c.webBase() + "/" + c.repo()}
 	if err != nil {
 		st.LastError = describe(err)
 		c.mu.Lock()

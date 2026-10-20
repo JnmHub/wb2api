@@ -1,0 +1,13 @@
+.git
+.gitignore
+.github
+.scratch
+bin
+run
+legacy/python/__pycache__
+**/node_modules
+web/node_modules
+internal/webui/dist
+*.exe
+*.test
+*.out

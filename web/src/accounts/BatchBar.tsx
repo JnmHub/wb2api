@@ -53,6 +53,7 @@ export function BatchBar(props: {
   filters: Filters
   onClear: () => void
   onSelectAllMatching: () => void
+  onExport?: () => void
 }) {
   const { selection, total, filters } = props
   const qc = useQueryClient()
@@ -112,6 +113,11 @@ export function BatchBar(props: {
           <Button size="small" onClick={() => run('disable')}>
             停用
           </Button>
+          {props.onExport && (
+            <Button size="small" onClick={props.onExport}>
+              导出选中
+            </Button>
+          )}
           <Dropdown
             trigger={['click']}
             menu={{

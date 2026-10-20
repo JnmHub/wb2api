@@ -1,21 +1,34 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Alert, Button, Card, Collapse, Input, Select, Space, Tag, Typography, Upload } from 'antd'
-import { Upload as UploadIcon } from 'lucide-react'
-import { post, type ImportResponse } from '../api'
+import { Upload as UploadIcon, X } from 'lucide-react'
+import { post, type ImportReport, type ImportResponse } from '../api'
 import { Modal, Toggle } from '../components/Modal'
+
+type Picked = { name: string; text: string }
 
 /** Import accounts from the gateway's own export, a bare list, a single account
  *  object or a desktop credential. A dry run shows the same report the real
- *  import would produce, without touching a single account. */
+ *  import would produce, without touching a single account. Multiple files are
+ *  imported one after another and their reports are merged. */
 export function ImportModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient()
   const [text, setText] = useState('')
   const [realm, setRealm] = useState('')
   const [overwrite, setOverwrite] = useState(false)
-  const [file, setFile] = useState('')
+  const [picked, setPicked] = useState<Picked[]>([])
+  const docs = () => (picked.length ? picked.map((p) => p.text) : text.trim() ? [text] : [])
+  const canSubmit = picked.length > 0 || text.trim().length > 0
   const run = useMutation({
-    mutationFn: (dry: boolean) => post<ImportResponse>('/api/v2/accounts/import', { document: text, realm, overwrite, dry_run: dry }),
+    mutationFn: async (dry: boolean) => {
+      const agg: ImportResponse = { count: 0, dry_run: dry, result: { added: [], updated: [], skipped: [], invalid: [] } }
+      for (const document of docs()) {
+        const r = await post<ImportResponse>('/api/v2/accounts/import', { document, realm, overwrite, dry_run: dry })
+        mergeReport(agg.result, r.result)
+        agg.count += r.count
+      }
+      return agg
+    },
     onSuccess: (r, dry) => {
       if (!dry && (r.result.added.length || r.result.updated.length)) {
         qc.invalidateQueries({ queryKey: ['accounts'] })
@@ -25,8 +38,8 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
   })
   const read = async (f: File | undefined) => {
     if (!f) return
-    setFile(f.name)
-    setText(await f.text())
+    const content = await f.text()
+    setPicked((cur) => [...cur.filter((p) => p.name !== f.name), { name: f.name, text: content }])
   }
   return (
     <Modal title="导入账号" onCancel={onClose} wide>
@@ -53,22 +66,36 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
             <div>
               <Upload
                 accept=".json,.txt,application/json,text/plain"
+                multiple
                 showUploadList={false}
                 beforeUpload={(f) => {
                   void read(f as File)
                   return false
                 }}
               >
-                <Button icon={<UploadIcon size={14} />}>{file || '选择文件'}</Button>
+                <Button icon={<UploadIcon size={14} />}>选择文件（可多选）</Button>
               </Upload>
             </div>
           </div>
         </Space>
+        {picked.length > 0 && (
+          <Space wrap size={[6, 6]}>
+            {picked.map((p) => (
+              <Tag key={p.name} closable onClose={() => setPicked((cur) => cur.filter((x) => x.name !== p.name))} closeIcon={<X size={11} />}>
+                {p.name}
+              </Tag>
+            ))}
+            <Button size="small" type="link" onClick={() => setPicked([])}>
+              清空文件
+            </Button>
+            <Typography.Text type="secondary">将按顺序导入 {picked.length} 个文件</Typography.Text>
+          </Space>
+        )}
         <div>
-          <Typography.Text type="secondary">{file ? `内容（来自 ${file}）` : '或直接粘贴 JSON'}</Typography.Text>
+          <Typography.Text type="secondary">{picked.length ? '或继续粘贴 JSON（选择文件时忽略）' : '或直接粘贴 JSON'}</Typography.Text>
           <Input.TextArea
             className="mono"
-            rows={10}
+            rows={picked.length ? 4 : 10}
             value={text}
             onChange={(e) => setText(e.target.value)}
             spellCheck={false}
@@ -85,16 +112,23 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
         {run.data && <Report r={run.data} />}
         <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
           <Button onClick={onClose}>关闭</Button>
-          <Button disabled={!text.trim() || run.isPending} onClick={() => run.mutate(true)}>
+          <Button disabled={!canSubmit || run.isPending} onClick={() => run.mutate(true)}>
             预演
           </Button>
-          <Button type="primary" disabled={!text.trim()} loading={run.isPending} onClick={() => run.mutate(false)}>
+          <Button type="primary" disabled={!canSubmit} loading={run.isPending} onClick={() => run.mutate(false)}>
             导入
           </Button>
         </Space>
       </Space>
     </Modal>
   )
+}
+
+function mergeReport(dst: ImportReport, src: ImportReport) {
+  dst.added.push(...(src.added ?? []))
+  dst.updated.push(...(src.updated ?? []))
+  dst.skipped.push(...(src.skipped ?? []))
+  dst.invalid.push(...(src.invalid ?? []))
 }
 
 function Report({ r }: { r: ImportResponse }) {

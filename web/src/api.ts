@@ -437,6 +437,7 @@ export interface UpdateStatus {
   last_success: boolean
   last_error: string
   release_url: string
+  repo_url: string
   published_at: string
   skipped?: string
 }

@@ -354,6 +354,11 @@ function UpdatesSection() {
               发行页
             </a>
           )}
+          {st.repo_url && (
+            <a href={st.repo_url} target="_blank" rel="noreferrer">
+              GitHub 仓库
+            </a>
+          )}
         </Space>
       )}
     </Card>
