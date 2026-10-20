@@ -1,5 +1,40 @@
 @import '../assets/fonts/sarasa/core.css';
 
+/* The legacy page internals read these variables. Mirror the antd theme so a
+   manual theme choice (data-theme) also repaints them, not just the OS media
+   query in styles.css. */
+:root[data-theme='light'] {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --panel-2: #f1f3f6;
+  --border: #e3e6eb;
+  --text: #1c1c1e;
+  --dim: #6b7280;
+  --accent: #005d8f;
+  --ok: #059669;
+  --ok-bg: #e8f7ef;
+  --warn: #b45309;
+  --warn-bg: #fff5e6;
+  --bad: #dc2626;
+  --bad-bg: #fdecec;
+}
+
+:root[data-theme='dark'] {
+  --bg: #121214;
+  --panel: #1c1c1f;
+  --panel-2: #222226;
+  --border: #2c2c30;
+  --text: #f4f4f6;
+  --dim: #a1a1aa;
+  --accent: #00a2fb;
+  --ok: #10b981;
+  --ok-bg: #0b2c20;
+  --warn: #f59e0b;
+  --warn-bg: #33240d;
+  --bad: #ef4444;
+  --bad-bg: #3a1717;
+}
+
 html,
 body,
 #root {

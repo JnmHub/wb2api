@@ -6,9 +6,11 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"wb2api/internal/catalog"
 	"wb2api/internal/guards"
+	"wb2api/internal/jsonx"
 	"wb2api/internal/pool"
 	"wb2api/internal/realmswitch"
 	"wb2api/internal/store/settings"
@@ -112,6 +114,36 @@ func (s *Settings) snapshot() map[string]any {
 
 func (s *Settings) get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.snapshot())
+}
+
+// models serves the panel's model catalogue without requiring an API key: the
+// console is already behind panel auth, and /v1/models itself stays key-gated.
+func (s *Settings) models(w http.ResponseWriter, r *http.Request) {
+	if s.Catalog == nil {
+		writeErr(w, http.StatusServiceUnavailable, "模型目录不可用")
+		return
+	}
+	realmName := r.URL.Query().Get("realm")
+	if realmName != "intl" && realmName != "cn" {
+		realmName = s.Realm.Get()
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	entries, meta := s.Catalog.Entries(ctx, realmName)
+	models := make([]any, 0, len(entries))
+	for _, e := range entries {
+		raw, err := jsonx.Marshal(e)
+		if err != nil {
+			continue
+		}
+		var v any
+		if json.Unmarshal(raw, &v) == nil {
+			models = append(models, v)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"realm": realmName, "source": meta.Source, "fetched_at": meta.FetchedAt, "models": models,
+	})
 }
 
 // applyRuntime pushes settings that the pool or guards cache into them.
@@ -381,6 +413,7 @@ func (s *Settings) Register(mux *http.ServeMux, wrap func(http.Handler) http.Han
 	mux.Handle("DELETE /api/v2/keys/{id}", h(s.deleteKey))
 	mux.Handle("GET /api/v2/keys/{id}/secret", h(s.revealKey))
 	mux.Handle("PUT /api/v2/proxy-slots", h(s.putSlots))
+	mux.Handle("GET /api/v2/models", h(s.models))
 	if s.Catalog != nil {
 		mux.Handle("POST /api/v2/catalog/refresh", h(s.refreshCatalog))
 	}

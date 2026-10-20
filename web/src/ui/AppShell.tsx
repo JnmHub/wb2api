@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react'
 import { Breadcrumb, Button, Drawer, Layout, Menu, Tooltip } from 'antd'
-import { Activity, Gauge, ListChecks, Menu as MenuIcon, Moon, ScrollText, Settings, Sun, Users } from 'lucide-react'
+import { Activity, Boxes, FileClock, Gauge, ListChecks, Menu as MenuIcon, Moon, ScrollText, Settings, Sun, Users } from 'lucide-react'
 import { useThemeMode } from './theme'
 
-export type Tab = 'accounts' | 'usage' | 'settings' | 'logs' | 'tasks'
+export type Tab = 'accounts' | 'usage' | 'models' | 'requests' | 'settings' | 'logs' | 'tasks'
 
 const NAV = [
   {
@@ -12,13 +12,17 @@ const NAV = [
     items: [
       { key: 'accounts', label: '账号', icon: <Users size={16} /> },
       { key: 'usage', label: '用量', icon: <Gauge size={16} /> },
+      { key: 'models', label: '模型', icon: <Boxes size={16} /> },
       { key: 'tasks', label: '任务', icon: <ListChecks size={16} /> },
     ],
   },
   {
     key: 'observe',
     label: '观测',
-    items: [{ key: 'logs', label: '日志', icon: <ScrollText size={16} /> }],
+    items: [
+      { key: 'requests', label: '请求', icon: <FileClock size={16} /> },
+      { key: 'logs', label: '日志', icon: <ScrollText size={16} /> },
+    ],
   },
   {
     key: 'control',

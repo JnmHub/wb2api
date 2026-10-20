@@ -8,6 +8,8 @@ import { ThemeProvider } from './ui/theme'
 
 const AccountsPage = lazy(() => import('./accounts/AccountsPage').then((m) => ({ default: m.AccountsPage })))
 const UsagePage = lazy(() => import('./usage/UsagePage').then((m) => ({ default: m.UsagePage })))
+const ModelsPage = lazy(() => import('./models/ModelsPage').then((m) => ({ default: m.ModelsPage })))
+const RequestsPage = lazy(() => import('./requests/RequestsPage').then((m) => ({ default: m.RequestsPage })))
 const SettingsPage = lazy(() => import('./settings/SettingsPage').then((m) => ({ default: m.SettingsPage })))
 const LogsPage = lazy(() => import('./logs/LogsPage').then((m) => ({ default: m.LogsPage })))
 const TasksPage = lazy(() => import('./tasks/TasksPage').then((m) => ({ default: m.TasksPage })))
@@ -175,7 +177,7 @@ function ChangePassword({ forced, onDone }: { forced?: boolean; onDone?: () => v
   )
 }
 
-const TABS: Tab[] = ['accounts', 'usage', 'settings', 'logs', 'tasks']
+const TABS: Tab[] = ['accounts', 'usage', 'models', 'requests', 'settings', 'logs', 'tasks']
 
 function tabFromHash(): Tab {
   const h = location.hash.replace(/^#\/?/, '') as Tab
@@ -209,6 +211,8 @@ function Shell() {
       <Suspense fallback={<div className="page dim">加载中…</div>}>
         {tab === 'accounts' && <AccountsPage />}
         {tab === 'usage' && <UsagePage />}
+        {tab === 'models' && <ModelsPage />}
+        {tab === 'requests' && <RequestsPage />}
         {tab === 'settings' && <SettingsPage />}
         {tab === 'logs' && <LogsPage />}
         {tab === 'tasks' && <TasksPage />}

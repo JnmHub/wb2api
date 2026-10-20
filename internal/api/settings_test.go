@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"wb2api/internal/activity"
+	"wb2api/internal/catalog"
 	"wb2api/internal/logbuf"
 	"wb2api/internal/ops"
 	"wb2api/internal/pool"
@@ -36,7 +37,7 @@ func newSettingsFixture(t *testing.T) *sfix {
 		"expiresAt": time.Now().Add(time.Hour).Unix()}, "", time.Now())})
 	f.mux = http.NewServeMux()
 	wrap := func(h http.Handler) http.Handler { return h }
-	(&Settings{Store: f.st, Pool: f.pool, Realm: f.sw}).Register(f.mux, wrap)
+	(&Settings{Store: f.st, Pool: f.pool, Realm: f.sw, Catalog: &catalog.Service{Dir: dir}}).Register(f.mux, wrap)
 	(&Logs{Ring: f.ring}).Register(f.mux, wrap)
 	client := &ops.Client{Pool: f.pool, Up: upstream.NewManager(upstream.DefaultTimeouts()), Settings: f.st, Activity: &activity.Log{Dir: dir}}
 	sched := &scheduler.Scheduler{Pool: f.pool, Ops: client, Settings: f.st, Stagger: func() time.Duration { return 0 }}
@@ -245,5 +246,21 @@ func TestActionOnUnknownAccount(t *testing.T) {
 	}
 	if code, _ := f.do(t, "POST", "/api/v2/accounts/u1/actions/nonsense", `{}`); code != 404 {
 		t.Error("unknown action")
+	}
+}
+
+func TestPanelModelCatalogue(t *testing.T) {
+	f := newSettingsFixture(t)
+	code, body := f.do(t, "GET", "/api/v2/models?realm=intl", "")
+	if code != http.StatusOK {
+		t.Fatalf("status %d body %v", code, body)
+	}
+	models, ok := body["models"].([]any)
+	if !ok || len(models) == 0 {
+		t.Fatalf("no models: %v", body["models"])
+	}
+	first, _ := models[0].(map[string]any)
+	if first["id"] == nil || first["id"] == "" {
+		t.Fatalf("model id missing: %v", first)
 	}
 }

@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Card, Col, DatePicker, Progress, Row, Segmented, Select, Space, Statistic, Table, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
-import { Line } from '@ant-design/charts'
+import { Line, Pie } from '@ant-design/charts'
 import { get, type RemainingPayload, type RemainingRow, type SeriesPoint, type UsageAgg, type UsageSummary } from '../api'
 import { credit, ms, num, pct, span, tokens } from '../format'
 import { useThemeMode } from '../ui/theme'
@@ -19,7 +19,7 @@ const RANGES: { value: Range; label: string }[] = [
 
 export function UsagePage() {
   const { mode } = useThemeMode()
-  const [range, setRange] = useState<Range>('today')
+  const [range, setRange] = useState<Range>('week')
   const [realm, setRealm] = useState('')
   const [dates, setDates] = useState<[string, string] | null>(null)
   const base = dates
@@ -41,6 +41,10 @@ export function UsagePage() {
     tokens: p.total_tokens,
     requests: p.requests,
   }))
+  const modelMix = (sum.data?.by_model ?? [])
+    .filter((m) => m.total_tokens > 0)
+    .slice(0, 8)
+    .map((m) => ({ model: m.key || '（未知）', tokens: m.total_tokens }))
   return (
     <div className="page">
       <div className="page-head">
@@ -95,27 +99,49 @@ export function UsagePage() {
         <Kpi label="积分消耗" value={credit(t?.credit)} dot="#b45309" />
       </Row>
 
-      <Card
-        title={bucket === 'hour' ? '每小时 Token' : '每日 Token'}
-        extra={<Typography.Text type="secondary">{points.length ? `共 ${points.length} 个时间点` : '暂无数据'}</Typography.Text>}
-        styles={{ body: { paddingTop: 8 } }}
-        style={{ marginBottom: 12 }}
-      >
-        {points.length > 0 ? (
-          <Line
-            data={points}
-            xField="bucket"
-            yField="tokens"
-            height={230}
-            theme={mode === 'dark' ? 'classicDark' : 'classic'}
-            style={{ lineWidth: 2 }}
-            axis={{ y: { labelFormatter: (v: number) => tokens(v) } }}
-            tooltip={{ items: [{ channel: 'y', valueFormatter: (v: number) => tokens(v) + ' tokens' }] }}
-          />
-        ) : (
-          <div className="chart-empty">这个区间还没有请求。</div>
-        )}
-      </Card>
+      <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
+        <Col xs={24} xl={16}>
+          <Card
+            title={bucket === 'hour' ? '每小时 Token' : '每日 Token'}
+            extra={<Typography.Text type="secondary">{points.length ? `共 ${points.length} 个时间点` : '暂无数据'}</Typography.Text>}
+            styles={{ body: { paddingTop: 8 } }}
+          >
+            {points.length > 0 ? (
+              <Line
+                data={points}
+                xField="bucket"
+                yField="tokens"
+                height={230}
+                theme={mode === 'dark' ? 'classicDark' : 'classic'}
+                style={{ lineWidth: 2 }}
+                axis={{ y: { labelFormatter: (v: number) => tokens(v) } }}
+                tooltip={{ items: [{ channel: 'y', valueFormatter: (v: number) => tokens(v) + ' tokens' }] }}
+              />
+            ) : (
+              <div className="chart-empty">这个区间还没有请求。</div>
+            )}
+          </Card>
+        </Col>
+        <Col xs={24} xl={8}>
+          <Card title="模型用量" extra={<Typography.Text type="secondary">Token 占比</Typography.Text>} styles={{ body: { paddingTop: 4 } }}>
+            {modelMix.length > 0 ? (
+              <Pie
+                data={modelMix}
+                angleField="tokens"
+                colorField="model"
+                innerRadius={0.62}
+                height={252}
+                theme={mode === 'dark' ? 'classicDark' : 'classic'}
+                legend={{ position: 'bottom' }}
+                label={false}
+                tooltip={{ items: [{ channel: 'y', valueFormatter: (v: number) => tokens(v) + ' tokens' }] }}
+              />
+            ) : (
+              <div className="chart-empty">这个区间还没有请求。</div>
+            )}
+          </Card>
+        </Col>
+      </Row>
 
       <PricingCard base={base} />
 

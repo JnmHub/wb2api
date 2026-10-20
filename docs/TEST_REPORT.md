@@ -136,7 +136,7 @@ cd web
 npm run uitest -- --url http://127.0.0.1:18888 --password real-test
 ```
 
-覆盖并通过：登录、账号 / 用量 / 设置 / 日志 / 任务五个页面、浅色→深色切换、账号详情抽屉、添加账号 / 导入 / 导出 / 桌面导入弹窗、新建 Key 弹窗、日志暂停/继续；同时收集 `Runtime.exceptionThrown`、`Log.entryAdded`、`console.error`，忽略登录前的 401 session 探测。截图输出到 `.scratch/uitest*/`（不提交）。2026-10-20 在真实 CN 账号上通过。
+覆盖并通过：登录、账号 / 用量 / 模型 / 请求记录 / 设置 / 日志 / 任务七个页面、浅色→深色切换、行选择/批量条、请求详情抽屉、账号详情抽屉、添加账号 / 导入 / 导出 / 桌面导入弹窗、新建 Key 弹窗、日志暂停/继续；同时收集 `Runtime.exceptionThrown`、`Log.entryAdded`、`console.error`，忽略登录前的 401 session 探测。截图输出到 `.scratch/uitest*/`（不提交）。2026-10-20 在真实 CN 账号上通过。
 
 ## 9. 复现
 

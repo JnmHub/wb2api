@@ -132,8 +132,7 @@ export interface Job {
   errors?: { item: string; error: string }[]
 }
 
-export interface UsageAgg {
-  requests: number
+export interface UsageAgg {  requests: number
   ok: number
   aborted: number
   failed: number
@@ -161,6 +160,58 @@ export interface UsageSummary {
 
 export interface SeriesPoint extends UsageAgg {
   bucket: string
+}
+
+export interface UsageRequest {
+  id: number
+  at: number
+  model: string
+  account: string
+  realm: string
+  key: string
+  stream: boolean
+  outcome: string
+  status: number
+  elapsed_ms: number
+  ttft_ms?: number
+  gen_ms?: number
+  held_ms: number
+  prompt_tokens: number
+  completion_tokens: number
+  reasoning_tokens: number
+  cached_tokens: number
+  total_tokens: number
+  credit: number
+  reasoning_effort: string
+  usage_estimated: boolean
+  error: string
+  tokens_per_sec: number
+}
+
+export interface UsageRequestPage {
+  requests: UsageRequest[]
+  next_before: number
+}
+
+export interface CatalogModel {
+  id: string
+  name?: string
+  description?: string
+  context_length?: number
+  context_windows?: number[]
+  max_output_tokens?: number
+  reasoning_efforts?: string[] | Record<string, string>
+  supports_vision?: boolean
+  supports_tool_calls?: boolean
+  supports_reasoning?: boolean
+  vision_note?: string
+}
+
+export interface ModelCatalogue {
+  realm: string
+  source: string
+  fetched_at: number
+  models: CatalogModel[]
 }
 
 // ---------------------------------------------------------------- settings

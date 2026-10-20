@@ -156,6 +156,8 @@ async function main() {
   const pages = [
     { hash: 'accounts', title: '账号', checks: ['全部账号', '今日 Token'] },
     { hash: 'usage', title: '用量', checks: ['请求数', '价格估算'] },
+    { hash: 'models', title: '模型', checks: ['能力', '上下文'] },
+    { hash: 'requests', title: '请求记录', checks: ['最近的网关请求'] },
     { hash: 'settings', title: '设置', checks: ['API Key', '模型清单', '上游与提示词'] },
     { hash: 'logs', title: '日志', checks: ['跟随最新'] },
     { hash: 'tasks', title: '任务', checks: ['后台任务', '国内成长任务'] },
@@ -176,6 +178,11 @@ async function main() {
   if (!theme) failures.push('theme toggle did not set data-theme')
   await shot('theme-' + theme)
 
+  // The logs viewer must follow the theme too (it used to stay white in dark).
+  await evaluate(`location.hash = '#/logs'`)
+  await sleep(800)
+  await shot('logs-' + theme)
+
   // Row selection / batch bar.
   await evaluate(`location.hash = '#/accounts'`)
   await sleep(800)
@@ -191,6 +198,21 @@ async function main() {
     await sleep(200)
   } else {
     failures.push('no row-selection checkbox')
+  }
+
+  // Request detail drawer.
+  await evaluate(`location.hash = '#/requests'`)
+  await sleep(900)
+  const openedRequest = await evaluate(`(() => {
+    const row = document.querySelector('.ant-table-tbody tr.ant-table-row');
+    if (!row) return false; row.click(); return true;
+  })()`)
+  if (openedRequest) {
+    await sleep(500)
+    if (!(await text()).includes('请求 #')) failures.push('request detail drawer did not open')
+    await shot('request-detail')
+    await evaluate(`document.querySelector('.ant-drawer-close')?.click()`)
+    await sleep(250)
   }
 
   // Account drawer.
