@@ -77,6 +77,9 @@ func (a *Accounts) view(acc *pool.Account, now time.Time, detail bool) map[strin
 	if until := acc.CooldownUntil(); until.After(now) {
 		v["cooldown_for"] = int(until.Sub(now).Seconds()) + 1
 	}
+	if reason := acc.UnavailableReason("", now); reason != "" {
+		v["unavailable_reason"] = reason
+	}
 	if until := acc.RestrictedUntil(); until.After(now) {
 		v["restricted_for"] = int(until.Sub(now).Seconds()) + 1
 	}

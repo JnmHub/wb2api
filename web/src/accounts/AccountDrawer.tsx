@@ -186,6 +186,7 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
                   : []),
                 { key: 'inflight', label: '进行中', children: String(a.inflight) },
                 ...(a.cooldown_for ? [{ key: 'cool', label: '冷却', children: `剩余 ${span(a.cooldown_for)}` }] : []),
+                ...(a.unavailable_reason ? [{ key: 'reason', label: '当前不可用', children: <Typography.Text type="warning">{a.unavailable_reason}</Typography.Text> }] : []),
                 ...(a.restricted_for ? [{ key: 'restricted', label: '风控限制', children: `剩余 ${span(a.restricted_for)}` }] : []),
                 ...(a.refresh ? [{ key: 'refresh', label: '刷新失败', children: `${a.refresh.failures} 次：${a.refresh.last_error}` }] : []),
                 { key: 'machine', label: '机器码', children: <span className="mono">{a.machine_id}</span> },

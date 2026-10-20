@@ -96,6 +96,7 @@ export interface Account {
   today: { requests: number; tokens: number; credit: number }
   cooldown_for?: number
   restricted_for?: number
+  unavailable_reason?: string
   model_cooldowns?: { model: string; expires_at: number }[]
   credits?: { remain?: number; total?: number }
   refresh?: { failures: number; next_try: number; last_error: string }

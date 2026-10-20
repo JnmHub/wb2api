@@ -2,6 +2,7 @@ package pool
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -203,5 +204,30 @@ func TestCreditExpiringWithin(t *testing.T) {
 	a := New([]*accounts.Record{rec}).All()[0]
 	if got := a.CreditExpiringWithin(7); got != 4 {
 		t.Fatalf("expiring within 7d = %v, want 4", got)
+	}
+}
+
+func TestStateShowsBreakerAndBalanceAsCooling(t *testing.T) {
+	now := time.Now()
+	rec := mkRecs(1, time.Hour)[0]
+	rec.Credits = map[string]any{"remain": 100}
+	a := New([]*accounts.Record{rec}).All()[0]
+	for i := 0; i < BreakerThreshold; i++ {
+		a.NoteFailure("500", now)
+	}
+	if got := a.State(now); got != StatusCooling {
+		t.Fatalf("breaker state = %s, want cooling", got)
+	}
+	if !strings.Contains(a.UnavailableReason("", now), "\u7194\u65ad") {
+		t.Fatalf("breaker reason = %q", a.UnavailableReason("", now))
+	}
+
+	b := New([]*accounts.Record{mkRecs(1, time.Hour)[0]}).All()[0]
+	b.NoteBalanceCooled("402", now)
+	if got := b.State(now); got != StatusCooling {
+		t.Fatalf("balance-park state = %s, want cooling", got)
+	}
+	if !strings.Contains(b.UnavailableReason("", now), "\u4f59\u989d\u4fdd\u62a4") {
+		t.Fatalf("balance reason = %q", b.UnavailableReason("", now))
 	}
 }

@@ -578,6 +578,9 @@ func (a *Account) UnavailableReason(model string, now time.Time) string {
 	if model != "" && a.guard.modelTokenBlocked(model) {
 		return "该模型今日额度用尽"
 	}
+	if remain, ok := a.CreditRemain(); ok && remain <= 0 {
+		return "积分已用尽"
+	}
 	if exp := a.expiresAt.Load(); exp != 0 && exp-now.Unix() <= 120 {
 		return "凭证已过期"
 	}

@@ -157,17 +157,17 @@ func (a *Account) State(now time.Time) Status {
 		return StatusNeedLogin
 	}
 	ns := now.UnixNano()
+	remain, creditKnown := a.CreditRemain()
 	switch {
 	case a.restrictedTo.Load() > ns:
 		return StatusRestricted
-	case a.cooldownTo.Load() > ns:
+	case creditKnown && remain <= 0:
+		return StatusNoCredit
+	case a.cooldownTo.Load() > ns || a.breakerTo.Load() > ns || a.degradeTo.Load() > ns || a.balanceTo.Load() > ns:
 		return StatusCooling
 	}
 	if exp := a.expiresAt.Load(); exp != 0 && exp-now.Unix() <= 120 {
 		return StatusExpiring
-	}
-	if remain, ok := a.CreditRemain(); ok && remain <= 0 {
-		return StatusNoCredit
 	}
 	return StatusReady
 }
