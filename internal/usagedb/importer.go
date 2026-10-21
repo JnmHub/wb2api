@@ -29,7 +29,7 @@ func metaKey(path string) string {
 
 func (d *DB) getMeta(k string) (string, bool) {
 	var v string
-	err := d.sql.QueryRow("SELECT v FROM meta WHERE k = ?", k).Scan(&v)
+	err := d.queryRow("SELECT v FROM meta WHERE k = ?", k).Scan(&v)
 	if err == sql.ErrNoRows {
 		return "", false
 	}
@@ -153,12 +153,12 @@ func (d *DB) ImportJSONL(ctx context.Context, path string, progress ImportProgre
 		if err != nil {
 			return err
 		}
-		ins, err := tx.Prepare(insertSQL)
+		ins, err := d.prepare(tx, insertSQL)
 		if err != nil {
 			tx.Rollback()
 			return err
 		}
-		rs, err := prepareRollups(tx)
+		rs, err := d.prepareRollups(tx)
 		if err != nil {
 			ins.Close()
 			tx.Rollback()
@@ -173,7 +173,7 @@ func (d *DB) ImportJSONL(ctx context.Context, path string, progress ImportProgre
 			}
 		}
 		rs.close()
-		if _, err := tx.Exec("INSERT INTO meta(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+		if _, err := tx.Exec(d.bind("INSERT INTO meta(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v"),
 			metaKey(path), strconv.FormatInt(upTo, 10)); err != nil {
 			tx.Rollback()
 			return err

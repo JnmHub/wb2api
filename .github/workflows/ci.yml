@@ -34,3 +34,29 @@ jobs:
       - if: runner.os != 'Linux'
         run: go test ./... -timeout 10m
       - run: go build ./cmd/...
+
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: wb2api
+          POSTGRES_PASSWORD: wb2api
+          POSTGRES_DB: wb2api_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wb2api -d wb2api_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: PostgreSQL usage store round-trip
+        env:
+          WB_TEST_POSTGRES_DSN: postgres://wb2api:wb2api@127.0.0.1:5432/wb2api_test?sslmode=disable
+        run: go test ./internal/usagedb -run TestPostgresRoundTrip -count=1 -v

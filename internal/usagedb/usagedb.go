@@ -9,15 +9,18 @@
 package usagedb
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	_ "modernc.org/sqlite" // pure-Go SQLite driver (no cgo)
+	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver for the shared usage store
+	_ "modernc.org/sqlite"             // pure-Go SQLite driver (no cgo)
 )
 
 // Event is one finished request.
@@ -128,9 +131,11 @@ CREATE TABLE IF NOT EXISTS hourly (
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 `
 
-// DB is an open usage database.
+// DB is an open usage database. It speaks SQLite by default and PostgreSQL
+// when opened with OpenPostgres; the schema and queries are shared.
 type DB struct {
-	sql *sql.DB
+	sql    *sql.DB
+	driver string // "sqlite" or "pg"
 
 	queue   chan Event
 	flushCh chan chan struct{}
@@ -159,11 +164,90 @@ func Open(path string, queueSize int) (*DB, error) {
 		queueSize = 8192
 	}
 	d := &DB{
-		sql: h, queue: make(chan Event, queueSize), flushCh: make(chan chan struct{}),
+		sql: h, driver: "sqlite", queue: make(chan Event, queueSize), flushCh: make(chan chan struct{}),
 		stop: make(chan struct{}), done: make(chan struct{}),
 	}
 	go d.writer()
 	return d, nil
+}
+
+// OpenPostgres opens the usage store in PostgreSQL. The tables are created on
+// first use in the given database; callers normally pass the same DSN as the
+// account/settings store.
+func OpenPostgres(dsn string, queueSize int) (*DB, error) {
+	h, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, err
+	}
+	h.SetMaxOpenConns(8)
+	h.SetMaxIdleConns(4)
+	h.SetConnMaxLifetime(30 * time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := h.PingContext(ctx); err != nil {
+		h.Close()
+		return nil, fmt.Errorf("usagedb postgres ping: %w", err)
+	}
+	// pgx's extended protocol rejects multiple commands in one Exec, so run
+	// each schema statement separately.
+	for _, stmt := range strings.Split(postgresSchema(), ";") {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		if _, err := h.ExecContext(ctx, stmt); err != nil {
+			h.Close()
+			return nil, fmt.Errorf("usagedb postgres schema: %w", err)
+		}
+	}
+	if queueSize <= 0 {
+		queueSize = 8192
+	}
+	d := &DB{
+		sql: h, driver: "pg", queue: make(chan Event, queueSize), flushCh: make(chan chan struct{}),
+		stop: make(chan struct{}), done: make(chan struct{}),
+	}
+	go d.writer()
+	return d, nil
+}
+
+// postgresSchema reuses the SQLite schema with the minimal syntax changes:
+// BIGSERIAL for the request id and no SQLite-only WITHOUT ROWID clause.
+func postgresSchema() string {
+	s := strings.ReplaceAll(schema, "id          INTEGER PRIMARY KEY", "id          BIGSERIAL PRIMARY KEY")
+	s = strings.ReplaceAll(s, "REAL", "DOUBLE PRECISION")
+	s = strings.ReplaceAll(s, ") WITHOUT ROWID", ")")
+	return s
+}
+
+// bind rewrites SQLite-style ? placeholders to PostgreSQL $1..$n.
+func (d *DB) bind(q string) string {
+	if d.driver != "pg" {
+		return q
+	}
+	var b strings.Builder
+	b.Grow(len(q) + 8)
+	n := 0
+	for i := 0; i < len(q); i++ {
+		if q[i] != '?' {
+			b.WriteByte(q[i])
+			continue
+		}
+		n++
+		fmt.Fprintf(&b, "$%d", n)
+	}
+	return b.String()
+}
+
+func (d *DB) query(q string, args ...any) (*sql.Rows, error) {
+	return d.sql.Query(d.bind(q), args...)
+}
+
+func (d *DB) queryRow(q string, args ...any) *sql.Row {
+	return d.sql.QueryRow(d.bind(q), args...)
+}
+
+func (d *DB) prepare(tx *sql.Tx, q string) (*sql.Stmt, error) {
+	return tx.Prepare(d.bind(q))
 }
 
 // SQL exposes the handle for read-only queries by other packages and tests.
@@ -312,13 +396,13 @@ func (d *DB) writeBatch(events []Event) error {
 	if err != nil {
 		return err
 	}
-	ins, err := tx.Prepare(insertSQL)
+	ins, err := d.prepare(tx, insertSQL)
 	if err != nil {
 		tx.Rollback()
 		return err
 	}
 	defer ins.Close()
-	st, err := prepareRollups(tx)
+	st, err := d.prepareRollups(tx)
 	if err != nil {
 		tx.Rollback()
 		return err
@@ -339,13 +423,13 @@ type stmts struct {
 	ins, daily, hourly *sql.Stmt
 }
 
-func prepareRollups(tx *sql.Tx) (*stmts, error) {
+func (d *DB) prepareRollups(tx *sql.Tx) (*stmts, error) {
 	st := &stmts{}
 	var err error
-	if st.daily, err = tx.Prepare(upsertDailySQL); err != nil {
+	if st.daily, err = d.prepare(tx, upsertDailySQL); err != nil {
 		return nil, err
 	}
-	if st.hourly, err = tx.Prepare(upsertHourlySQL); err != nil {
+	if st.hourly, err = d.prepare(tx, upsertHourlySQL); err != nil {
 		st.daily.Close()
 		return nil, err
 	}

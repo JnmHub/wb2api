@@ -14,7 +14,7 @@ type DayUse struct {
 // is what the daily guards (token / credit / per-model limits) are computed
 // from, so it reads a table of at most accounts x models rows, never requests.
 func (d *DB) DayUsage(day time.Time) ([]DayUse, error) {
-	rows, err := d.sql.Query(`SELECT account, model, SUM(total), SUM(credit) FROM daily
+	rows, err := d.query(`SELECT account, model, SUM(total), SUM(credit) FROM daily
 		WHERE day = ? AND account <> '' GROUP BY account, model`, localDay(day))
 	if err != nil {
 		return nil, err

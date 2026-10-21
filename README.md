@@ -60,13 +60,13 @@ docker compose up -d --build
 
 面板：`http://127.0.0.1:8788/`。
 
-- **PostgreSQL**：账号和 `settings.json` 的权威存储；首次启动会把现有
-  `./data/accounts/*.json` 和 `settings.json` 导入数据库，之后读写走数据库。
+- **PostgreSQL**：账号、`settings.json` 和**请求用量**的权威存储；首次启动会把现有
+  `./data/accounts/*.json`、`settings.json` 和 `usage.jsonl` 导入数据库，之后读写走数据库。
 - **Redis**：跨进程的账号并发槽位（`WB_REDIS_INFLIGHT`，默认 8）和健康检查；
   账号满槽时可排队 `WB_REDIS_WAIT_MS`（默认 1500）再切换，减少冷账号溢出；
   不配 Redis 时退回本地并发限制。
-- **`./data`**：仍保留 catalog、usage、panel 会话等文件；旧版 standalone 模式不需要
-  PostgreSQL/Redis。
+- **`./data`**：仍保留 catalog、panel 会话、jobs 等文件；旧版 standalone 模式不需要
+  PostgreSQL/Redis，继续使用文件 + `usage.db`。
 - 容器以非 root 用户运行，应用健康检查走 `/health`。
 
 资源清理：
@@ -96,7 +96,7 @@ services:
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `-postgres-dsn` / `WB_POSTGRES_DSN` | 空 | 启用 PostgreSQL 账号/设置存储；空则使用 `accounts/*.json` |
+| `-postgres-dsn` / `WB_POSTGRES_DSN` | 空 | 启用 PostgreSQL 账号/设置/用量存储；空则使用文件 + `usage.db` |
 | `-redis-addr` / `WB_REDIS_ADDR` | 空 | 启用 Redis；空则不启用跨进程状态 |
 | `-redis-inflight` / `WB_REDIS_INFLIGHT` | `0` | 每账号 Redis 并发槽位；0 = 关闭 |
 | `-redis-wait-ms` / `WB_REDIS_WAIT_MS` | `0` | 满槽时排队等待毫秒数，超时才切换账号；0 = 立即切换 |

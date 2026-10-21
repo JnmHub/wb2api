@@ -42,9 +42,13 @@ type Agg struct {
 const rollupCols = `SUM(requests), SUM(ok), SUM(aborted), SUM(failed), SUM(prompt), SUM(completion), SUM(reasoning), SUM(cached),
   SUM(total), SUM(credit), SUM(elapsed_sum), SUM(ttft_sum), SUM(ttft_n), SUM(gen_ms_sum), SUM(gen_tokens)`
 
-const requestCols = `COUNT(*), SUM(outcome IN ('completed','')), SUM(outcome = 'client_aborted'),
-  SUM(outcome NOT IN ('completed','','client_aborted')), SUM(prompt), SUM(completion), SUM(reasoning), SUM(cached),
-  SUM(total), SUM(credit), SUM(elapsed_ms), SUM(COALESCE(ttft_ms,0)), SUM(ttft_ms IS NOT NULL),
+const requestCols = `COUNT(*),
+  SUM(CASE WHEN outcome IN ('completed','') THEN 1 ELSE 0 END),
+  SUM(CASE WHEN outcome = 'client_aborted' THEN 1 ELSE 0 END),
+  SUM(CASE WHEN outcome NOT IN ('completed','','client_aborted') THEN 1 ELSE 0 END),
+  SUM(prompt), SUM(completion), SUM(reasoning), SUM(cached),
+  SUM(total), SUM(credit), SUM(elapsed_ms), SUM(COALESCE(ttft_ms,0)),
+  SUM(CASE WHEN ttft_ms IS NOT NULL THEN 1 ELSE 0 END),
   SUM(CASE WHEN gen_ms > 0 AND estimated = 0 THEN gen_ms ELSE 0 END),
   SUM(CASE WHEN gen_ms > 0 AND estimated = 0 THEN completion ELSE 0 END)`
 
@@ -152,6 +156,41 @@ func (f Filter) pick() source {
 	return f.pickRequests()
 }
 
+// localInterval renders the current fixed UTC offset as a PostgreSQL interval.
+// The panel's day/hour buckets are local wall time, matching the day strings
+// written by the rollups. A fixed offset is exact except across a DST change;
+// the app's deployment timezone (Asia/Shanghai in compose) has no DST.
+func localInterval() string {
+	_, off := time.Now().Zone()
+	sign := "+"
+	if off < 0 {
+		sign = "-"
+		off = -off
+	}
+	return fmt.Sprintf("interval '%s%02d:%02d:%02d'", sign, off/3600, (off%3600)/60, off%60)
+}
+
+func (d *DB) requestDayExpr() string {
+	if d.driver != "pg" {
+		return "strftime('%Y-%m-%d', at, 'unixepoch', 'localtime')"
+	}
+	return "to_char((to_timestamp(at) AT TIME ZONE 'UTC') + " + localInterval() + ", 'YYYY-MM-DD')"
+}
+
+func (d *DB) requestHourExpr() string {
+	if d.driver != "pg" {
+		return "strftime('%Y-%m-%d %H', at, 'unixepoch', 'localtime')"
+	}
+	return "to_char((to_timestamp(at) AT TIME ZONE 'UTC') + " + localInterval() + ", 'YYYY-MM-DD HH24')"
+}
+
+func (d *DB) hourlyBucketExpr() string {
+	if d.driver != "pg" {
+		return "strftime('%Y-%m-%d %H', hour*3600, 'unixepoch', 'localtime')"
+	}
+	return "to_char((to_timestamp(hour * 3600) AT TIME ZONE 'UTC') + " + localInterval() + ", 'YYYY-MM-DD HH24')"
+}
+
 type scanner interface{ Scan(dest ...any) error }
 
 func scanAgg(s scanner, extra ...any) (Agg, error) {
@@ -184,7 +223,7 @@ func scanAgg(s scanner, extra ...any) (Agg, error) {
 // Totals aggregates everything matching f.
 func (d *DB) Totals(f Filter) (Agg, error) {
 	s := f.pick()
-	return scanAgg(d.sql.QueryRow("SELECT "+s.cols+" FROM "+s.from+s.where, s.args...))
+	return scanAgg(d.queryRow("SELECT "+s.cols+" FROM "+s.from+s.where, s.args...))
 }
 
 // GroupRow is one row of Group.
@@ -203,7 +242,7 @@ func (d *DB) Group(by string, f Filter) ([]GroupRow, error) {
 	}
 	s := f.pick()
 	totalExpr := "SUM(total)"
-	rows, err := d.sql.Query("SELECT "+col+", "+s.cols+" FROM "+s.from+s.where+" GROUP BY "+col+" ORDER BY "+totalExpr+" DESC, "+col, s.args...)
+	rows, err := d.query("SELECT "+col+", "+s.cols+" FROM "+s.from+s.where+" GROUP BY "+col+" ORDER BY "+totalExpr+" DESC, "+col, s.args...)
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +270,7 @@ type PairPoint struct {
 // PairPoints returns the per-request token rows in [since, until), oldest
 // first. The remaining-usage estimate folds these into a 24h window.
 func (d *DB) PairPoints(since, until time.Time) ([]PairPoint, error) {
-	rows, err := d.sql.Query(`SELECT account, model, at, total FROM requests
+	rows, err := d.query(`SELECT account, model, at, total FROM requests
 		WHERE at >= ? AND at < ? AND account <> '' AND model <> ''
 		  AND outcome NOT IN ('client_aborted', 'error')
 		ORDER BY at`,
@@ -265,17 +304,21 @@ func (d *DB) Series(bucket string, f Filter) ([]SeriesPoint, error) {
 	switch bucket {
 	case "day":
 		s = f.pick()
+		if s.from == "requests" {
+			s.timeEx = d.requestDayExpr()
+		}
 	case "hour":
 		if f.Account == "" && f.KeyID == "" {
 			s = f.pickHourly()
+			s.timeEx = d.hourlyBucketExpr()
 		} else {
 			s = f.pickRequests()
-			s.timeEx = "strftime('%Y-%m-%d %H', at, 'unixepoch', 'localtime')"
+			s.timeEx = d.requestHourExpr()
 		}
 	default:
 		return nil, fmt.Errorf("usagedb: bucket must be hour or day, got %q", bucket)
 	}
-	rows, err := d.sql.Query("SELECT "+s.timeEx+" AS b, "+s.cols+" FROM "+s.from+s.where+" GROUP BY b ORDER BY b", s.args...)
+	rows, err := d.query("SELECT "+s.timeEx+" AS b, "+s.cols+" FROM "+s.from+s.where+" GROUP BY b ORDER BY b", s.args...)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +360,7 @@ func (d *DB) Recent(limit int, beforeID int64, f Filter) ([]Request, error) {
 	q := `SELECT id, at, model, account, realm, key_id, stream, outcome, status, elapsed_ms, ttft_ms, gen_ms, held_ms,
 	  prompt, completion, reasoning, cached, total, credit, effort, estimated, error, extra FROM requests` + and(conds) + " ORDER BY id DESC LIMIT ?"
 	args = append(args, limit)
-	rows, err := d.sql.Query(q, args...)
+	rows, err := d.query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -374,10 +417,10 @@ func (d *DB) Day(start time.Time) (DayCounters, error) {
 	var rows *sql.Rows
 	var err error
 	if isMidnight(start) {
-		rows, err = d.sql.Query(`SELECT account, model, SUM(total), SUM(credit), SUM(requests) FROM daily WHERE day >= ? AND account <> ''
+		rows, err = d.query(`SELECT account, model, SUM(total), SUM(credit), SUM(requests) FROM daily WHERE day >= ? AND account <> ''
 		  GROUP BY account, model`, localDay(start))
 	} else {
-		rows, err = d.sql.Query(`SELECT account, model, SUM(total), SUM(credit), COUNT(*) FROM requests WHERE at >= ? AND account <> ''
+		rows, err = d.query(`SELECT account, model, SUM(total), SUM(credit), COUNT(*) FROM requests WHERE at >= ? AND account <> ''
 		  GROUP BY account, model`, epoch(start))
 	}
 	if err != nil {

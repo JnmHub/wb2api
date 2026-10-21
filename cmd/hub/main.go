@@ -244,7 +244,15 @@ func main() {
 	}
 	bg, stopBG := context.WithCancel(context.Background())
 	defer stopBG()
-	udb, err := usagedb.Open(filepath.Join(*usageDir, "usage.db"), 0)
+	var (
+		udb *usagedb.DB
+		err error
+	)
+	if *postgresDSN != "" {
+		udb, err = usagedb.OpenPostgres(*postgresDSN, 0)
+	} else {
+		udb, err = usagedb.Open(filepath.Join(*usageDir, "usage.db"), 0)
+	}
 	if err != nil {
 		log.Error("cannot open the usage database", "err", err)
 		os.Exit(1)
@@ -330,6 +338,11 @@ func main() {
 			} else {
 				out["postgres"] = "ok"
 			}
+		}
+		if *postgresDSN != "" {
+			out["usage"] = "postgres"
+		} else {
+			out["usage"] = "sqlite"
 		}
 		if rdb != nil {
 			if err := rdb.Ping(ctx); err != nil {

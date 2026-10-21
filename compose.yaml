@@ -57,7 +57,8 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       # Existing accounts/settings.json are imported into PostgreSQL on the
-      # first boot; catalog/usage/panel files still live here.
+      # first boot. Usage is stored in PostgreSQL too; catalog, jobs, panel
+      # sessions and the legacy usage.jsonl import source still live here.
       - ./data:/data
     command:
       - -lan

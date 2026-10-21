@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -389,5 +390,80 @@ func TestRollupAndExactPathsAgree(t *testing.T) {
 	}
 	if accSum != accounts[0].Total {
 		t.Errorf("account %s: hourly series %d vs group total %d", acct, accSum, accounts[0].Total)
+	}
+}
+
+func TestPostgresSchemaUsesSharedTables(t *testing.T) {
+	s := postgresSchema()
+	for _, want := range []string{"id          BIGSERIAL PRIMARY KEY", "DOUBLE PRECISION", "CREATE TABLE IF NOT EXISTS requests"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("postgres schema missing %q", want)
+		}
+	}
+	if strings.Contains(s, "WITHOUT ROWID") {
+		t.Fatal("postgres schema still has SQLite-only WITHOUT ROWID")
+	}
+}
+
+func TestBindPostgresPlaceholders(t *testing.T) {
+	d := &DB{driver: "pg"}
+	got := d.bind("SELECT a FROM t WHERE x = ? AND y = ?")
+	if got != "SELECT a FROM t WHERE x = $1 AND y = $2" {
+		t.Fatalf("bind = %q", got)
+	}
+	if got := (&DB{driver: "sqlite"}).bind("x = ?"); got != "x = ?" {
+		t.Fatalf("sqlite bind changed: %q", got)
+	}
+}
+
+func TestPostgresRoundTrip(t *testing.T) {
+	dsn := os.Getenv("WB_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("WB_TEST_POSTGRES_DSN not set")
+	}
+	db, err := OpenPostgres(dsn, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.sql.Exec("TRUNCATE requests, daily, hourly, meta"); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	at := time.Now().Add(-time.Minute)
+	ttft, gen := int64(120), int64(1000)
+	db.Record(Event{At: at, Model: "pg-test", Account: "a1", Realm: "intl", KeyID: "k1", Stream: true,
+		Outcome: "completed", Status: 200, ElapsedMs: 1200, TTFTMs: &ttft, GenMs: &gen,
+		Prompt: 10, Completion: 5, Total: 15})
+	db.Record(Event{At: at.Add(time.Second), Model: "pg-test", Account: "a2", Realm: "intl", KeyID: "k2",
+		Outcome: "failed", Status: 500, Prompt: 3, Total: 3})
+	db.Flush()
+	if got := db.Written(); got != 2 {
+		t.Fatalf("written = %d, want 2 (last error %q)", got, db.LastError())
+	}
+	agg, err := db.Totals(Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agg.Requests != 2 || agg.OK != 1 || agg.Failed != 1 || agg.Total != 18 {
+		t.Fatalf("totals = %+v", agg)
+	}
+	rows, err := db.Recent(10, 0, Filter{})
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("recent = %d, %v", len(rows), err)
+	}
+	if rows[0].Model != "pg-test" || rows[0].Account != "a2" {
+		t.Fatalf("recent[0] = %+v", rows[0])
+	}
+	series, err := db.Series("hour", Filter{Since: at.Add(-time.Hour), Until: at.Add(time.Hour)})
+	if err != nil || len(series) != 1 || series[0].Requests != 2 {
+		t.Fatalf("series = %+v, %v", series, err)
+	}
+	day, err := db.Day(LocalMidnight(at))
+	if err != nil || day.RequestsByAccount["a1"] != 1 || day.TokensByAccount["a2"] != 3 {
+		t.Fatalf("day = %+v, %v", day, err)
+	}
+	groups, err := db.Group("account", Filter{})
+	if err != nil || len(groups) != 2 {
+		t.Fatalf("groups = %+v, %v", groups, err)
 	}
 }
