@@ -36,7 +36,7 @@ files + SQLite deployment to the Sub2API-style split:
 - `internal/store/pgsettings`: singleton settings document stored as JSONB, with
   a one-time import from `settings.json`.
 - `settings.OpenWith`: file-free settings store used by the PostgreSQL backend.
-- `cmd/hub`: `WB_POSTGRES_DSN`, `WB_REDIS_ADDR`, `WB_REDIS_INFLIGHT`; when
+- `cmd/hub`: `WB_POSTGRES_DSN`, `WB_REDIS_ADDR`, `WB_REDIS_INFLIGHT`, `WB_REDIS_WAIT_MS`; when
   configured, account persistence/import/delete and settings updates go to
   PostgreSQL, and `/health` reports backend status.
 - `compose.yaml`: one command starts PostgreSQL, Redis and wb2api, with health
