@@ -278,3 +278,17 @@ func TestOpsSettingsPatch(t *testing.T) {
 		t.Fatalf("zero concurrency must be rejected, got %d", code)
 	}
 }
+
+func TestOutputTPSSettingsPatch(t *testing.T) {
+	f := newSettingsFixture(t)
+	code, out := f.do(t, "PATCH", "/api/v2/settings", `{"output_tps_limit":20}`)
+	if code != http.StatusOK || out["output_tps_limit"] != float64(20) {
+		t.Fatalf("patch output tps: %d %v", code, out["output_tps_limit"])
+	}
+	if code, _ := f.do(t, "PATCH", "/api/v2/settings", `{"output_tps_limit":-1}`); code != http.StatusBadRequest {
+		t.Fatalf("negative tps must be rejected, got %d", code)
+	}
+	if code, out := f.do(t, "PATCH", "/api/v2/settings", `{"switches":{"filter_models_by_key":true}}`); code != http.StatusOK || out["switches"] == nil {
+		t.Fatalf("filter switch: %d %v", code, out)
+	}
+}
