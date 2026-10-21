@@ -151,7 +151,7 @@ npm run uitest -- --url http://127.0.0.1:18888 --password real-test
   handler，已改为按请求量扩容；不是网关长上下文传输 bug。
 - Docker：`docker compose config` 校验通过；本机只有 Docker CLI，Docker daemon 未安装，
   因此镜像构建未在本机执行。GitHub Actions `release` 工作流已真实跑通，
-  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 至 v2.0.9。
+  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 至 v2.0.10。
 - **CI 真跑出了两个真实问题**：GitHub 的 `-race` 发现 `wireBody` 的 `eof/done` 与 ACP
   扫描协程并发读写（已加锁，并且只有 Close 前已观察到 EOF 才归还连接）；Windows runner
   上的 `wsarecv: ... was aborted` 未被识别为陈旧连接（已加入重试判断并补测试）。
@@ -217,29 +217,31 @@ npm run uitest -- --url http://127.0.0.1:18888 --password real-test
 
 ## 13. DSH 系统提示词 11128 指纹
 
-上游 WAF 会对客户端 system prompt 里的两句厂商归属句返回
+上游 WAF 会对客户端 system prompt 里的自我介绍句 + 品牌/型号返回
 `400 {"code":11128,"msg":"Illegal API invocation from an unapproved channel"}`：
 
 ```text
 You are an AI agent powered by DeepSeek Harness.
 You are a coding agent powered by the deepseek-v4.1-flash model.
+You are an AI assistant built on DeepSeek.
 ```
 
-已在 `internal/gateway/shape/sanitize.go` 增加极窄的、大小写不敏感的改写，只替换开头从句，
-保留模型/产品名、句末标点和后面的工具契约：
+按上游 v1.7.18 的口径，`internal/gateway/shape/sanitize.go` 把 **system / developer**
+消息里的这类整句改写为中性句：
 
 ```text
-You are an AI agent powered by X.      -> You are an AI assistant built on X.
-You are a coding agent powered by X.   -> You are an assistant built on X.
+You are a helpful AI assistant.
 ```
 
-`has_fingerprint` 的快速路径也增加了小写判定串（`an ai agent powered by` /
-`a coding agent powered by`），否则原文的 `AI agent` 不会进入清洗分支。
+- 只匹配「You are an [AI ]assistant built on … .」整句，大小写不敏感；
+- user / assistant / tool 里的同文本属于用户数据，保持原样；
+- 句末后面的工具/行为契约不动；
+- 品牌名不再保留（v1.7.18 的通用化做法，不依赖具体品牌）。
 
 验证：
 
-- `TestDSHAgentFingerprintRewrite`（大小写、带点模型名、无句号、误伤边界）、
-  `TestDSHFingerprintIsDetectedCaseInsensitively`、`TestDSHSystemPromptKeepsToolContract`；
+- `TestDSHAgentFingerprintRewrite`（Harness / 纯品牌 / 带点型号 / 大小写 / 后续文本）、
+  `TestDSHIdentityOnlyAppliesToSystemAndDeveloper`、`TestDSHSystemPromptKeepsToolContract`；
 - 真实 CN 账号：修复前同一请求 400/11128；重启后 `hy3` 返回 **200**；
   `deepseek-v4.1-flash` 返回 **429**（当日模型额度用尽，不再出现 11128），说明 WAF 拦截已解除；
 - 工具说明等后续内容未被改写。
@@ -251,7 +253,33 @@ You are a coding agent powered by X.   -> You are an assistant built on X.
 现在可用 `-max-body-mb N` 或 `WB_MAX_BODY_MB=N` 调整（1–1024 MiB），重启生效；
 Docker Compose 也会透传 `WB_MAX_BODY_MB`。`TestBodyTooLarge` 覆盖自定义上限下的 413。
 
-## 15. 复现
+## 15. v1.7.18 对照
+
+已补到 Go 版本：
+
+- **DSH 11-128 通用身份句**：system/developer 中性化为 `You are a helpful AI assistant.`，
+  user/assistant/tool 不动（见第 13 节）。
+- **WorkBuddy_Valorant 拼豆专家**：登记为固定专家任务，事件使用
+  `ex_xQHHD1u5Jkua`，不再落回通用专家池；`TestGrowthEventShapes` 覆盖。
+- **全池刷新积分单飞**：同一时刻只允许一个全池 `refresh_credits` 任务，重复点击复用
+  正在运行的 job（返回 `busy: true`）；单账号/带筛选的刷新不受影响。
+  `TestFullCreditSweepDetection` 覆盖判定边界。
+
+本项目不适用 / 已有等价实现：
+
+- Python 的 `random` 导入缺失、exFAT mtime 测试、CPython 3.9 HTTPError 分类：Go 实现不存在这些问题；
+- 移动端 header/账号卡/积分格布局、消费倍率列截断、i18n 文案：我们的 antd 页面结构不同，已有自己的响应式布局；
+- `X-Private-Data` 文案反转：Go 版本目前按身份固定发送，没有这个下拉项。
+
+仍可后续补充（本轮未做）：
+
+- DSH 的 `cordis.patch.yml` profile 补丁层与放宽后的 `retryPolicy`（当前只写 `settings.yaml`，DSH 升级后可能不生效；需要保持注释的 YAML 编辑器）；
+- 面板/日志/导出中的手机号昵称脱敏；
+- `/v1/models` 按 API Key 模型限制过滤（可选开关）；
+- Anthropic `input_tokens` 扣除缓存命中/写入，以及流式 usage 尾帧的严格位置；
+- 模型级 5xx 不计入账号熔断的细分。
+
+## 16. 复现
 
 ```powershell
 # 模拟并发基准（自带 mock 与假账号池）

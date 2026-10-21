@@ -464,3 +464,21 @@ func TestBatchRealmFilter(t *testing.T) {
 		t.Fatalf("empty checkin filter = %v %q", got, msg)
 	}
 }
+
+func TestFullCreditSweepDetection(t *testing.T) {
+	cases := []struct {
+		b    batchReq
+		want bool
+	}{
+		{batchReq{Action: "refresh_credits"}, true},
+		{batchReq{Action: "refresh_credits", Filter: &batchFilter{}}, true},
+		{batchReq{Action: "refresh_credits", Filter: &batchFilter{Realm: "cn"}}, false},
+		{batchReq{Action: "refresh_credits", UIDs: []string{"u1"}}, false},
+		{batchReq{Action: "checkin"}, false},
+	}
+	for _, c := range cases {
+		if got := fullCreditSweep(c.b); got != c.want {
+			t.Fatalf("%+v = %v, want %v", c.b, got, c.want)
+		}
+	}
+}

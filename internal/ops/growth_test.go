@@ -174,4 +174,11 @@ func TestGrowthEventShapes(t *testing.T) {
 	if chat.Get("eventCode") != "chat_request_send" || chat.Get("mode") != "craft" {
 		t.Fatalf("chat event %v", chat)
 	}
+	valorant := e.c.growthEvent("valorant", 0, "u-1")
+	if valorant.Get("eventCode") != "expert_actual_use" || valorant.Get("id") != "ex_xQHHD1u5Jkua" {
+		t.Fatalf("valorant event %v", valorant)
+	}
+	if _, ok := growthSpecs["WorkBuddy_Valorant"]; !ok {
+		t.Fatal("WorkBuddy_Valorant is not registered")
+	}
 }

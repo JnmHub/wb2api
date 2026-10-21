@@ -726,8 +726,32 @@ func (a *Accounts) batch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("at most %d accounts per batch", maxBatch))
 		return
 	}
+	// A full-pool credit refresh is expensive and often retried by the panel.
+	// Reuse the running sweep instead of queueing another pass over every
+	// account; single-account and filtered refreshes stay independent.
+	if fullCreditSweep(b) {
+		for _, j := range a.Jobs.List() {
+			if j.Kind == "refresh_credits" && j.State == jobs.Running {
+				writeJSON(w, http.StatusOK, struct {
+					jobs.Job
+					Busy bool `json:"busy"`
+				}{Job: j, Busy: true})
+				return
+			}
+		}
+	}
 	job := a.Jobs.Start(b.Action, targets, fn)
 	writeJSON(w, http.StatusAccepted, job)
+}
+
+func fullCreditSweep(b batchReq) bool {
+	if b.Action != "refresh_credits" || len(b.UIDs) > 0 {
+		return false
+	}
+	if b.Filter == nil {
+		return true
+	}
+	return b.Filter.Realm == "" && b.Filter.Status == "" && b.Filter.Q == "" && b.Filter.Enabled == nil
 }
 
 // filterBatchRealm drops accounts the action cannot serve (check-in is CN-only,

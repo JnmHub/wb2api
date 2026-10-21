@@ -23,10 +23,6 @@ var sanitizeFeatures = []string{
 
 // Case-insensitive fingerprints are checked on the lowercased copy; their
 // canonical spelling ("AI agent") would never match a lowercase literal list.
-var sanitizeLowerFeatures = []string{
-	"an ai agent powered by",
-	"a coding agent powered by",
-}
 
 var sanitizeRewrites = [][2]string{
 	{"You are Claude Code, Anthropic's official CLI for Claude",
@@ -50,8 +46,7 @@ var (
 	// the rest of the system prompt is a behaviour contract and must stay put.
 	// Only the opening clause is replaced; the model/product name, the sentence
 	// ending and everything after it are preserved byte for byte.
-	sanitizeDSHAgentRe = regexp.MustCompile(`(?i)You are an AI agent powered by`)
-	sanitizeDSHCoderRe = regexp.MustCompile(`(?i)You are a coding agent powered by`)
+	sanitizeDSHIdentityRe = regexp.MustCompile(`(?i)You are an (AI )?assistant built on[^\r\n]*?[.!?](\s|$)`)
 )
 
 const (
@@ -81,11 +76,6 @@ func hasFingerprint(text string) bool {
 	if strings.Contains(low, bareHdrLower) || strings.Contains(low, omoLower) {
 		return true
 	}
-	for _, f := range sanitizeLowerFeatures {
-		if strings.Contains(low, f) {
-			return true
-		}
-	}
 	return false
 }
 
@@ -93,9 +83,24 @@ func sanitizeText(text string) string {
 	if text == "" || !hasFingerprint(text) {
 		return text
 	}
+	return sanitizeBase(text)
+}
+
+// sanitizeSystemText applies the broader identity-sentence rule that is only
+// allowed for system/developer messages, then the ordinary fingerprints.
+func sanitizeSystemText(text string) string {
+	if text == "" {
+		return text
+	}
+	if !sanitizeDSHIdentityRe.MatchString(text) {
+		return sanitizeText(text)
+	}
+	text = sanitizeDSHIdentityRe.ReplaceAllString(text, "You are a helpful AI assistant.${2}")
+	return sanitizeBase(text)
+}
+
+func sanitizeBase(text string) string {
 	text = sanitizeOmoRe.ReplaceAllLiteralString(text, "Sisyphus-Junior - Focused executor")
-	text = sanitizeDSHAgentRe.ReplaceAllLiteralString(text, "You are an AI assistant built on")
-	text = sanitizeDSHCoderRe.ReplaceAllLiteralString(text, "You are an assistant built on")
 	for _, r := range sanitizeRewrites {
 		text = strings.ReplaceAll(text, r[0], r[1])
 	}
@@ -111,10 +116,14 @@ func sanitizeText(text string) string {
 	return strings.TrimSpace(text)
 }
 
-func sanitizeContent(content any) any {
+func sanitizeContent(content any, system bool) any {
+	fn := sanitizeText
+	if system {
+		fn = sanitizeSystemText
+	}
 	switch c := content.(type) {
 	case string:
-		return sanitizeText(c)
+		return fn(c)
 	case []any:
 		out := make([]any, 0, len(c))
 		for _, part := range c {
@@ -122,7 +131,7 @@ func sanitizeContent(content any) any {
 			if ok && p.Get("type") == "text" && p.Has("text") {
 				cl := p.Clone()
 				if s, ok := cl.Get("text").(string); ok {
-					cl.Set("text", sanitizeText(s))
+					cl.Set("text", fn(s))
 				}
 				out = append(out, cl)
 			} else {
@@ -186,9 +195,10 @@ func sanitizeMessages(msgs []any, opt *Options) []any {
 		}
 		item := o.Clone()
 		role := item.Get("role")
+		system := role == "system" || role == "developer"
 		preserveToolResult := opt.PreserveContract && (role == "tool" || role == "function")
 		if item.Has("content") && !preserveToolResult {
-			item.Set("content", sanitizeContent(item.Get("content")))
+			item.Set("content", sanitizeContent(item.Get("content"), system))
 		}
 		if rc, ok := item.Get("reasoning_content").(string); ok {
 			item.Set("reasoning_content", sanitizeText(rc))

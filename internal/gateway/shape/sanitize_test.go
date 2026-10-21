@@ -3,6 +3,8 @@ package shape
 import (
 	"strings"
 	"testing"
+
+	"wb2api/internal/jsonx"
 )
 
 func TestDSHAgentFingerprintRewrite(t *testing.T) {
@@ -13,22 +15,32 @@ func TestDSHAgentFingerprintRewrite(t *testing.T) {
 	}{
 		{
 			name: "harness",
-			in:   "You are an AI agent powered by DeepSeek Harness.\n\nUse the read tool before editing.",
-			want: "You are an AI assistant built on DeepSeek Harness.\n\nUse the read tool before editing.",
+			in:   "You are an AI assistant built on DeepSeek Harness.",
+			want: "You are a helpful AI assistant.",
+		},
+		{
+			name: "brand only",
+			in:   "You are an AI assistant built on DeepSeek.",
+			want: "You are a helpful AI assistant.",
 		},
 		{
 			name: "coding model with dots",
-			in:   "You are a coding agent powered by the deepseek-v4.1-flash model.",
-			want: "You are an assistant built on the deepseek-v4.1-flash model.",
+			in:   "You are an assistant built on the deepseek-v4.1-flash model.",
+			want: "You are a helpful AI assistant.",
 		},
 		{
 			name: "lowercase",
-			in:   "you are an ai agent powered by deepseek harness.",
-			want: "You are an AI assistant built on deepseek harness.",
+			in:   "You are an AI assistant built on deepseek harness.",
+			want: "You are a helpful AI assistant.",
 		},
 		{
-			name: "no final period",
-			in:   "You are an AI agent powered by X",
+			name: "keeps following text",
+			in:   "You are an AI assistant built on X.\n\nUse the read tool before editing.",
+			want: "You are a helpful AI assistant.\n\nUse the read tool before editing.",
+		},
+		{
+			name: "no final period stays untouched",
+			in:   "You are an AI assistant built on X",
 			want: "You are an AI assistant built on X",
 		},
 		{
@@ -44,47 +56,46 @@ func TestDSHAgentFingerprintRewrite(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := sanitizeText(c.in); got != c.want {
-				t.Fatalf("sanitizeText() = %q, want %q", got, c.want)
+			if got := sanitizeSystemText(c.in); got != c.want {
+				t.Fatalf("sanitizeSystemText() = %q, want %q", got, c.want)
 			}
 		})
 	}
 }
 
-func TestDSHFingerprintIsDetectedCaseInsensitively(t *testing.T) {
-	for _, s := range []string{
-		"You are an AI agent powered by DeepSeek Harness.",
-		"you are an ai agent powered by DeepSeek Harness.",
-		"You are a coding agent powered by the deepseek-v4.1-flash model.",
-	} {
-		if !hasFingerprint(s) {
-			t.Fatalf("fingerprint not detected in %q", s)
-		}
+func TestDSHIdentityOnlyAppliesToSystemAndDeveloper(t *testing.T) {
+	sentence := "You are an AI assistant built on DeepSeek Harness."
+	msg := func(role, content string) any {
+		o := jsonx.NewObj()
+		o.Set("role", role)
+		o.Set("content", content)
+		return o
 	}
-	for _, s := range []string{
-		"You are an AI agent.",
-		"DeepSeek Harness is a product.",
-		"You are a helpful assistant.",
-	} {
-		if hasFingerprint(s) {
-			t.Fatalf("false positive for %q", s)
+	msgs := []any{msg("system", sentence), msg("developer", sentence), msg("user", sentence), msg("assistant", sentence)}
+	out := sanitizeMessages(msgs, &Options{})
+	for i, wantNeutral := range []bool{true, true, false, false} {
+		item, _ := asObj(out[i])
+		got, _ := item.Get("content").(string)
+		if wantNeutral && got != "You are a helpful AI assistant." {
+			t.Fatalf("message %d = %q, want neutral", i, got)
+		}
+		if !wantNeutral && got != sentence {
+			t.Fatalf("message %d user data changed: %q", i, got)
 		}
 	}
 }
 
 func TestDSHSystemPromptKeepsToolContract(t *testing.T) {
-	// The sentences after the vendor line are the client's behaviour contract;
-	// only the opening attribution may change.
 	prompt := strings.Join([]string{
-		"You are an AI agent powered by DeepSeek Harness.",
+		"You are an AI assistant built on DeepSeek Harness.",
 		"",
 		"# Tools",
 		"Use the read tool before editing a file.",
 		"Never print secrets.",
 	}, "\n")
-	got := sanitizeText(prompt)
-	if !strings.Contains(got, "You are an AI assistant built on DeepSeek Harness.") {
-		t.Fatalf("opening attribution not rewritten: %q", got)
+	got := sanitizeSystemText(prompt)
+	if !strings.HasPrefix(got, "You are a helpful AI assistant.") {
+		t.Fatalf("opening attribution not neutralized: %q", got)
 	}
 	if !strings.Contains(got, "Use the read tool before editing a file.") || !strings.Contains(got, "Never print secrets.") {
 		t.Fatalf("tool contract changed: %q", got)

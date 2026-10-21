@@ -72,6 +72,7 @@ var growthSpecs = map[string]taskSpec{
 	"automation_1":                {kind: "automation", target: 1, reward: 100},
 	"playbook_prompt":             {kind: "playbook", target: 1, reward: 100},
 	"Expert_lighthouse":           {kind: "lighthouse", target: 1, reward: 100},
+	"WorkBuddy_Valorant":          {kind: "valorant", target: 1, reward: 100},
 	"Buddy_App":                   {kind: "buddy5", target: 1, reward: 100, desktop: true, deskHint: "在桌面端左上角「发现应用」进入任意一个 Buddy 应用"},
 	"Buddy_App_QQ":                {kind: "buddy5", target: 1, reward: 100, desktop: true, deskHint: "在桌面端「发现应用」进入「企鹅教师助手」"},
 	"Hp_Appearance":               {kind: "skin", target: 1, reward: 100},
@@ -761,8 +762,13 @@ func (c *Client) growthEvent(kind string, cur int, uid string) *jsonx.Obj {
 		o.Set("isCustomModel", true)
 		o.Set("id", fmt.Sprint(cur))
 		o.Set("name", "幻灯片")
-	case "expert", "team", "lighthouse":
+	case "expert", "team", "lighthouse", "valorant":
 		e := expertPool[cur%len(expertPool)]
+		if kind == "valorant" {
+			// The Valorant task only progresses for this fixed expert; using the
+			// generic pool would report progress on the wrong agent.
+			e = expert{"ex_xQHHD1u5Jkua", "无畏契约拼豆专家"}
+		}
 		if kind == "team" {
 			t := teamPool[cur%len(teamPool)]
 			e = t
