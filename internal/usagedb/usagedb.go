@@ -21,6 +21,8 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver for the shared usage store
 	_ "modernc.org/sqlite"             // pure-Go SQLite driver (no cgo)
+
+	platformpg "wb2api/internal/platform/pg"
 )
 
 // Event is one finished request.
@@ -268,16 +270,36 @@ func OpenPostgresWithOptions(dsn string, opts Options) (*DB, error) {
 		return nil, fmt.Errorf("usagedb postgres ping: %w", err)
 	}
 	// pgx's extended protocol rejects multiple commands in one Exec, so run
-	// each schema statement separately.
+	// each schema statement separately. Hold the shared schema advisory lock:
+	// two replicas starting together otherwise race on PostgreSQL's pg_type
+	// rows and one exits with a duplicate-key migration error.
+	conn, err := h.Conn(ctx)
+	if err != nil {
+		h.Close()
+		return nil, fmt.Errorf("usagedb postgres schema connection: %w", err)
+	}
+	keepDB := false
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, _ = conn.ExecContext(unlockCtx, "select pg_advisory_unlock($1)", platformpg.SchemaLockKey)
+		_ = conn.Close()
+		if !keepDB {
+			h.Close()
+		}
+	}()
+	if _, err := conn.ExecContext(ctx, "select pg_advisory_lock($1)", platformpg.SchemaLockKey); err != nil {
+		return nil, fmt.Errorf("usagedb postgres schema lock: %w", err)
+	}
 	for _, stmt := range strings.Split(postgresSchema(), ";") {
 		if strings.TrimSpace(stmt) == "" {
 			continue
 		}
-		if _, err := h.ExecContext(ctx, stmt); err != nil {
-			h.Close()
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
 			return nil, fmt.Errorf("usagedb postgres schema: %w", err)
 		}
 	}
+	keepDB = true
 	return newDB(h, "pg", opts), nil
 }
 

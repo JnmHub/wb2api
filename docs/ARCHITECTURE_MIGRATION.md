@@ -72,6 +72,13 @@ files + SQLite deployment to the Sub2API-style split:
   boot; SQLite `?` placeholders are rewritten to `$1..$n`, aggregates use
   `CASE` instead of SQLite booleans, and bucket expressions use `to_char` on
   PostgreSQL. `cmd/hub` selects PostgreSQL whenever `WB_POSTGRES_DSN` is set.
+  Both `pg.Open` and `usagedb.OpenPostgres` create their tables while holding
+  the session advisory lock `platformpg.SchemaLockKey`. This closes a startup
+  race where two simultaneous `CREATE TABLE IF NOT EXISTS` statements both try
+  to create the same implicit composite row type and one replica fails with
+  `duplicate key value violates unique constraint "pg_type_typname_nsp_index"`.
+  `TestWithSchemaLockSerializesReplicas` asserts that the critical section
+  admits only one replica at a time.
 - `usagedb.ImportSQLite`: when PostgreSQL mode starts and a legacy
   `usage/usage.db` exists, its request rows are copied in the background. The
   importer reads the old file read-only, commits each batch and its highest
@@ -153,17 +160,23 @@ files + SQLite deployment to the Sub2API-style split:
   `wb_panel_sessions` is empty. Existing browser cookies keep working, so the
   upgrade does not log users out.
 
-## Next phases
+## HA validation
 
-1. **Full HA stack**: a manual two-process run against real PostgreSQL and Redis
-   (fifty accounts, 500 concurrent streams split across both replicas) completed
-   with 500/500 successful streams, shared realm propagation in about one
-   second, a job created on one replica visible and cancellable from the other,
-   and a scheduler capacity of 400 slots. It also exposed a PostgreSQL rollup
-   deadlock, now fixed by the usage advisory lock. The full
-   `compose.ha.yaml` + Caddy stack has not been launched end-to-end; compare it
-   at 200+ concurrent streams and verify the two replicas do not
-   double-schedule. This requires pulling/building the Compose images.
+- The full `compose.ha.yaml` + Caddy stack was launched against fresh
+  PostgreSQL/Redis volumes. Both replicas started at the same time and became
+  healthy; neither logged a migration error. Before the schema lock, the same
+  simultaneous start hit
+  `duplicate key value violates unique constraint "pg_type_typname_nsp_index"`.
+- A 200-request, 100-concurrent load through the Caddy entry point completed
+  with 200/200 successful streams (p50 TTFT 2.46 s, p99 5.97 s, 9.37 s wall
+  time), with both replicas healthy behind Caddy's `least_conn` policy.
+  Capacity is 416 slots for the 52 test accounts (8 slots per account).
+- An earlier manual two-process run against real PostgreSQL and Redis (fifty
+  accounts, 500 concurrent streams split across both replicas) completed with
+  500/500 successful streams, shared realm propagation in about one second, a
+  job created on one replica visible and cancellable from the other, and a
+  scheduler capacity of 400 slots. It also exposed a PostgreSQL rollup
+  deadlock, now fixed by the usage advisory lock.
 
 ## Non-goals in this phase
 

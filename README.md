@@ -74,8 +74,8 @@ docker compose -f compose.ha.yaml up -d --build
 ```
 
 入口仍是 `http://127.0.0.1:8788/`，Caddy 按最少连接转发到两个应用副本。两份应用共享
-PostgreSQL/Redis；启动时的旧用量导入由 advisory lock 串行化，不会因两个副本同时启动
-而重复写入。面板任务历史写入 `wb_jobs`，在一个副本创建的任务可从另一个副本查看和取消。
+PostgreSQL/Redis；启动时的 schema 迁移和旧用量导入都由 advisory lock 串行化，不会因
+两个副本同时启动而重复建表或重复写入。面板任务历史写入 `wb_jobs`，在一个副本创建的任务可从另一个副本查看和取消。
 `compose.yaml` 的单副本用法不变。
 
 - **PostgreSQL**：账号、`settings.json`、**请求用量**、**面板登录会话**、**价格覆盖**、

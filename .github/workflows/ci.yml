@@ -57,10 +57,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: PostgreSQL usage store round-trip
+      - name: PostgreSQL usage store round-trip and rollup concurrency
         env:
           WB_TEST_POSTGRES_DSN: postgres://wb2api:wb2api@127.0.0.1:5432/wb2api_test?sslmode=disable
-        run: go test ./internal/usagedb -run TestPostgresRoundTrip -count=1 -v
+        run: go test ./internal/usagedb -run 'TestPostgres' -count=1 -v
+      - name: PostgreSQL schema migration lock
+        env:
+          WB_TEST_POSTGRES_DSN: postgres://wb2api:wb2api@127.0.0.1:5432/wb2api_test?sslmode=disable
+        run: go test ./internal/platform/pg -count=1 -v
       - name: PostgreSQL panel sessions
         env:
           WB_TEST_POSTGRES_DSN: postgres://wb2api:wb2api@127.0.0.1:5432/wb2api_test?sslmode=disable

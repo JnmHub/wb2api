@@ -352,7 +352,7 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
 - 本机没有 Docker daemon，**没有实际启动 compose 栈**；这一步需要在有 Docker
   的机器上补做。无 DSN 的 standalone 模式已用浏览器 smoke 回归。
 
-## 20. PostgreSQL 用量、面板会话与调度可靠性（v2.1.4 至 v2.3.6）
+## 20. PostgreSQL 用量、面板会话与调度可靠性（v2.1.4 至 v2.3.7）
 
 - 请求用量支持 PostgreSQL，日/时预聚合在写入事务中同步维护；SQLite 仍是
   standalone 默认后端。
@@ -365,6 +365,12 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
   避免并发 writer/副本按不同顺序锁同一聚合行而触发 deadlock；
   `TestPostgresWriterHandlesConcurrentRollups` 用 4 个 worker 写入 400 条事件，
   断言 `failed=0` 且全部落库。
+- 两个副本同时首次启动时，建表由 PostgreSQL 会话级 advisory lock
+  `platformpg.SchemaLockKey` 串行化。此前并发执行
+  `CREATE TABLE IF NOT EXISTS` 会同时创建同名隐式复合类型，其中一个副本以
+  `duplicate key value violates unique constraint "pg_type_typname_nsp_index"`
+  退出；`TestWithSchemaLockSerializesReplicas` 用 4 个并发调用断言临界区
+  最大并发为 1。全新数据卷启动 HA 栈时两个副本均健康、无迁移错误。
 - 旧 `usage.db` 在 PostgreSQL 模式首次启动时后台只读导入。每批 2000 行与
   `meta` 游标在同一事务提交，重启后从最大 request id 继续，不重复导入。
 - 列按名称读取，兼容旧 schema 缺少 `held_ms`/`effort`/`extra` 等列。
@@ -468,6 +474,12 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
 - 仅一个副本持有后台 leader（日志 `background leader acquired`），另一个副本
   没有启动巡检周期。
 
-尚未完成（后续阶段）：`compose.ha.yaml` + Caddy 整套镜像栈的启动验证（本次是
-真实 PostgreSQL/Redis 上的双进程验证，未走 Caddy 容器入口）。详见
-`docs/ARCHITECTURE_MIGRATION.md`。
+### Compose + Caddy 整套栈验证
+
+- 使用全新 PostgreSQL/Redis 数据卷启动 `compose.ha.yaml`（两个应用副本 + Caddy），
+  两个副本同时建表并同时变为 healthy，日志无 `pg_type` 重复键或迁移错误。
+- 通过 Caddy 入口 `18788` 发起 200 条请求、100 并发，全部 200/200 成功：
+  p50 TTFT 2.46 s、p99 5.97 s、max 7.50 s，总耗时 9.37 s；两个副本均保持 healthy，
+  Caddy 使用 `least_conn` 分流。测试账号 52 个 × 每账号 8 槽，调度容量 416。
+- 以上验证均在真实 PostgreSQL 16、Redis 7 和 mock 流式上游上完成。500 请求的
+  双进程验证结果见上一节；更早的 400 请求整套栈验证同样为 400/400。

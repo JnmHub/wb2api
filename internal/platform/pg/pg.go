@@ -17,6 +17,12 @@ type Pool struct {
 	*pgxpool.Pool
 }
 
+// SchemaLockKey serializes schema creation across replicas. PostgreSQL's
+// CREATE TABLE IF NOT EXISTS is not safe against two sessions creating the same
+// table at once: both can try to create the composite row type and one fails
+// with a duplicate pg_type error. The usage store uses the same key.
+const SchemaLockKey int64 = 0x7762326170692d73 // "wb2api-s"
+
 // Open connects, verifies the database and applies the schema.
 func Open(ctx context.Context, dsn string) (*Pool, error) {
 	if dsn == "" {
@@ -39,11 +45,31 @@ func Open(ctx context.Context, dsn string) (*Pool, error) {
 		p.Close()
 		return nil, fmt.Errorf("postgres ping: %w", err)
 	}
-	if err := migrate(ctx, p); err != nil {
+	if err := withSchemaLock(ctx, p, func(conn *pgxpool.Conn) error { return migrate(ctx, conn) }); err != nil {
 		p.Close()
 		return nil, fmt.Errorf("postgres migrate: %w", err)
 	}
 	return &Pool{Pool: p}, nil
+}
+
+// withSchemaLock holds a session advisory lock while fn creates or upgrades
+// tables. Each replica must use the same key, otherwise simultaneous startup
+// can race on PostgreSQL's internal pg_type rows.
+func withSchemaLock(ctx context.Context, p *pgxpool.Pool, fn func(*pgxpool.Conn) error) error {
+	conn, err := p.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, "select pg_advisory_lock($1)", SchemaLockKey); err != nil {
+		return err
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, _ = conn.Exec(unlockCtx, "select pg_advisory_unlock($1)", SchemaLockKey)
+	}()
+	return fn(conn)
 }
 
 const schema = `
@@ -85,8 +111,8 @@ create table if not exists wb_jobs (
 create index if not exists wb_jobs_updated_idx on wb_jobs (updated_at desc);
 `
 
-func migrate(ctx context.Context, p *pgxpool.Pool) error {
-	_, err := p.Exec(ctx, schema)
+func migrate(ctx context.Context, conn *pgxpool.Conn) error {
+	_, err := conn.Exec(ctx, schema)
 	return err
 }
 
