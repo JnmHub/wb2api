@@ -22,6 +22,8 @@ type Info struct {
 	Chat    *Handler
 	Pool    *pool.Pool
 	Catalog *catalog.Service
+	// HealthExtra adds optional backend status (Postgres/Redis) to /health.
+	HealthExtra func() map[string]any
 }
 
 // Register adds the routes to mux.
@@ -234,6 +236,11 @@ func (i *Info) health(w http.ResponseWriter, r *http.Request) {
 	out.Set("accounts", json.Number(strconv.Itoa(i.Pool.Len())))
 	out.Set("accounts_ready", json.Number(strconv.Itoa(ready)))
 	out.Set("api_key_required", i.Chat.KeyRequired())
+	if i.HealthExtra != nil {
+		for k, v := range i.HealthExtra() {
+			out.Set(k, v)
+		}
+	}
 	if authed {
 		var rep *pool.Account
 		for _, a := range i.Pool.All() {

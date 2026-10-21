@@ -326,3 +326,25 @@ pwsh tools/livetest/compat.ps1 -BaseUrl http://127.0.0.1:18888 -ApiKey sk-... -P
 # 真实账号功能扫一遍
 pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPassword ... -Model hy3
 ```
+
+## 19. PostgreSQL + Redis 架构迁移（Phase 1）
+
+已实现：
+
+- PostgreSQL 存账号和 settings（JSONB）；空库首次启动自动导入现有
+  `accounts/*.json` / `settings.json`；
+- Redis 账号级 in-flight 槽位（Lua sorted set）和 `/health` 后端状态；
+- 会话亲和的 TTFT/错误率 EWMA 逃逸（默认 15s / 0.5）；
+- `docker compose up -d --build` 会启动 wb2api + PostgreSQL 16 + Redis 7。
+
+验证：
+
+- `go test ./...`：通过；
+- `go test ./internal/platform/redisx`（miniredis Lua 槽位）：通过；
+- `TestStickySessionEscapesSlowAccount`、`TestStatsEscapesSlowAndRecovers`：通过；
+- `docker compose config`：通过；
+- 本机没有 Docker daemon，**没有实际启动 compose 栈**；这一步需要在有 Docker
+  的机器上补做。无 DSN 的 standalone 模式已用浏览器 smoke 回归。
+
+尚未完成（后续阶段）：SQLite usage 迁 PostgreSQL、top-K 负载评分、Redis 等待队列、
+面板会话/quota/affinity/jobs 的共享存储。详见 `docs/ARCHITECTURE_MIGRATION.md`。

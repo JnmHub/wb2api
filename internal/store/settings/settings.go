@@ -17,6 +17,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,6 +49,8 @@ type snapshot struct {
 type Store struct {
 	dev       deviceTokenCache
 	path      string
+	loadFn    func() (Doc, error)
+	saveFn    func(Doc) error
 	lastCheck atomic.Int64 // unix nanos of the last stat
 	revSeq    atomic.Uint64
 	mu        sync.Mutex // serialises writers
@@ -57,6 +60,13 @@ type Store struct {
 // Open returns a Store for dir/settings.json. The file need not exist.
 func Open(accountsDir string) *Store {
 	return &Store{path: filepath.Join(accountsDir, "settings.json")}
+}
+
+// OpenWith returns a Store backed by external load/save functions (for example
+// PostgreSQL). load is polled at most once per CheckInterval; save replaces the
+// whole document atomically. path is empty in this mode.
+func OpenWith(load func() (Doc, error), save func(Doc) error) *Store {
+	return &Store{loadFn: load, saveFn: save}
 }
 
 // Path returns the settings file path.
@@ -88,6 +98,23 @@ func (s *Store) refresh() *snapshot {
 		return cur
 	}
 	s.lastCheck.Store(now)
+	if s.loadFn != nil {
+		doc, err := s.loadFn()
+		if err != nil {
+			if cur != nil {
+				return cur
+			}
+			n := &snapshot{rev: s.revSeq.Add(1), doc: Doc{}}
+			s.snap.Store(n)
+			return n
+		}
+		if cur != nil && cur.exists && reflect.DeepEqual(cur.doc, doc) {
+			return cur
+		}
+		n := &snapshot{rev: s.revSeq.Add(1), doc: doc, exists: true}
+		s.snap.Store(n)
+		return n
+	}
 	info, err := os.Stat(s.path)
 	if err != nil {
 		if cur != nil && !cur.exists {
@@ -122,6 +149,14 @@ func (s *Store) Save(doc Doc) error {
 }
 
 func (s *Store) saveLocked(doc Doc) error {
+	if s.saveFn != nil {
+		if err := s.saveFn(doc); err != nil {
+			return err
+		}
+		s.snap.Store(&snapshot{rev: s.revSeq.Add(1), doc: doc, exists: true})
+		s.lastCheck.Store(time.Now().UnixNano())
+		return nil
+	}
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
 	}

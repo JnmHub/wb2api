@@ -45,6 +45,18 @@ type TokenRefresher interface {
 }
 
 // Handler serves /v1/chat/completions.
+// InflightLimiter is an optional cross-process per-account concurrency gate.
+// A nil limiter keeps the local-only behavior.
+type InflightLimiter interface {
+	Acquire(ctx context.Context, accountID string, max int, member string) (func(), bool, error)
+}
+
+// SchedulerFeedback reports whether a warm account should be escaped because
+// its recent TTFT/error feedback is poor.
+type SchedulerFeedback interface {
+	ShouldEscape(accountID string) bool
+}
+
 type Handler struct {
 	Pool     *pool.Pool
 	Up       *upstream.Manager
@@ -74,6 +86,12 @@ type Handler struct {
 	MaxHoldTime time.Duration
 	// OnUsage receives one event per request; must not block.
 	OnUsage func(UsageEvent)
+	// Limiter optionally enforces account concurrency across processes.
+	Limiter InflightLimiter
+	// AccountInflight is the per-account limit used with Limiter (0 = off).
+	AccountInflight int
+	// Sched optionally lets sticky routing escape a slow/error-prone account.
+	Sched SchedulerFeedback
 	// DefaultRealm is the fallback when CurrentRealm gives none (intl).
 	DefaultRealm string
 	// CurrentRealm returns the panel's active realm, used when neither the API

@@ -37,13 +37,18 @@ import (
 	"wb2api/internal/logbuf"
 	"wb2api/internal/ops"
 	"wb2api/internal/panelauth"
+	"wb2api/internal/platform/pg"
+	"wb2api/internal/platform/redisx"
 	"wb2api/internal/pool"
 	"wb2api/internal/pricing"
 	"wb2api/internal/quota"
 	"wb2api/internal/realmswitch"
 	"wb2api/internal/refresh"
+	"wb2api/internal/sched"
 	"wb2api/internal/scheduler"
 	"wb2api/internal/store/accounts"
+	"wb2api/internal/store/pgaccounts"
+	"wb2api/internal/store/pgsettings"
 	"wb2api/internal/store/settings"
 	"wb2api/internal/updates"
 	"wb2api/internal/upstream"
@@ -63,6 +68,24 @@ func envOr(name, def string) string {
 	return def
 }
 
+func envInt(name string, def int) int {
+	if v := os.Getenv(name); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func envFloat(name string, def float64) float64 {
+	if v := os.Getenv(name); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return def
+}
+
 func main() {
 	host := flag.String("host", envOr("HOST", "127.0.0.1"), "listen host")
 	port := flag.Int("port", func() int { p, _ := strconv.Atoi(envOr("PORT", "8788")); return p }(), "listen port")
@@ -72,9 +95,16 @@ func main() {
 	legacyFilter := flag.Bool("legacy-leak-filter", os.Getenv("WB_LEGACY_LEAK_FILTER") == "1", "use the legacy hold policy of the tool-call leak filter")
 	maxAttempts := flag.Int("max-attempts", 5, "account failover attempts per request")
 	perAccount := flag.Int("per-account-inflight", 0, "max concurrent requests per account (0 = unlimited)")
+	stickyTTFT := flag.Int("sticky-escape-ttft-ms", envInt("WB_STICKY_ESCAPE_TTFT_MS", 15000), "escape a sticky account when its TTFT EWMA exceeds this (ms)")
+	stickyErr := flag.Float64("sticky-escape-error-rate", envFloat("WB_STICKY_ESCAPE_ERROR_RATE", 0.5), "escape a sticky account when its error EWMA exceeds this")
 	usageDir := flag.String("usage-dir", envOr("WB_PROXY_USAGE_DIR", "usage"), "directory for usage.db (and the legacy usage.jsonl to import)")
 	panelPassword := flag.String("panel-password", os.Getenv("WB_PANEL_PASSWORD"), "set the dashboard password at start-up")
 	catalogDir := flag.String("catalog-dir", envOr("WB_PROXY_CATALOG_DIR", "catalog"), "archive directory for the last /v3/config responses")
+	postgresDSN := flag.String("postgres-dsn", os.Getenv("WB_POSTGRES_DSN"), "PostgreSQL DSN (empty keeps the file/SQLite stores)")
+	redisAddr := flag.String("redis-addr", os.Getenv("WB_REDIS_ADDR"), "Redis address for shared runtime state (empty disables Redis)")
+	redisPassword := flag.String("redis-password", os.Getenv("WB_REDIS_PASSWORD"), "Redis password")
+	redisDB := flag.Int("redis-db", func() int { n, _ := strconv.Atoi(envOr("WB_REDIS_DB", "0")); return n }(), "Redis database index")
+	redisInflight := flag.Int("redis-inflight", func() int { n, _ := strconv.Atoi(envOr("WB_REDIS_INFLIGHT", "0")); return n }(), "per-account in-flight limit shared through Redis (0 = off)")
 	noModelsDev := flag.Bool("no-modelsdev", os.Getenv("WB_NO_MODELSDEV") == "1", "never contact models.dev for context/output limits")
 	debug := flag.Bool("debug", os.Getenv("WB_DEBUG") == "1", "expose /debug/runtime")
 	maxBodyMB := flag.Int("max-body-mb", func() int {
@@ -96,9 +126,56 @@ func main() {
 	log := slog.New(logbuf.NewHandler(logRing, slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	slog.SetDefault(log)
 
-	recs, errs := accounts.Load(*accountsDir, time.Now())
+	startupCtx, startupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer startupCancel()
+	var pgDB *pg.Pool
+	if *postgresDSN != "" {
+		var err error
+		pgDB, err = pg.Open(startupCtx, *postgresDSN)
+		if err != nil {
+			log.Error("cannot open PostgreSQL", "err", err)
+			os.Exit(1)
+		}
+		defer pgDB.Close()
+		log.Info("postgres connected")
+	}
+	var rdb *redisx.Client
+	if *redisAddr != "" {
+		var err error
+		rdb, err = redisx.Open(startupCtx, *redisAddr, *redisPassword, *redisDB)
+		if err != nil {
+			log.Error("cannot open Redis", "err", err)
+			os.Exit(1)
+		}
+		defer rdb.Close()
+		log.Info("redis connected", "addr", *redisAddr)
+	}
+
+	var recs []*accounts.Record
+	var errs []accounts.LoadError
+	persist := func(rec *accounts.Record) error {
+		_, err := accounts.Save(*accountsDir, rec)
+		return err
+	}
+	deleteFn := accounts.Delete
+	if pgDB != nil {
+		var err error
+		recs, errs, err = pgaccounts.Load(startupCtx, pgDB.Pool, *accountsDir)
+		if err != nil {
+			log.Error("cannot load accounts from PostgreSQL", "err", err)
+			os.Exit(1)
+		}
+		persist = func(rec *accounts.Record) error {
+			return pgaccounts.Save(context.Background(), pgDB.Pool, rec)
+		}
+		deleteFn = func(rec *accounts.Record) error {
+			return pgaccounts.Delete(context.Background(), pgDB.Pool, rec)
+		}
+	} else {
+		recs, errs = accounts.Load(*accountsDir, time.Now())
+	}
 	for _, e := range errs {
-		log.Warn("skipping unreadable account file", "err", e)
+		log.Warn("skipping unreadable account", "err", e)
 	}
 	p := pool.New(recs)
 	if *perAccount > 0 {
@@ -106,7 +183,23 @@ func main() {
 			a.SetMaxInflight(*perAccount)
 		}
 	}
-	st := settings.Open(*accountsDir)
+	var st *settings.Store
+	if pgDB != nil {
+		if _, err := pgsettings.Load(startupCtx, pgDB.Pool, *accountsDir); err != nil {
+			log.Error("cannot seed settings from PostgreSQL", "err", err)
+			os.Exit(1)
+		}
+		st = settings.OpenWith(
+			func() (settings.Doc, error) {
+				return pgsettings.Load(context.Background(), pgDB.Pool, "")
+			},
+			func(doc settings.Doc) error {
+				return pgsettings.Save(context.Background(), pgDB.Pool, doc)
+			},
+		)
+	} else {
+		st = settings.Open(*accountsDir)
+	}
 	applyProxySlots := func() {
 		var slots []pool.ProxySlot
 		for _, sl := range st.ProxySlots() {
@@ -121,18 +214,20 @@ func main() {
 		mode = leak.Legacy
 	}
 	up := upstream.NewManager(upstream.DefaultTimeouts())
-	persist := func(rec *accounts.Record) error {
-		_, err := accounts.Save(*accountsDir, rec)
-		return err
-	}
 	refresher := &refresh.Refresher{Pool: p, Up: up, Log: log, Persist: persist}
+	feedback := sched.NewStats(time.Duration(*stickyTTFT)*time.Millisecond, *stickyErr)
 	if *upstreamOverride != "" {
 		refresher.BaseURL = func(*pool.Account) string { return *upstreamOverride }
 	}
 	h := &openai.Handler{
 		Pool: p, Up: up, Settings: st, Log: log, Refresher: refresher, Persist: persist,
 		UpstreamOverride: *upstreamOverride, MaxAttempts: *maxAttempts, FilterMode: mode,
-		MaxBody: int64(*maxBodyMB) << 20,
+		MaxBody:         int64(*maxBodyMB) << 20,
+		AccountInflight: *redisInflight,
+		Sched:           feedback,
+	}
+	if rdb != nil && *redisInflight > 0 {
+		h.Limiter = redisx.NewLimiter(rdb)
 	}
 	realmSw := realmswitch.Open(*accountsDir, "intl")
 	h.CurrentRealm = realmSw.Get
@@ -168,6 +263,7 @@ func main() {
 	keyring := &atrest.Keyring{}
 	agentMgr := agents.New(*accountsDir)
 	h.OnUsage = func(ev openai.UsageEvent) {
+		feedback.Observe(ev.Account, ev.TTFT, sched.Failure(ev.Outcome))
 		ue := api.EventFromGateway(ev, realmOf)
 		udb.Record(ue)
 		today.Add(ue)
@@ -221,7 +317,28 @@ func main() {
 	for _, p := range []string{"/v1/messages", "/messages", "/v1/messages/count_tokens", "/messages/count_tokens"} {
 		mux.Handle(p, messagesH)
 	}
-	(&openai.Info{Chat: h, Pool: p, Catalog: cat}).Register(mux)
+	infoH := &openai.Info{Chat: h, Pool: p, Catalog: cat}
+	infoH.HealthExtra = func() map[string]any {
+		out := map[string]any{}
+		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		defer cancel()
+		if pgDB != nil {
+			if err := pgDB.Ping(ctx); err != nil {
+				out["postgres"] = "error"
+			} else {
+				out["postgres"] = "ok"
+			}
+		}
+		if rdb != nil {
+			if err := rdb.Ping(ctx); err != nil {
+				out["redis"] = "error"
+			} else {
+				out["redis"] = "ok"
+			}
+		}
+		return out
+	}
+	infoH.Register(mux)
 	mux.HandleFunc("GET /realm", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"current": realmSw.Get(), "options": []string{"intl", "cn"}})
@@ -234,12 +351,12 @@ func main() {
 	opsGate := api.NewOpsGate(st.OpsConcurrency(), time.Duration(st.OpsIntervalMS())*time.Millisecond)
 	accountsAPI := &api.Accounts{
 		Pool: p, Today: today, Store: st, Gate: opsGate, Persist: persist, Refresher: refresher, Jobs: jobMgr, Bus: bus,
-		Delete: accounts.Delete,
+		Delete: deleteFn,
 	}
 	activityLog := &activity.Log{Dir: *usageDir}
 	opsClient := &ops.Client{
 		Pool: p, Up: up, Refresher: refresher, Settings: st, Activity: activityLog, Log: log,
-		Persist: persist, BaseOverride: *upstreamOverride,
+		Persist: persist, Remove: deleteFn, BaseOverride: *upstreamOverride,
 	}
 	accountsAPI.Ops, accountsAPI.Prober = opsClient, h
 	accountsAPI.Register(mux, auth.Require)

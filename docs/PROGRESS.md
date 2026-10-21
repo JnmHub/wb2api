@@ -170,6 +170,7 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 - 已知偏差：视觉是按参考的 token/组件语言复刻，不是逐像素克隆（品牌字标、页面文案、功能菜单按本项目实际能力调整）；`uitest` 覆盖主要路径，未逐字段提交每个表单。
 - **积分与调度**：账号页新增积分概览（总剩余、可用积分、今日消耗、7 天到期、0 积分账号、每个区域的剩余/可用/账号数/Key 数），`GET /api/v2/accounts/summary` 返回 `credits`、`by_realm_credits` 与 `keys`。**已知余额为 0 的账号状态变为“无积分”，`Ready` 直接返回 false，不再参与任何模型的调度**（免费模型也不调度）；余额未知的账号仍可参与，等待刷新。批量操作条保留批量启用/停用，并有“更多操作 → 签到（仅国内版）/每日活跃（仅国际版）”等任务；smoke 会打开该菜单确认签到入口存在。
 - **DSH 11-128**：system/developer 里的 `AI agent powered by` / `coding agent powered by` / `assistant built on` 自我介绍句都整句中性化为 `You are a helpful AI assistant.`；首句之外的残留 `DeepSeek Harness` 品牌词（如 implementation checkout / Web GUI 句）也替换为 `runtime`；user/assistant/tool 原样；真实 CN 账号验证 11-128 消失（hy3 200，deepseek-v4.1-flash 429 为当日额度）。
+- **架构迁移 Phase 1**：新增 PostgreSQL（账号、settings 的 JSONB 权威存储，首次空库从文件导入）和 Redis（账号级 in-flight 槽位、健康检查）；`docker compose up` 一键启动 wb2api + PostgreSQL 16 + Redis 7。无 DSN 时保持原文件/SQLite 模式。usage SQLite、面板会话、quota/affinity/jobs 的迁移及 TTFT 调度器在后续阶段，见 `docs/ARCHITECTURE_MIGRATION.md`。
 - **v2.0.11 新增**：流式输出 TPS 上限（全局 + 每 Key 覆盖，默认关闭，仅流式，首 token 不变）；`/v1/models` 可选按 Key 模型限制过滤；Anthropic `input_tokens` 扣除缓存命中/写入；模型级 5xx（11102/11129/11134/11150/11158）不再计入账号熔断。50 路并发 TPS 测试全部通过。账号页“冷却”筛选现在同时覆盖账号级冷却和模型级冷却，并新增“模型冷却”计数/标签。
 - **v1.7.18 对照**：DSH 身份句改为仅 system/developer 的整句中性化（user/assistant/tool 原样）；
   新增 WorkBuddy_Valorant 固定专家任务；全池刷新积分加单飞（重复点击复用运行中的 job）。

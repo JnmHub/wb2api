@@ -50,14 +50,30 @@ chmod +x wb2api-linux-amd64
 
 ## Docker Compose
 
+一键启动应用、PostgreSQL 和 Redis：
+
 ```bash
-mkdir -p data
 export WB_PANEL_PASSWORD='换成一个强密码'
+export WB_POSTGRES_PASSWORD='换成一个数据库密码'
 docker compose up -d --build
 ```
 
-面板：`http://127.0.0.1:8788/`。数据在 `./data`，容器以非 root 用户运行，
-健康检查走 `/health`。
+面板：`http://127.0.0.1:8788/`。
+
+- **PostgreSQL**：账号和 `settings.json` 的权威存储；首次启动会把现有
+  `./data/accounts/*.json` 和 `settings.json` 导入数据库，之后读写走数据库。
+- **Redis**：跨进程的账号并发槽位（`WB_REDIS_INFLIGHT`，默认 8）和健康检查；
+  不配 Redis 时退回本地并发限制。
+- **`./data`**：仍保留 catalog、usage、panel 会话等文件；旧版 standalone 模式不需要
+  PostgreSQL/Redis。
+- 容器以非 root 用户运行，应用健康检查走 `/health`。
+
+资源清理：
+
+```bash
+docker compose down          # 保留数据卷
+docker compose down -v       # 删除 PostgreSQL/Redis 数据
+```
 
 如果只想拉镜像（自行构建并推送后）：
 
@@ -68,6 +84,8 @@ services:
     ports: ["8788:8788"]
     environment:
       WB_PANEL_PASSWORD: ${WB_PANEL_PASSWORD}
+      WB_POSTGRES_DSN: postgres://wb2api:wb2api@postgres:5432/wb2api?sslmode=disable
+      WB_REDIS_ADDR: redis:6379
     volumes: ["./data:/data"]
 ```
 
@@ -77,6 +95,9 @@ services:
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
+| `-postgres-dsn` / `WB_POSTGRES_DSN` | 空 | 启用 PostgreSQL 账号/设置存储；空则使用 `accounts/*.json` |
+| `-redis-addr` / `WB_REDIS_ADDR` | 空 | 启用 Redis；空则不启用跨进程状态 |
+| `-redis-inflight` / `WB_REDIS_INFLIGHT` | `0` | 每账号 Redis 并发槽位；0 = 关闭 |
 | `-port` | `8788` | 监听端口 |
 | `-host` / `-lan` | `127.0.0.1` / 关 | 监听地址；`-lan` 等价于所有网卡 |
 | `-accounts-dir` | `accounts` | 账号 JSON 目录 |
@@ -86,6 +107,8 @@ services:
 | `-max-attempts` | `5` | 单请求最多切换账号次数 |
 | `-max-body-mb` | `16` | 单请求体上限（MiB）；也可用 `WB_MAX_BODY_MB` |
 | `-per-account-inflight` | `0` | 单账号并发上限，0 = 不限（网关不额外限制） |
+| `-sticky-escape-ttft-ms` | `15000` | 会话亲和账号 TTFT EWMA 超过该值时临时逃逸 |
+| `-sticky-escape-error-rate` | `0.5` | 会话亲和账号错误率 EWMA 超过该值时临时逃逸 |
 | `-no-modelsdev` | 关 | 不访问 models.dev 的额度数据 |
 | `-debug` | 关 | 暴露 `/debug/runtime` |
 

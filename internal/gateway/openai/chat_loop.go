@@ -37,9 +37,11 @@ const (
 // failover attempts.
 type attemptState struct {
 	tried     map[string]struct{}
+	avoid     map[string]struct{}
 	charged   map[string]bool // an account is charged at most once per request
 	transient int
 	netHits   int
+	skipped   int
 
 	kind       failKind
 	lastStatus int
@@ -156,6 +158,16 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 			q.sessionKey, q.page = h.affinity().route(msgs)
 		}
 	}
+	if h.Sched != nil && q.sessionKey != "" {
+		for _, uid := range h.Pool.Affinity().Recent(q.sessionKey) {
+			if h.Sched.ShouldEscape(uid) {
+				if q.at.avoid == nil {
+					q.at.avoid = map[string]struct{}{}
+				}
+				q.at.avoid[uid] = struct{}{}
+			}
+		}
+	}
 	if h.Guards != nil {
 		h.Guards.Apply(false)
 	}
@@ -211,7 +223,11 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 				if pinned != nil {
 					acc = pinned
 				} else {
-					acc = h.Pool.PickForSession(q.realm, q.sessionKey, q.at.tried, q.model, q.page)
+					exclude := q.at.tried
+					if len(q.at.avoid) > 0 {
+						exclude = unionExclude(q.at.tried, q.at.avoid)
+					}
+					acc = h.Pool.PickForSession(q.realm, q.sessionKey, exclude, q.model, q.page)
 				}
 				if acc == nil {
 					// transient trouble: give the pool a moment and go round again
@@ -227,7 +243,32 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 			}
 			q.at.tried[acc.UID] = struct{}{}
 			q.at.lastUID = acc.UID
+			release := func() {}
+			if h.Limiter != nil && h.AccountInflight > 0 {
+				rel, ok, lerr := h.Limiter.Acquire(r.Context(), acc.UID, h.AccountInflight, q.turnID)
+				if lerr != nil {
+					h.logger().Warn("account limiter unavailable; falling back to local limits", "account", short(acc.UID), "err", lerr)
+				} else if !ok {
+					// The account is full in another process. Do not spend a
+					// failover attempt on it; remember it for this request and
+					// let the picker try another warm/cold account.
+					delete(q.at.tried, acc.UID)
+					if q.at.avoid == nil {
+						q.at.avoid = map[string]struct{}{}
+					}
+					q.at.avoid[acc.UID] = struct{}{}
+					q.at.skipped++
+					if q.at.skipped > h.Pool.Len()+max {
+						break
+					}
+					attempt--
+					continue
+				} else if rel != nil {
+					release = rel
+				}
+			}
 			res := h.try(q, acc)
+			release()
 			switch res.kind {
 			case done:
 				return
@@ -262,6 +303,17 @@ func minDur(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+func unionExclude(a, b map[string]struct{}) map[string]struct{} {
+	out := make(map[string]struct{}, len(a)+len(b))
+	for k := range a {
+		out[k] = struct{}{}
+	}
+	for k := range b {
+		out[k] = struct{}{}
+	}
+	return out
 }
 
 // finishError relays an upstream error that must not be retried elsewhere.
