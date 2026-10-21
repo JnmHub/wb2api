@@ -389,6 +389,29 @@ const upsertHourlySQL = `INSERT INTO hourly (hour, realm, model, requests, ok, a
     elapsed_sum=elapsed_sum+excluded.elapsed_sum, ttft_sum=ttft_sum+excluded.ttft_sum, ttft_n=ttft_n+excluded.ttft_n,
     gen_ms_sum=gen_ms_sum+excluded.gen_ms_sum, gen_tokens=gen_tokens+excluded.gen_tokens`
 
+// PostgreSQL requires the target columns in ON CONFLICT DO UPDATE to be
+// qualified when the same names also appear in excluded; SQLite rejects the
+// qualified form, so keep separate statements for each dialect.
+const pgUpsertDailySQL = `INSERT INTO daily (day, realm, model, account, key_id, requests, ok, aborted, failed, prompt, completion, reasoning,
+  cached, total, credit, elapsed_sum, ttft_sum, ttft_n, gen_ms_sum, gen_tokens)
+  VALUES ($1,$2,$3,$4,$5,1,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+  ON CONFLICT(day, realm, model, account, key_id) DO UPDATE SET
+    requests=daily.requests+1, ok=daily.ok+excluded.ok, aborted=daily.aborted+excluded.aborted, failed=daily.failed+excluded.failed,
+    prompt=daily.prompt+excluded.prompt, completion=daily.completion+excluded.completion, reasoning=daily.reasoning+excluded.reasoning,
+    cached=daily.cached+excluded.cached, total=daily.total+excluded.total, credit=daily.credit+excluded.credit,
+    elapsed_sum=daily.elapsed_sum+excluded.elapsed_sum, ttft_sum=daily.ttft_sum+excluded.ttft_sum, ttft_n=daily.ttft_n+excluded.ttft_n,
+    gen_ms_sum=daily.gen_ms_sum+excluded.gen_ms_sum, gen_tokens=daily.gen_tokens+excluded.gen_tokens`
+
+const pgUpsertHourlySQL = `INSERT INTO hourly (hour, realm, model, requests, ok, aborted, failed, prompt, completion, reasoning,
+  cached, total, credit, elapsed_sum, ttft_sum, ttft_n, gen_ms_sum, gen_tokens)
+  VALUES ($1,$2,$3,1,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+  ON CONFLICT(hour, realm, model) DO UPDATE SET
+    requests=hourly.requests+1, ok=hourly.ok+excluded.ok, aborted=hourly.aborted+excluded.aborted, failed=hourly.failed+excluded.failed,
+    prompt=hourly.prompt+excluded.prompt, completion=hourly.completion+excluded.completion, reasoning=hourly.reasoning+excluded.reasoning,
+    cached=hourly.cached+excluded.cached, total=hourly.total+excluded.total, credit=hourly.credit+excluded.credit,
+    elapsed_sum=hourly.elapsed_sum+excluded.elapsed_sum, ttft_sum=hourly.ttft_sum+excluded.ttft_sum, ttft_n=hourly.ttft_n+excluded.ttft_n,
+    gen_ms_sum=hourly.gen_ms_sum+excluded.gen_ms_sum, gen_tokens=hourly.gen_tokens+excluded.gen_tokens`
+
 func epoch(t time.Time) float64 { return float64(t.UnixNano()) / 1e9 }
 
 func (d *DB) writeBatch(events []Event) error {
@@ -425,11 +448,15 @@ type stmts struct {
 
 func (d *DB) prepareRollups(tx *sql.Tx) (*stmts, error) {
 	st := &stmts{}
+	dailySQL, hourlySQL := upsertDailySQL, upsertHourlySQL
+	if d.driver == "pg" {
+		dailySQL, hourlySQL = pgUpsertDailySQL, pgUpsertHourlySQL
+	}
 	var err error
-	if st.daily, err = d.prepare(tx, upsertDailySQL); err != nil {
+	if st.daily, err = d.prepare(tx, dailySQL); err != nil {
 		return nil, err
 	}
-	if st.hourly, err = d.prepare(tx, upsertHourlySQL); err != nil {
+	if st.hourly, err = d.prepare(tx, hourlySQL); err != nil {
 		st.daily.Close()
 		return nil, err
 	}
