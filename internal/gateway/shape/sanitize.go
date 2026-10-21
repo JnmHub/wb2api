@@ -19,6 +19,7 @@ var sanitizeFeatures = []string{
 	"You are a coding agent running in the Codex CLI",
 	"github.com/anthropics/",
 	"11128",
+	"DeepSeek Harness",
 }
 
 // Case-insensitive fingerprints are checked on the lowercased copy; their
@@ -49,11 +50,17 @@ var (
 	// neutral one for system/developer messages only. user/assistant/tool
 	// content is user data and is left untouched.
 	sanitizeDSHIdentityRe = regexp.MustCompile(`(?i)You are (an (AI )?(agent powered by|assistant built on)|a coding agent powered by)[^\r\n]*?[.!?](\s|$)`)
+	// Residual brand terms outside the opening self-introduction still trip
+	// 11-128 (DSH 0.2.1-rc.2 added "The runtime context names the DeepSeek
+	// Harness implementation checkout" and similar lines). This runs only for
+	// system/developer messages.
+	sanitizeDSHBrandRe = regexp.MustCompile(`(?i)DeepSeek[ \t_-]*Harness`)
 )
 
 const (
-	bareHdrLower = "x-anthropic-billing-header"
-	omoLower     = "sisyphus-junior - focused executor from ohmyopencode"
+	bareHdrLower  = "x-anthropic-billing-header"
+	omoLower      = "sisyphus-junior - focused executor from ohmyopencode"
+	dshBrandLower = "deepseek harness"
 )
 
 // foldDotted mirrors the three code points whose (?i) matching differs from
@@ -75,7 +82,7 @@ func hasFingerprint(text string) bool {
 	} else {
 		low = strings.ToLower(text)
 	}
-	if strings.Contains(low, bareHdrLower) || strings.Contains(low, omoLower) {
+	if strings.Contains(low, bareHdrLower) || strings.Contains(low, omoLower) || strings.Contains(low, dshBrandLower) {
 		return true
 	}
 	return false
@@ -94,11 +101,16 @@ func sanitizeSystemText(text string) string {
 	if text == "" {
 		return text
 	}
-	if !sanitizeDSHIdentityRe.MatchString(text) {
+	out := sanitizeDSHIdentityRe.ReplaceAllString(text, "You are a helpful AI assistant.${4}")
+	// Avoid a second full regex pass for the common case (no DeepSeek brand at
+	// all). The regex still handles mixed separators and casing once present.
+	if strings.Contains(out, "DeepSeek") || strings.Contains(out, "deepseek") || strings.Contains(out, "DEEPSEEK") {
+		out = sanitizeDSHBrandRe.ReplaceAllString(out, "runtime")
+	}
+	if out == text {
 		return sanitizeText(text)
 	}
-	text = sanitizeDSHIdentityRe.ReplaceAllString(text, "You are a helpful AI assistant.${4}")
-	return sanitizeBase(text)
+	return sanitizeBase(out)
 }
 
 func sanitizeBase(text string) string {
