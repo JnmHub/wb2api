@@ -267,6 +267,12 @@ func main() {
 		// Conversation affinity is best-effort cross-replica state: a missed
 		// binding only costs a cold prompt cache on another replica.
 		p.Affinity().SetStore(redisx.NewAffinityStore(rdb.Client))
+		replica := fmt.Sprintf("pid-%d", os.Getpid())
+		if host, err := os.Hostname(); err == nil && host != "" {
+			replica = fmt.Sprintf("%s-%d", host, os.Getpid())
+		}
+		feedback.SetShared(redisx.NewStatsStore(rdb.Client), replica)
+		log.Info("shared scheduler feedback enabled", "replica", replica)
 	}
 	var realmSw *realmswitch.Switch
 	if pgDB != nil {
@@ -543,6 +549,7 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 	go refresher.Run(bg)
+	go feedback.RunShared(bg, 2*time.Second)
 	go sched.Run(bg)
 	go sched.RunCredits(bg)
 	go cat.RunDaily(bg)

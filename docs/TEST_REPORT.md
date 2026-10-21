@@ -352,7 +352,7 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
 - 本机没有 Docker daemon，**没有实际启动 compose 栈**；这一步需要在有 Docker
   的机器上补做。无 DSN 的 standalone 模式已用浏览器 smoke 回归。
 
-## 20. PostgreSQL 用量、面板会话与调度可靠性（v2.1.4 至 v2.3.5）
+## 20. PostgreSQL 用量、面板会话与调度可靠性（v2.1.4 至 v2.3.6）
 
 - 请求用量支持 PostgreSQL，日/时预聚合在写入事务中同步维护；SQLite 仍是
   standalone 默认后端。
@@ -414,6 +414,14 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
   `TestSchedulerSummaryAggregatesLiveState` 覆盖聚合、排序和 affinity 同步状态。
   `TestSchedulerSummaryUsesSharedCapacityFallback` 覆盖 Redis 模式下账号未设置
   本地上限时，容量回退到 `WB_REDIS_INFLIGHT`，避免面板显示容量 0。
+- 调度 TTFT/错误率 EWMA 经 Redis `wb:sched:<replica>` 跨副本共享：每个副本每
+  2 秒发布本地快照，读取其他副本并按账号取“最新鲜的最差 TTFT/错误率”，因此
+  一个副本观察到的慢账号会在另一个副本同样触发逃逸。快照 30 秒过期，Redis
+  故障或未配置时回退本地 EWMA。`TestSharedStatsUsesWorstPeerSample`、
+  `TestSharedStatsPublishesLocalSnapshot`、
+  `TestSharedStatsIgnoresStalePeerSample`、
+  `TestStatsStorePublishesPerReplicaAndMerges` 覆盖合并、发布、过期样本忽略、
+  独立副本快照和 TTL。
 
 - 模型额度窗口经 `wb_state` 的 `quota_windows` 共享，任一网关记录 429 后其他
   副本 2 秒内可见；本地 `model_windows.json` 只在数据库行不存在时作为种子，
@@ -460,7 +468,6 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
 - 仅一个副本持有后台 leader（日志 `background leader acquired`），另一个副本
   没有启动巡检周期。
 
-尚未完成（后续阶段）：跨副本 EWMA 反馈的共享存储；以及
-`compose.ha.yaml` + Caddy 整套镜像栈的启动验证（本次是真实 PostgreSQL/Redis
-上的双进程验证，未走 Caddy 容器入口）。详见
+尚未完成（后续阶段）：`compose.ha.yaml` + Caddy 整套镜像栈的启动验证（本次是
+真实 PostgreSQL/Redis 上的双进程验证，未走 Caddy 容器入口）。详见
 `docs/ARCHITECTURE_MIGRATION.md`。

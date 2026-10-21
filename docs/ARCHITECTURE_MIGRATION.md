@@ -12,11 +12,15 @@ files + SQLite deployment to the Sub2API-style split:
 ## Implemented in this phase
 
 - `internal/platform/pg`: pgx pool, schema migration and health ping.
-- `internal/platform/redisx`: Redis client, health ping and an account
-  in-flight limiter backed by a sorted set + Lua script.
-- `internal/sched`: in-process TTFT/error EWMA feedback; sticky sessions escape
-  a warm account when its recent TTFT exceeds `WB_STICKY_ESCAPE_TTFT_MS`
-  (default 15s) or its error EWMA exceeds
+- `internal/platform/redisx`: Redis client, health ping, an account
+  in-flight limiter backed by a sorted set + Lua script, and a scheduler EWMA
+  snapshot store.
+- `internal/sched`: TTFT/error EWMA feedback. With Redis configured each
+  replica publishes its local snapshot every 2s and reads peers; routing takes
+  the worst fresh TTFT/error per account, so a slow account observed on one
+  replica also escapes on the others. Redis errors fall back to the local view.
+  Sticky sessions escape a warm account when its recent TTFT exceeds
+  `WB_STICKY_ESCAPE_TTFT_MS` (default 15s) or its error EWMA exceeds
   `WB_STICKY_ESCAPE_ERROR_RATE` (default 0.5). Client aborts are not counted.
 - `Pool.PickForSessionBest`: among the conversation's warm accounts, choose the
   least-loaded one, then the one with the better TTFT/error score; the most
@@ -151,9 +155,7 @@ files + SQLite deployment to the Sub2API-style split:
 
 ## Next phases
 
-1. **Remaining shared state**: shared EWMA feedback is still open. Scheduler
-   scores therefore remain a local view on each replica.
-2. **Load tests**: a manual two-process run against real PostgreSQL and Redis
+1. **Full HA stack**: a manual two-process run against real PostgreSQL and Redis
    (fifty accounts, 500 concurrent streams split across both replicas) completed
    with 500/500 successful streams, shared realm propagation in about one
    second, a job created on one replica visible and cancellable from the other,
@@ -167,7 +169,9 @@ files + SQLite deployment to the Sub2API-style split:
 
 - Running multiple wb2api processes against the same **file** data directory is
   still unsupported; use the PostgreSQL/Redis mode for that.
-- The scheduler uses in-process EWMA feedback. Two replicas can make different
-  TTFT/error decisions because that feedback is not yet shared through Redis.
-  Panel jobs, quota windows, the active scan schedule, pricing overrides, active
-  realm and background leadership are shared.
+- The scheduler EWMA snapshot is best-effort cross-replica state: peers are
+  merged every 2s using the worst fresh value. A Redis outage leaves each
+  replica on its local EWMA, and a just-observed sample can take up to one sync
+  interval to reach the other replica. Panel jobs, quota windows, the active
+  scan schedule, pricing overrides, active realm and background leadership are
+  shared through PostgreSQL/Redis.

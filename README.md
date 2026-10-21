@@ -13,8 +13,8 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
 - **账号池**：多账号轮换、权重、按 Key 绑定出口/模型、手动置顶、失败切换、
   429 作用域（账号/模型/6004）、冷却与风控停放、免费模型积分回退。
 - **配额与调度**：24 小时窗口探针、主动额度体检、剩余用量估算与优先调度、
-  会话亲和（配置 Redis 后跨副本共享）与慢账号逃逸、最低负载优先、可选 top-K
-  负载分散、PostgreSQL 用量记账；
+  会话亲和（配置 Redis 后跨副本共享）、慢账号逃逸（TTFT/错误率 EWMA 跨副本合并）、
+  最低负载优先、可选 top-K 负载分散、PostgreSQL 用量记账；
   账号槽位和 API Key 并发可选用 Redis 跨进程共享，全部满槽时短暂排队后返回 429。
 - **用量写入池**：有界异步队列 + 批量并行事务（SQLite 默认 1、PostgreSQL 默认 4），
   队列饱和可按 `drop` 丢弃计数或 `sample` 采样；面板显示积压、丢弃和失败批次。
@@ -86,9 +86,9 @@ PostgreSQL/Redis；启动时的旧用量导入由 advisory lock 串行化，不�
   导入进度记录在 `meta` 表；价格覆盖在副本间 5 秒内同步，额度窗口和扫描计划 2 秒内
   同步。后台巡检、额度探针和余额刷新通过 PostgreSQL advisory lock 只在一个副本上运行。
 - **Redis**：跨进程的账号并发槽位（`WB_REDIS_INFLIGHT`，CLI 默认 0，Compose
-  默认 8）、API Key 并发槽位、会话亲和绑定和健康检查；所有账号都满槽时可排队
-  `WB_REDIS_WAIT_MS`（默认 1500）再返回 429，减少冷账号溢出；不配 Redis
-  时退回本地并发限制。
+  默认 8）、API Key 并发槽位、会话亲和绑定、调度 EWMA 快照和健康检查；所有账号
+  都满槽时可排队 `WB_REDIS_WAIT_MS`（默认 1500）再返回 429，减少冷账号溢出；
+  不配 Redis 时退回本地并发限制和本地 EWMA。
 - **`./data`**：仍保留 catalog 等文件；PostgreSQL 模式下 active realm、模型额度窗口
   和主动额度扫描计划存在 `wb_state` 表，分别 1 秒、2 秒内同步；后台任务快照存在
   `wb_jobs` 表，其他副本 2 秒内可见。旧版 standalone 模式不需要 PostgreSQL/Redis，
