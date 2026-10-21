@@ -104,7 +104,9 @@ func (s *Scheduler) RunCredits(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.RefreshCreditsOnce(ctx)
+			if s.isLeader() {
+				s.RefreshCreditsOnce(ctx)
+			}
 		}
 	}
 }

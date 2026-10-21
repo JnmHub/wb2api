@@ -42,6 +42,9 @@ type Scheduler struct {
 	Windows *quota.Windows
 	// Scan is the active quota scan (nil = disabled).
 	Scan *quota.Scanner
+	// Leader reports whether this replica may run unattended background work.
+	// Nil keeps the single-process behavior.
+	Leader func() bool
 	// Stagger is the pause between accounts (default 2–5 s random).
 	Stagger func() time.Duration
 	// Pause replaces the one-second spacing between one account's chores (tests).
@@ -71,6 +74,10 @@ func (s *Scheduler) logger() *slog.Logger {
 		return s.Log
 	}
 	return slog.Default()
+}
+
+func (s *Scheduler) isLeader() bool {
+	return s.Leader == nil || s.Leader()
 }
 
 func (s *Scheduler) stagger() time.Duration {
@@ -146,6 +153,9 @@ func (s *Scheduler) NextFire() time.Time {
 
 // Trigger runs a cycle now in the background; false when one is already running.
 func (s *Scheduler) Trigger() bool {
+	if !s.isLeader() {
+		return false
+	}
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
@@ -158,6 +168,10 @@ func (s *Scheduler) Trigger() bool {
 
 // Cycle performs one pass over every account.
 func (s *Scheduler) Cycle(ctx context.Context, reason string) {
+	if !s.isLeader() {
+		s.note("跳过本次巡检 (%s)：当前副本不是后台任务主节点", reason)
+		return
+	}
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
@@ -299,7 +313,7 @@ func short(uid string) string {
 // independent of the unattended cycle: they fire on the upstream's clock even
 // when the scheduler is switched off, and must not wait behind a long cycle.
 func (s *Scheduler) runWindows(ctx context.Context) {
-	if s.Windows == nil || s.Windows.Prober == nil {
+	if s.Windows == nil || s.Windows.Prober == nil || !s.isLeader() {
 		return
 	}
 	if !s.probing.CompareAndSwap(false, true) {
@@ -314,7 +328,7 @@ func (s *Scheduler) runWindows(ctx context.Context) {
 // runScans starts one active quota-scan pass in the background, independent of
 // the unattended cycle for the same reason as the window probe.
 func (s *Scheduler) runScans(ctx context.Context) {
-	if s.Scan == nil {
+	if s.Scan == nil || !s.isLeader() {
 		return
 	}
 	if !s.scanning.CompareAndSwap(false, true) {
@@ -335,10 +349,12 @@ func (s *Scheduler) Run(ctx context.Context) {
 	case <-ctx.Done():
 		return
 	}
-	s.runWindows(ctx)
-	s.runScans(ctx)
-	if s.Settings.SchedulerEnabled() {
-		s.Cycle(ctx, "启动初次初始化巡检")
+	if s.isLeader() {
+		s.runWindows(ctx)
+		s.runScans(ctx)
+		if s.Settings.SchedulerEnabled() {
+			s.Cycle(ctx, "启动初次初始化巡检")
+		}
 	}
 	lastFired := time.Time{}
 	t := time.NewTicker(30 * time.Second)
@@ -348,6 +364,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		}
+		if !s.isLeader() {
+			continue
 		}
 		s.runWindows(ctx)
 		s.runScans(ctx)

@@ -34,6 +34,7 @@ import (
 	"wb2api/internal/gateway/openai"
 	"wb2api/internal/guards"
 	"wb2api/internal/jobs"
+	"wb2api/internal/leader"
 	"wb2api/internal/logbuf"
 	"wb2api/internal/ops"
 	"wb2api/internal/panelauth"
@@ -49,6 +50,7 @@ import (
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/store/pgaccounts"
 	"wb2api/internal/store/pgpricing"
+	"wb2api/internal/store/pgquota"
 	"wb2api/internal/store/pgrealm"
 	"wb2api/internal/store/pgsessions"
 	"wb2api/internal/store/pgsettings"
@@ -320,7 +322,17 @@ func main() {
 		log.Warn("could not seed today's counters", "err", err)
 	}
 	h.Guards = &guards.Scanner{Pool: p, Settings: st, Usage: udb, FreeModels: cat.FreeModels, Log: log}
-	windows := &quota.Windows{Dir: *accountsDir, Gate: st.WindowProbe, Prober: h, Log: log}
+	var elector *leader.Elector
+	if pgDB != nil {
+		elector = leader.New(pgDB.Pool, leader.KeyBackground, log)
+		go elector.Run(bg)
+	}
+	isLeader := func() bool { return elector == nil || elector.IsLeader() }
+	var windowStore quota.WindowStore
+	if pgDB != nil {
+		windowStore = pgquota.New(pgDB.Pool, *accountsDir)
+	}
+	windows := &quota.Windows{Dir: *accountsDir, Gate: st.WindowProbe, Prober: h, Log: log, Store: windowStore}
 	h.Windows = windows
 	scanner := &quota.Scanner{Dir: *accountsDir, Models: st.QuotaScanModels, Prober: h, Windows: windows, Log: log}
 	keyring := &atrest.Keyring{}
@@ -453,7 +465,8 @@ func main() {
 	}).Register(mux, auth.Require)
 	sched := &scheduler.Scheduler{
 		Pool: p, Ops: opsClient, Refresher: refresher, Settings: st, Log: log, Windows: windows, Scan: scanner,
-		Hold: func(realm string) time.Duration { return h.RiskHold(realm) },
+		Leader: isLeader,
+		Hold:   func(realm string) time.Duration { return h.RiskHold(realm) },
 	}
 	(&api.Operations{Ops: opsClient, Pool: p, Prober: h, Scheduler: sched, Activity: activityLog, Scanner: scanner, AtRest: keyring, Agents: agentMgr}).Register(mux, auth.Require)
 	(&api.Settings{Store: st, Pool: p, Realm: realmSw, Guards: h.Guards, Catalog: cat, Ops: opsGate}).Register(mux, auth.Require)

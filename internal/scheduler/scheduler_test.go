@@ -189,6 +189,18 @@ func TestFailedBalanceRefreshParksTheAccount(t *testing.T) {
 	}
 }
 
+func TestTriggerRequiresLeader(t *testing.T) {
+	f := newFx(t)
+	f.s.Leader = func() bool { return false }
+	if f.s.Trigger() {
+		t.Fatal("a follower must not start a scheduler cycle")
+	}
+	f.s.Leader = func() bool { return true }
+	if !f.s.Trigger() {
+		t.Fatal("the leader must accept a manual trigger")
+	}
+}
+
 func TestNextFireAndHours(t *testing.T) {
 	f := newFx(t)
 	f.s.Now = func() time.Time { return time.Date(2026, 10, 19, 10, 30, 0, 0, time.Local) }

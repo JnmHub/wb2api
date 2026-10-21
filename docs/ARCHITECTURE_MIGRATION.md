@@ -77,7 +77,8 @@ files + SQLite deployment to the Sub2API-style split:
   revocation immediately; `panel_sessions.json` is imported only when the table
   is empty.
 - A PostgreSQL-backed usage round-trip test runs in CI (`postgres` job, service
-  container) in addition to the SQLite tests.
+  container) in addition to the SQLite tests; the same job covers panel
+  sessions, active realm, quota windows and leader election.
 - `settings.OpenWith`: file-free settings store used by the PostgreSQL backend.
 - `cmd/hub`: `WB_POSTGRES_DSN`, `WB_REDIS_ADDR`, `WB_REDIS_INFLIGHT`,
   `WB_REDIS_WAIT_MS`, `WB_SCHED_TOP_K`, `WB_FIRST_OUTPUT_MS`,
@@ -97,6 +98,15 @@ files + SQLite deployment to the Sub2API-style split:
   shared set, a successful bind is queued so the request path never waits on
   Redis, and a failed-account demote is written synchronously so other replicas
   stop choosing it.
+- Quota windows are shared in `wb_state` under `quota_windows`. A 429 recorded
+  by any replica is visible to the others within two seconds; a local
+  `model_windows.json` seeds the row on first boot, and a failed database write
+  falls back to the local file. The probe itself still runs only on the leader.
+- Background leader election uses a PostgreSQL session advisory lock
+  (`pg_try_advisory_lock`). The scheduler cycle, credit refresh, quota window
+  probe and active quota scan run only on the lock holder; the lock disappears
+  with its connection, so a crashed replica does not block takeover. Standalone
+  mode has no elector and keeps running every background task.
 - `GET /api/v2/scheduler/summary`: aggregate in-flight/capacity, average
   TTFT/error rate, Top-K and the twenty highest-scoring accounts. It also
   reports affinity queue depth, dropped writes and store errors. The accounts
@@ -119,17 +129,20 @@ files + SQLite deployment to the Sub2API-style split:
 
 ## Next phases
 
-1. **Shared state**: move quota windows and jobs/leader election to
-   PostgreSQL/Redis so more than one wb2api replica is safe. Panel sessions,
-   per-key/account slots, the active realm, pricing overrides and conversation
-   affinity already use shared backends.
+1. **Remaining shared state**: the active quota-scan schedule and panel job
+   history are still process-local. They do not affect routing, and only the
+   leader runs scans, but a panel job started on one replica is not visible on
+   the other. Shared EWMA feedback is also still open.
 2. **Load tests**: compare file/SQLite vs PostgreSQL/Redis at 200+ concurrent
-   streams, and verify a two-replica deployment does not double-schedule.
+   streams, and verify a two-replica deployment does not double-schedule. This
+   requires a running Docker daemon, which was unavailable during development.
 
 ## Non-goals in this phase
 
 - Running multiple wb2api processes against the same **file** data directory is
   still unsupported; use the PostgreSQL/Redis mode for that.
 - The scheduler uses in-process EWMA feedback. Two replicas can make different
-  TTFT/error decisions because that feedback is not yet shared through Redis;
-  quota/pricing/jobs remain file-backed as noted above.
+  TTFT/error decisions because that feedback is not yet shared through Redis.
+  Panel job history and the active quota-scan schedule also remain process-local;
+  quota windows, pricing overrides, active realm and background leadership are
+  shared.

@@ -41,6 +41,16 @@ type Prober interface {
 	ProbeModel(ctx context.Context, acc *pool.Account, model string) (ok bool, reset time.Time, detail string)
 }
 
+// WindowStore persists the model windows outside the local file. A PostgreSQL
+// implementation lets every replica see a 429 detected by any one of them.
+type WindowStore interface {
+	LoadWindows() ([]Window, error)
+	SaveWindows([]Window) error
+}
+
+// sharedRefresh is how often a replica re-reads windows written elsewhere.
+const sharedRefresh = 2 * time.Second
+
 // Windows is the persisted set of quota windows plus the probe runner.
 type Windows struct {
 	Dir    string
@@ -48,10 +58,12 @@ type Windows struct {
 	Gate   func() bool
 	Prober Prober
 	Log    *slog.Logger
+	Store  WindowStore
 
-	mu     sync.Mutex
-	rows   map[string]Window
-	loaded bool
+	mu       sync.Mutex
+	rows     map[string]Window
+	loaded   bool
+	lastSync time.Time
 }
 
 func (w *Windows) now() time.Time {
@@ -73,6 +85,15 @@ func (w *Windows) load() {
 	}
 	w.loaded = true
 	w.rows = map[string]Window{}
+	if w.Store != nil {
+		if list, err := w.Store.LoadWindows(); err == nil {
+			w.addPruned(list)
+			w.lastSync = w.now()
+			return
+		} else if w.Log != nil {
+			w.Log.Warn("window probe: cannot load shared state; falling back to file", "err", err)
+		}
+	}
 	if w.Dir == "" {
 		return
 	}
@@ -90,6 +111,28 @@ func (w *Windows) load() {
 	}
 }
 
+// refreshLocked re-reads the shared windows when they are older than
+// sharedRefresh. A failed read keeps the values already in memory, so a
+// transient database error never forgets a known 429 window.
+func (w *Windows) refreshLocked(force bool) {
+	if w.Store == nil {
+		return
+	}
+	if !force && !w.lastSync.IsZero() && time.Since(w.lastSync) < sharedRefresh {
+		return
+	}
+	list, err := w.Store.LoadWindows()
+	if err != nil {
+		if w.Log != nil {
+			w.Log.Warn("window probe: cannot refresh shared state", "err", err)
+		}
+		return
+	}
+	w.rows = map[string]Window{}
+	w.addPruned(list)
+	w.lastSync = w.now()
+}
+
 func (w *Windows) addPruned(list []Window) {
 	now := w.now()
 	cut := now.Add(-MaxWindowAge).Unix()
@@ -103,14 +146,22 @@ func (w *Windows) addPruned(list []Window) {
 }
 
 func (w *Windows) saveLocked() {
-	if w.Dir == "" {
-		return
-	}
 	rows := make([]Window, 0, len(w.rows))
 	for _, r := range w.rows {
 		rows = append(rows, r)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].ResetAt < rows[j].ResetAt })
+	if w.Store != nil {
+		if err := w.Store.SaveWindows(rows); err == nil {
+			w.lastSync = w.now()
+			return
+		} else if w.Log != nil {
+			w.Log.Warn("window probe: cannot save shared state; writing the local file", "err", err)
+		}
+	}
+	if w.Dir == "" {
+		return
+	}
 	doc := map[string]any{"version": 1, "saved_at": stamp(w.now()), "windows": rows}
 	if err := writeJSONAtomic(w.path(), doc); err != nil && w.Log != nil {
 		w.Log.Warn("window probe: cannot save state", "err", err)
@@ -130,6 +181,7 @@ func (w *Windows) Schedule(uid, model string, reset time.Time) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.load()
+	w.refreshLocked(true)
 	if old, ok := w.rows[key(uid, model)]; ok && absDiff(old.ResetAt, reset) <= 1.0 {
 		return false
 	}
@@ -151,6 +203,7 @@ func (w *Windows) Has(uid, model string) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.load()
+	w.refreshLocked(false)
 	_, ok := w.rows[key(uid, model)]
 	return ok
 }
@@ -160,6 +213,7 @@ func (w *Windows) Snapshot() []Window {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.load()
+	w.refreshLocked(false)
 	out := make([]Window, 0, len(w.rows))
 	for _, r := range w.rows {
 		out = append(out, r)
@@ -173,6 +227,7 @@ func (w *Windows) SecondsUntilDue() (time.Duration, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.load()
+	w.refreshLocked(false)
 	if len(w.rows) == 0 {
 		return 0, false
 	}
@@ -207,6 +262,7 @@ func (w *Windows) RunDue(ctx context.Context, p *pool.Pool, limit int) int {
 	var list []due
 	w.mu.Lock()
 	w.load()
+	w.refreshLocked(false)
 	for _, r := range w.rows {
 		if r.ResetAt <= float64(now.UnixNano())/1e9 {
 			list = append(list, due{r.UID, r.Model, r.ResetAt})

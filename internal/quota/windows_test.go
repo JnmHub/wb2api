@@ -2,12 +2,31 @@ package quota
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"wb2api/internal/pool"
 	"wb2api/internal/store/accounts"
 )
+
+type memWindowStore struct {
+	mu   sync.Mutex
+	list []Window
+}
+
+func (m *memWindowStore) LoadWindows() ([]Window, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]Window(nil), m.list...), nil
+}
+
+func (m *memWindowStore) SaveWindows(list []Window) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.list = append([]Window(nil), list...)
+	return nil
+}
 
 type fakeProber struct {
 	calls  int
@@ -125,6 +144,23 @@ func TestGateOffDisablesEverything(t *testing.T) {
 	}
 	if w.Has("u1", "hy3") {
 		t.Fatal("nothing may be recorded while off")
+	}
+}
+
+func TestSharedWindowStoreRefreshesAcrossReplicas(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	store := &memWindowStore{}
+	a := &Windows{Store: store, Now: func() time.Time { return now }}
+	b := &Windows{Store: store, Now: func() time.Time { return now }}
+	if b.Has("u1", "hy3") {
+		t.Fatal("empty shared state must not have a window")
+	}
+	if !a.Schedule("u1", "hy3", now.Add(time.Hour)) {
+		t.Fatal("schedule must persist to the shared store")
+	}
+	b.lastSync = time.Time{} // force the next read to hit the store
+	if !b.Has("u1", "hy3") {
+		t.Fatal("a window written by another replica must become visible")
 	}
 }
 

@@ -66,18 +66,19 @@ docker compose up -d --build
 
 面板：`http://127.0.0.1:8788/`。
 
-- **PostgreSQL**：账号、`settings.json`、**请求用量**、**面板登录会话**和**价格覆盖**
-  的权威存储；首次启动会把现有 `./data/accounts/*.json`、`settings.json`、`usage.jsonl`、
-  旧版 `usage.db`、`panel_sessions.json` 和 `pricing_policies.json` 导入数据库，之后读写
-  走数据库。`usage.db` 只读导入，原文件保留，导入进度记录在 `meta` 表；价格覆盖在副本间
-  5 秒内同步。
+- **PostgreSQL**：账号、`settings.json`、**请求用量**、**面板登录会话**、**价格覆盖**和
+  **模型额度窗口**的权威存储；首次启动会把现有 `./data/accounts/*.json`、`settings.json`、
+  `usage.jsonl`、旧版 `usage.db`、`panel_sessions.json`、`pricing_policies.json` 和
+  `model_windows.json` 导入数据库，之后读写走数据库。`usage.db` 只读导入，原文件保留，
+  导入进度记录在 `meta` 表；价格覆盖在副本间 5 秒内同步，额度窗口 2 秒内同步。后台巡检、
+  额度探针和余额刷新通过 PostgreSQL advisory lock 只在一个副本上运行。
 - **Redis**：跨进程的账号并发槽位（`WB_REDIS_INFLIGHT`，CLI 默认 0，Compose
   默认 8）、API Key 并发槽位、会话亲和绑定和健康检查；所有账号都满槽时可排队
   `WB_REDIS_WAIT_MS`（默认 1500）再返回 429，减少冷账号溢出；不配 Redis
   时退回本地并发限制。
-- **`./data`**：仍保留 catalog、quota、jobs 等文件；PostgreSQL 模式下 active realm
-  存在 `wb_state` 表，所有副本 1 秒内同步。旧版 standalone 模式不需要
-  PostgreSQL/Redis，继续使用文件 + `usage.db`。
+- **`./data`**：仍保留 catalog、主动额度扫描计划和面板任务记录等文件；PostgreSQL
+  模式下 active realm 和模型额度窗口存在 `wb_state` 表，分别 1 秒、2 秒内同步。
+  旧版 standalone 模式不需要 PostgreSQL/Redis，继续使用文件 + `usage.db`。
 - 容器以非 root 用户运行，应用健康检查走 `/health`。
 
 资源清理：
