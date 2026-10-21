@@ -57,6 +57,9 @@ services:
       # Pick among this many least-loaded accounts instead of always the single
       # least-loaded one; avoids herding all new sessions onto one account.
       WB_SCHED_TOP_K: ${WB_SCHED_TOP_K:-7}
+      # Hold response headers until the account emits semantic output; fail over
+      # when it stays silent longer than this. 0 keeps the legacy behavior.
+      WB_FIRST_OUTPUT_MS: ${WB_FIRST_OUTPUT_MS:-30000}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       # Existing accounts/settings.json and legacy usage.db/usage.jsonl are

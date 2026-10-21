@@ -351,7 +351,7 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
 - 本机没有 Docker daemon，**没有实际启动 compose 栈**；这一步需要在有 Docker
   的机器上补做。无 DSN 的 standalone 模式已用浏览器 smoke 回归。
 
-## 20. PostgreSQL 用量与面板会话（v2.1.4 / v2.1.5 / v2.1.6）
+## 20. PostgreSQL 用量、面板会话与调度可靠性（v2.1.4 / v2.1.5 / v2.1.6 / v2.2.0）
 
 - 请求用量支持 PostgreSQL，日/时预聚合在写入事务中同步维护；SQLite 仍是
   standalone 默认后端。
@@ -364,11 +364,27 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
   `TestSharedStoreLifecycle`、`TestSharedStoreRevokeAllAndShort`、
   `TestSharedStoreExpiresSession`、`TestOpenSharedMigratesFileSessions`，
   以及 CI 的 `TestPostgresPanelSessionStore`。
-- 账号调度新增可选的 top-K 负载窗口（`-sched-top-k`，默认 1 = 严格最低
-  负载）：`TestTopKSpreadsAcrossNearIdleAccounts` 和
-  `TestTopKNeverPicksBusyAccount` 覆盖随机分散和排除繁忙账号。
+- 账号调度改为“先全量探测空闲账号，再排队”的两阶段取槽：
+  `TestFullStickyAccountDoesNotWaitWhenAnotherIsFree`、
+  `TestAllAccountsFullReturnsRetryableRateLimit`、
+  `TestBusyAccountDoesNotConsumeFailoverAttempts` 覆盖立即换号、全满等待后
+  429、固定路由与失败计数。top-K/回退评分统一使用 TTFT/错误 EWMA、按
+  max-inflight 归一化的在途负载和手动权重（`TestScorerOverridesLoadTie`、
+  `TestMaxInflightGetter`）。
+- 首包语义暂存：`TestReadUntilSemanticReplaysPrelude`、
+  `TestReadUntilSemanticRejectsEmptyStream`、
+  `TestReadUntilSemanticResponsesAndAnthropic`、`TestStageFirstOutputTimesOut`、
+  `TestStageFirstOutputDisabled`、`TestStageFirstOutputHonorsRequestCancel`
+  覆盖三种流协议、首包等待、空流、超时、关闭和取消。
+  `WB_FIRST_OUTPUT_MS` 默认 0（不等待），compose 示例 30000。
+- API Key 并发限制经 Redis `wb:keyinflight:` 共享执行，`keyGate` 为无 Redis
+  时的进程内回退；`TestAPIKeyConcurrencyGate`、
+  `TestAPIKeyConcurrencyGateSeparateKeys` 覆盖本地有界等待与 Key 隔离，
+  `TestLimiterKeySlotsSharedAcrossLimiters`、
+  `TestLimiterKeySlotsAreSeparateFromAccountSlots` 覆盖跨实例共享、释放和
+  账号槽位隔离。
 - CI `postgres` job 已通过。
 
-尚未完成（后续阶段）：top-K 的 TTFT/错误评分、首字节超时换号、active
-realm/quota/pricing/jobs/affinity 的共享存储、真实 compose 栈与多副本实测。
-详见 `docs/ARCHITECTURE_MIGRATION.md`。
+尚未完成（后续阶段）：active realm/quota/pricing/jobs/affinity 的共享存储、
+调度指标面板、真实 compose 双副本栈与多副本压测。详见
+`docs/ARCHITECTURE_MIGRATION.md`。

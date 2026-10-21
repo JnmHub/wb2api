@@ -412,29 +412,29 @@ func TestBackgroundModelIsRewrittenToAFreeOne(t *testing.T) {
 	}
 }
 
-func TestKeyConcurrencyIsNotCapped(t *testing.T) {
+func TestKeyConcurrencyIsEnforced(t *testing.T) {
 	release := make(chan struct{})
 	var n atomic.Int32
 	up := newRawUpstream(t, func(i int, r rawReq, c net.Conn) {
-		// Hold the first request in flight; the second must not be rejected and
-		// can answer immediately.
+		// Hold the first request in flight; the second must queue briefly and
+		// then be rejected by the per-key limit.
 		if n.Add(1) == 1 {
 			<-release
 		}
 		sseOK(c)
 	})
 	f := newFixture(t, up, accSpec{}, accSpec{})
-	f.setSettings(t, `{"api_keys":[{"id":"k1","name":"unlimited","key":"sk-1","enabled":true,"concurrency_limit":1}]}`)
+	f.h.AccountWait = 100 * time.Millisecond
+	f.setSettings(t, `{"api_keys":[{"id":"k1","name":"limited","key":"sk-1","enabled":true,"concurrency_limit":1}]}`)
 	hdr := map[string]string{"Authorization": "Bearer sk-1"}
 	first := make(chan int, 1)
 	go func() { code, _, _ := f.post(t, conv(1), hdr); first <- code }()
 	time.Sleep(300 * time.Millisecond)
-	// A stored limit of 1 must no longer reject the second request.
 	code, body, _ := f.post(t, conv(2), hdr)
-	if code != 200 {
-		t.Fatalf("the gateway must not enforce concurrency limits: %d %s", code, body)
-	}
 	close(release)
+	if code != 429 || !strings.Contains(body, "并发") {
+		t.Fatalf("a full key must be rejected: %d %s", code, body)
+	}
 	if c := <-first; c != 200 {
 		t.Fatalf("the first request still completes: %d", c)
 	}

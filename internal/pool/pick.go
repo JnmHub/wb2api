@@ -264,9 +264,10 @@ func (p *Pool) pick(realm, model string, exclude map[string]struct{}, page *Page
 	if k := p.TopK(); k > 1 {
 		return p.pickTopK(group, exclude, model, now, start, k)
 	}
-	// Among ready accounts prefer the least loaded one. Ties keep the cursor
-	// order, so an idle pool still rotates exactly as before.
+	// Among ready accounts prefer the best feedback-adjusted rank. Ties keep
+	// the cursor order, so an idle pool still rotates exactly as before.
 	var best *Account
+	bestScore := int64(0)
 	bestLoad := 0
 	for i := 0; i < n; i++ {
 		a := group[int((start+uint64(i))%uint64(n))]
@@ -277,24 +278,27 @@ func (p *Pool) pick(realm, model string, exclude map[string]struct{}, page *Page
 			continue
 		}
 		load := a.Inflight()
-		if best == nil || load < bestLoad {
-			best, bestLoad = a, load
+		score := p.scoreOf(a, model)
+		if best == nil || score < bestScore || (score == bestScore && load < bestLoad) {
+			best, bestScore, bestLoad = a, score, load
 		}
 	}
 	return best
 }
 
-// pickTopK collects the K least-loaded ready accounts in cursor order and picks
-// one with a mild preference for the least loaded. The wider window avoids
-// herding every new session onto the same account when several accounts are
-// equally (or nearly) idle; the loaded tail is never considered.
+// pickTopK collects the K best-ranked ready accounts in cursor order and picks
+// one with a mild preference for the best rank. The wider window avoids herding
+// every new session onto the same account when several accounts are equally (or
+// nearly) idle; the loaded tail is never considered. Without a feedback scorer
+// the rank is the in-flight count, preserving the least-loaded behavior.
 func (p *Pool) pickTopK(group []*Account, exclude map[string]struct{}, model string, now time.Time, start uint64, k int) *Account {
 	if k > len(group) {
 		k = len(group)
 	}
 	type candidate struct {
-		a    *Account
-		load int
+		a     *Account
+		load  int
+		score int64
 	}
 	top := make([]candidate, 0, k)
 	for i := 0; i < len(group); i++ {
@@ -305,10 +309,10 @@ func (p *Pool) pickTopK(group []*Account, exclude map[string]struct{}, model str
 		if !a.Ready(model, now) {
 			continue
 		}
-		c := candidate{a: a, load: a.Inflight()}
+		c := candidate{a: a, load: a.Inflight(), score: p.scoreOf(a, model)}
 		pos := len(top)
 		for j := range top {
-			if c.load < top[j].load {
+			if c.score < top[j].score || (c.score == top[j].score && c.load < top[j].load) {
 				pos = j
 				break
 			}
@@ -329,16 +333,23 @@ func (p *Pool) pickTopK(group []*Account, exclude map[string]struct{}, model str
 	if len(top) == 1 {
 		return top[0].a
 	}
+	weight := func(c candidate) int {
+		score := c.score
+		if score < 0 {
+			score = 0
+		}
+		return 1_000_000 / int(score+1)
+	}
 	total := 0
 	for _, c := range top {
-		total += 1_000_000 / (c.load + 1)
+		total += weight(c)
 	}
 	if total <= 0 {
 		return top[0].a
 	}
 	n := rand.IntN(total)
 	for _, c := range top {
-		n -= 1_000_000 / (c.load + 1)
+		n -= weight(c)
 		if n < 0 {
 			return c.a
 		}

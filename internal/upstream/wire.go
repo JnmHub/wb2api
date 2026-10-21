@@ -60,7 +60,10 @@ func NewWire(t Timeouts, proxy *url.URL) *Wire {
 	return &Wire{T: t, Proxy: proxy, idle: map[string][]*wireConn{}}
 }
 
-const maxIdlePerHost = 4
+// maxIdlePerHost is deliberately larger than the old four-connection value:
+// one Wire is already scoped to a single account, and high-concurrency bursts
+// otherwise pay a fresh TLS handshake for almost every request.
+const maxIdlePerHost = 32
 const idleTTL = 90 * time.Second
 
 var (

@@ -52,6 +52,13 @@ type attemptState struct {
 	last429       bool
 	last429Detail string
 	last403Detail string
+
+	// full holds accounts that were skipped because the cross-process slot
+	// gate was full. They are only considered for the bounded wait phase after
+	// every ready account has been probed once.
+	full    map[string]*pool.Account
+	waited  bool
+	allFull bool
 }
 
 // charge records a failure on an account at most once per request: a retry
@@ -99,6 +106,7 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	q := &request{r: r, w: w, start: start, payload: payload, refreshed: map[string]bool{}, anth: opts.anthropic}
 	q.at.tried = map[string]struct{}{}
 	q.at.charged = map[string]bool{}
+	q.at.full = map[string]*pool.Account{}
 	applyBackgroundAlias(payload, h.logger())
 	q.model, _ = payload.Get("model").(string)
 	// The local model deny-list: refuse before touching the upstream (legacy
@@ -138,17 +146,31 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 		q.httpErr(http.StatusBadRequest, msg, "invalid_request_error")
 		return
 	}
+	q.turnID = identity.NewTurnRequestID()
+	if key != nil && key.ConcurrencyLimit > 0 {
+		release, ok := h.acquireKey(r.Context(), key.ID, q.turnID, key.ConcurrencyLimit)
+		if !ok {
+			if r.Context().Err() != nil {
+				return
+			}
+			w.Header().Set("Retry-After", "1")
+			q.httpErr(http.StatusTooManyRequests,
+				fmt.Sprintf("API Key %s 的并发上限为 %d，请稍后重试。", key.Name, key.ConcurrencyLimit),
+				"rate_limit_error")
+			return
+		}
+		defer release()
+	}
 	if q.stream {
 		q.maxTPS = h.streamTPS(key)
 	}
-	// No client-side concurrency cap: the gateway forwards every request it
-	// receives and lets the upstream decide. Per-key concurrency_limit remains
-	// in the stored settings for compatibility but is not enforced.
+	// Per-key concurrency is enforced through Redis when configured, otherwise
+	// by a local gate; account slots are enforced by the optional Redis limiter
+	// and the scheduler.
 	q.sessionKey = extractSessionKey(r, payload)
 	if opts.sessionKey != "" {
 		q.sessionKey = opts.sessionKey
 	}
-	q.turnID = identity.NewTurnRequestID()
 	q.vscodeConv = identity.NewMessageID()
 	h.reshape(q)
 	// No client session id: derive one from the conversation's stable head so
@@ -216,6 +238,8 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 			}
 			acc := forced
 			forced = nil
+			slotHeld := false
+			release := func() {}
 			if acc == nil {
 				if len(q.at.tried) >= max {
 					break
@@ -230,8 +254,20 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 					acc = h.Pool.PickForSessionBest(q.realm, q.sessionKey, exclude, q.model, q.page, h.betterAccount)
 				}
 				if acc == nil {
+					// Every ready account has now been probed once. Only now
+					// is it safe to queue: a free account must win before we
+					// wait on a full one.
+					if pinned == nil && !q.at.waited && len(q.at.full) > 0 && h.AccountWait > 0 {
+						if wa, rel, ok := h.waitForFullAccount(q); ok {
+							acc, release, slotHeld = wa, rel, true
+							q.at.waited = true
+							delete(q.at.full, wa.UID)
+						}
+					}
+				}
+				if acc == nil {
 					// transient trouble: give the pool a moment and go round again
-					if q.at.transient > 0 && attempt < max+1 {
+					if !q.at.allFull && q.at.transient > 0 && attempt < max+1 {
 						clear(q.at.tried)
 						if !sleepCtx(r.Context(), minDur(time.Duration(1500*q.at.transient)*time.Millisecond, 3*time.Second)) {
 							return
@@ -243,37 +279,58 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 			}
 			q.at.tried[acc.UID] = struct{}{}
 			q.at.lastUID = acc.UID
-			release := func() {}
-			if h.Limiter != nil && h.AccountInflight > 0 {
+			if !slotHeld && h.Limiter != nil && h.AccountInflight > 0 {
 				var rel func()
 				var ok bool
 				var lerr error
-				if waiter, canWait := h.Limiter.(WaitingInflightLimiter); canWait && h.AccountWait > 0 {
-					rel, ok, lerr = waiter.AcquireWait(r.Context(), acc.UID, h.AccountInflight, q.turnID, h.AccountWait)
-				} else {
-					rel, ok, lerr = h.Limiter.Acquire(r.Context(), acc.UID, h.AccountInflight, q.turnID)
-				}
+				rel, ok, lerr = h.Limiter.Acquire(r.Context(), acc.UID, h.AccountInflight, q.turnID)
 				if lerr != nil {
 					if r.Context().Err() != nil {
 						return
 					}
 					h.logger().Warn("account limiter unavailable; falling back to local limits", "account", short(acc.UID), "err", lerr)
 				} else if !ok {
-					// The account is full in another process. Do not spend a
-					// failover attempt on it; remember it for this request and
-					// let the picker try another warm/cold account.
-					delete(q.at.tried, acc.UID)
-					if q.at.avoid == nil {
-						q.at.avoid = map[string]struct{}{}
+					// Pinned routes cannot fail over, so they are the one case
+					// where waiting on the selected account is correct. For
+					// ordinary routing we first probe every other free account.
+					if pinned != nil && h.AccountWait > 0 && !q.at.waited {
+						if waiter, canWait := h.Limiter.(WaitingInflightLimiter); canWait {
+							rel, ok, lerr = waiter.AcquireWait(r.Context(), acc.UID, h.AccountInflight, q.turnID, h.AccountWait)
+							q.at.waited = true
+							if lerr != nil {
+								if r.Context().Err() != nil {
+									return
+								}
+								h.logger().Warn("account wait failed", "account", short(acc.UID), "err", lerr)
+							}
+						}
 					}
-					q.at.avoid[acc.UID] = struct{}{}
-					q.at.skipped++
-					if q.at.skipped > h.Pool.Len()+max {
-						break
+					if !ok {
+						// The account is full in another process. Do not spend
+						// a failover attempt on it; remember it for the wait
+						// phase and let the picker try another ready account.
+						delete(q.at.tried, acc.UID)
+						if q.at.avoid == nil {
+							q.at.avoid = map[string]struct{}{}
+						}
+						q.at.avoid[acc.UID] = struct{}{}
+						if q.at.full == nil {
+							q.at.full = map[string]*pool.Account{}
+						}
+						q.at.full[acc.UID] = acc
+						q.at.skipped++
+						if pinned != nil {
+							q.at.allFull = true
+						}
+						if q.at.skipped > h.Pool.Len()+max {
+							q.at.allFull = true
+							break
+						}
+						attempt--
+						continue
 					}
-					attempt--
-					continue
-				} else if rel != nil {
+				}
+				if rel != nil {
 					release = rel
 				}
 			}
@@ -326,24 +383,45 @@ func unionExclude(a, b map[string]struct{}) map[string]struct{} {
 	return out
 }
 
-// betterAccount prefers the least-loaded warm account; if load ties, it uses
-// the TTFT/error EWMA so a degraded warm account does not keep the session.
+// betterAccount prefers the lowest feedback-adjusted score; if scores tie, it
+// keeps the earlier candidate (the most recent warm account).
 func (h *Handler) betterAccount(a, b *pool.Account) bool {
 	if a == nil || b == nil {
 		return a != nil
 	}
-	if ai, bi := a.Inflight(), b.Inflight(); ai != bi {
-		return ai < bi
+	return h.AccountScore(a, "") < h.AccountScore(b, "")
+}
+
+// AccountScore is the scheduler's feedback rank: lower is better. It combines
+// slot pressure, recent TTFT/error feedback and the manual weight. The load
+// term is normalised by the per-account cap when one is configured, so a
+// 4-slot account at 2/4 is not treated as better than a 32-slot account at 2/32.
+func (h *Handler) AccountScore(a *pool.Account, _ string) int64 {
+	if a == nil {
+		return int64(^uint64(0) >> 1)
 	}
-	if h.Sched == nil {
-		return false
+	load := int64(a.Inflight()) * 1000
+	if max := a.MaxInflight(); max > 0 {
+		load = int64(a.Inflight()) * 10_000 / int64(max)
 	}
-	at, ae, aok := h.Sched.Score(a.UID)
-	bt, be, bok := h.Sched.Score(b.UID)
-	if !aok || !bok {
-		return false
+	score := load
+	if h != nil && h.Sched != nil {
+		if ttft, errRate, ok := h.Sched.Score(a.UID); ok {
+			if ttft > 0 {
+				score += int64(ttft * 10)
+			}
+			if errRate > 1 {
+				errRate = 1
+			}
+			if errRate > 0 {
+				score += int64(errRate * 100_000)
+			}
+		}
 	}
-	return at+ae*20000 < bt+be*20000
+	if w := a.Weight(); w > 1 {
+		score -= int64(w) * 500
+	}
+	return score
 }
 
 // finishError relays an upstream error that must not be retried elsewhere.
@@ -444,12 +522,23 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 	}
 	h.resetSwitch(acc.UID, q.model)
 	idle := cfg.IdleTimeout
+	body := io.Reader(resp.Body)
+	if q.stream {
+		staged, serr := h.stageFirstOutput(q, resp.Body, cancel)
+		if serr != nil {
+			if q.r.Context().Err() != nil {
+				return result{kind: done}
+			}
+			return h.firstOutputFailure(q, acc, serr)
+		}
+		body = staged
+	}
 	if q.sink != nil {
-		q.sink(q, acc, cancel, idle, resp.Body)
+		q.sink(q, acc, cancel, idle, body)
 	} else if q.stream {
-		h.pipeStream(q.w, q.r, cancel, idle, resp.Body, acc, q.model, q.keyID, q.effort(h), q.start, q.maxTPS)
+		h.pipeStream(q.w, q.r, cancel, idle, body, acc, q.model, q.keyID, q.effort(h), q.start, q.maxTPS)
 	} else {
-		h.aggregate(q.w, q.r, cancel, idle, resp.Body, acc, q.model, q.keyID, q.effort(h), q.start)
+		h.aggregate(q.w, q.r, cancel, idle, body, acc, q.model, q.keyID, q.effort(h), q.start)
 	}
 	return result{kind: done}
 }
@@ -487,6 +576,20 @@ func (h *Handler) chatHeaders(q *request, rec *accounts.Record, product string, 
 		hdrs.Set("Content-Encoding", identity.RequestContentEnc)
 	}
 	return hdrs
+}
+
+func (h *Handler) firstOutputFailure(q *request, acc *pool.Account, err error) result {
+	acc.NoteResult(false)
+	q.at.kind = failTransport
+	q.at.lastErr = err
+	q.charge(acc, "first output: "+truncate(err.Error(), 120), true)
+	cool := 60 * time.Second
+	if h.Pool.RealmLen(q.realm) <= 1 {
+		cool = 3 * time.Second
+	}
+	acc.CoolDown(time.Now().Add(cool))
+	h.logger().Warn("upstream produced no usable first output", "account", short(acc.UID), "err", err, "cooling", cool)
+	return result{kind: retry}
 }
 
 // transportError files a failure that produced no HTTP status.
@@ -837,6 +940,11 @@ func (h *Handler) fail(q *request) {
 	if throttled, wait := h.realmModelThrottled(q.realm, q.model); throttled {
 		emit(http.StatusTooManyRequests, "")
 		q.rateErr(wait, "", "usage exceeds frequency limit")
+		return
+	}
+	if a.allFull {
+		emit(http.StatusTooManyRequests, "")
+		q.rateErr(1, "all accounts are at their concurrency limit; retry shortly", "concurrency_limit")
 		return
 	}
 	if h.Guards != nil {

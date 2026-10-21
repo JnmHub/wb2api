@@ -121,6 +121,7 @@ func main() {
 	redisDB := flag.Int("redis-db", func() int { n, _ := strconv.Atoi(envOr("WB_REDIS_DB", "0")); return n }(), "Redis database index")
 	redisInflight := flag.Int("redis-inflight", func() int { n, _ := strconv.Atoi(envOr("WB_REDIS_INFLIGHT", "0")); return n }(), "per-account in-flight limit shared through Redis (0 = off)")
 	redisWaitMS := flag.Int("redis-wait-ms", func() int { n, _ := strconv.Atoi(envOr("WB_REDIS_WAIT_MS", "0")); return n }(), "queue this long for a full account before failing over (ms, 0 = off)")
+	firstOutputMS := flag.Int("first-output-ms", func() int { n, _ := strconv.Atoi(envOr("WB_FIRST_OUTPUT_MS", "0")); return n }(), "fail over when a streaming account sends no semantic output within this time (ms, 0 = off)")
 	noModelsDev := flag.Bool("no-modelsdev", os.Getenv("WB_NO_MODELSDEV") == "1", "never contact models.dev for context/output limits")
 	debug := flag.Bool("debug", os.Getenv("WB_DEBUG") == "1", "expose /debug/runtime")
 	maxBodyMB := flag.Int("max-body-mb", func() int {
@@ -239,13 +240,19 @@ func main() {
 	h := &openai.Handler{
 		Pool: p, Up: up, Settings: st, Log: log, Refresher: refresher, Persist: persist,
 		UpstreamOverride: *upstreamOverride, MaxAttempts: *maxAttempts, FilterMode: mode,
-		MaxBody:         int64(*maxBodyMB) << 20,
-		AccountInflight: *redisInflight,
-		AccountWait:     time.Duration(*redisWaitMS) * time.Millisecond,
-		Sched:           feedback,
+		MaxBody:            int64(*maxBodyMB) << 20,
+		AccountInflight:    *redisInflight,
+		AccountWait:        time.Duration(*redisWaitMS) * time.Millisecond,
+		FirstOutputTimeout: time.Duration(*firstOutputMS) * time.Millisecond,
+		Sched:              feedback,
 	}
-	if rdb != nil && *redisInflight > 0 {
-		h.Limiter = redisx.NewLimiter(rdb)
+	p.SetScorer(h.AccountScore)
+	if rdb != nil {
+		lim := redisx.NewLimiter(rdb)
+		h.KeyLimiter = lim
+		if *redisInflight > 0 {
+			h.Limiter = lim
+		}
 	}
 	realmSw := realmswitch.Open(*accountsDir, "intl")
 	h.CurrentRealm = realmSw.Get

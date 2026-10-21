@@ -97,6 +97,9 @@ func (a *Account) Inflight() int { return int(a.inflight.Load()) }
 // SetMaxInflight caps concurrent requests per account (0 = unlimited).
 func (a *Account) SetMaxInflight(n int) { a.maxInflight.Store(int32(n)) }
 
+// MaxInflight returns the configured per-account cap (0 = unlimited).
+func (a *Account) MaxInflight() int { return int(a.maxInflight.Load()) }
+
 // Ready reports whether the account may serve model right now. It reads only
 // in-memory state. now is passed in so a scan can reuse one clock reading.
 func (a *Account) Ready(model string, now time.Time) bool {
@@ -208,7 +211,13 @@ type Pool struct {
 	pageCur   sync.Map                                  // pageKey -> *atomic.Uint64
 	slots     atomic.Pointer[map[string]string]         // enabled proxy slot id -> URL
 	topK      atomic.Int32                              // select among the K least-loaded ready accounts (1 = strict least-loaded)
+	scorer    atomic.Pointer[Scorer]                    // optional feedback-aware rank; lower is better
 }
+
+// Scorer ranks an account for a model. Lower scores are preferred. It must be
+// cheap and allocation-free: selection calls it for a handful of candidates on
+// the request path.
+type Scorer func(a *Account, model string) int64
 
 // New builds a pool from records.
 func New(recs []*accounts.Record) *Pool {
@@ -260,6 +269,25 @@ func (p *Pool) SetTopK(k int) {
 
 // TopK returns the configured top-K width.
 func (p *Pool) TopK() int { return int(p.topK.Load()) }
+
+// SetScorer installs the feedback-aware rank used by the pickers. A nil scorer
+// restores the default load-only ordering.
+func (p *Pool) SetScorer(s Scorer) {
+	if s == nil {
+		p.scorer.Store(nil)
+		return
+	}
+	p.scorer.Store(&s)
+}
+
+// scoreOf returns the rank for one candidate. The default is the in-flight
+// count, so a pool without feedback keeps the historical least-loaded order.
+func (p *Pool) scoreOf(a *Account, model string) int64 {
+	if s := p.scorer.Load(); s != nil {
+		return (*s)(a, model)
+	}
+	return int64(a.Inflight())
+}
 
 // Get returns an account by uid.
 func (p *Pool) Get(uid string) *Account { return p.snap.Load().byUID[uid] }

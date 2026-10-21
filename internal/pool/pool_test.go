@@ -113,6 +113,31 @@ func TestMaxInflight(t *testing.T) {
 	}
 }
 
+func TestScorerOverridesLoadTie(t *testing.T) {
+	p := New(mkRecs(2, time.Hour))
+	p.SetTopK(1)
+	p.SetScorer(func(a *Account, _ string) int64 {
+		if a.UID == "u000001" {
+			return 5
+		}
+		return 500
+	})
+	for i := 0; i < 12; i++ {
+		a := p.Pick("intl", "", nil)
+		if a == nil || a.UID != "u000001" {
+			t.Fatalf("feedback rank should win the tie, got %v", a)
+		}
+	}
+}
+
+func TestMaxInflightGetter(t *testing.T) {
+	a := NewAccount(mkRecs(1, time.Hour)[0])
+	a.SetMaxInflight(7)
+	if got := a.MaxInflight(); got != 7 {
+		t.Fatalf("MaxInflight = %d, want 7", got)
+	}
+}
+
 func TestConcurrentPickAndMutate(t *testing.T) {
 	p := New(mkRecs(200, time.Hour))
 	var wg sync.WaitGroup

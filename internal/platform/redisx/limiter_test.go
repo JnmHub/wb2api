@@ -108,3 +108,56 @@ func TestLimiterAcquireWaitCancels(t *testing.T) {
 		t.Fatalf("expected context cancellation, got ok=%v", ok)
 	}
 }
+
+func TestLimiterKeySlotsSharedAcrossLimiters(t *testing.T) {
+	mr := miniredis.RunT(t)
+	c1, err := Open(context.Background(), mr.Addr(), "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c1.Close()
+	c2, err := Open(context.Background(), mr.Addr(), "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.Close()
+	l1 := NewLimiter(c1)
+	l2 := NewLimiter(c2)
+	ctx := context.Background()
+	rel, ok, err := l1.AcquireKey(ctx, "shared-key", 1, "req-1")
+	if err != nil || !ok {
+		t.Fatalf("first slot: %v %v", ok, err)
+	}
+	if _, ok, _ := l2.AcquireKey(ctx, "shared-key", 1, "req-2"); ok {
+		t.Fatal("a second limiter must see the shared key slot as full")
+	}
+	rel()
+	if _, ok, _ := l2.AcquireKey(ctx, "shared-key", 1, "req-2"); !ok {
+		t.Fatal("release on one limiter must free the key slot for another")
+	}
+}
+
+func TestLimiterKeySlotsAreSeparateFromAccountSlots(t *testing.T) {
+	mr := miniredis.RunT(t)
+	c, err := Open(context.Background(), mr.Addr(), "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	l := NewLimiter(c)
+	ctx := context.Background()
+	rel, ok, err := l.AcquireKey(ctx, "key-a", 1, "req-1")
+	if err != nil || !ok {
+		t.Fatalf("first key slot: %v %v", ok, err)
+	}
+	if _, ok, _ := l.AcquireKey(ctx, "key-a", 1, "req-2"); ok {
+		t.Fatal("second request on a full key should be rejected")
+	}
+	if _, ok, _ := l.AcquireKey(ctx, "key-b", 1, "req-3"); !ok {
+		t.Fatal("a different key must have its own slots")
+	}
+	rel()
+	if _, ok, _ := l.AcquireKey(ctx, "key-a", 1, "req-2"); !ok {
+		t.Fatal("released key slot must be reusable")
+	}
+}

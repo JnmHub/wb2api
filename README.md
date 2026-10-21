@@ -13,7 +13,10 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
 - **账号池**：多账号轮换、权重、按 Key 绑定出口/模型、手动置顶、失败切换、
   429 作用域（账号/模型/6004）、冷却与风控停放、免费模型积分回退。
 - **配额与调度**：24 小时窗口探针、主动额度体检、剩余用量估算与优先调度、
-  并发不设网关侧上限（由上游决定）。
+  会话亲和与慢账号逃逸、最低负载优先、可选 top-K 负载分散、PostgreSQL 用量记账；
+  账号槽位和 API Key 并发可选用 Redis 跨进程共享，全部满槽时短暂排队后返回 429。
+- **首包保护**：流式请求在收到语义输出前不向客户端发送响应头；超过
+  `WB_FIRST_OUTPUT_MS` 仍未产出时取消该账号并换号，避免把半截 SSE 暴露给客户端。
 - **运营**：国内签到/活跃上报/成长任务/猫猫旅行/连登管家，国际每日活跃
   （桌面 + 网页 ACP 会话），OAuth 登录，积分刷新，账号导入导出。
 - **可观测**：账号积分总览（剩余/可用/到期/零积分）、请求记录、用量趋势、模型用量、
@@ -64,9 +67,10 @@ docker compose up -d --build
   `./data/accounts/*.json`、`settings.json`、`usage.jsonl`、旧版 `usage.db` 和
   `panel_sessions.json` 导入数据库，之后读写走数据库。`usage.db` 只读导入，原文件保留，
   导入进度记录在 `meta` 表。
-- **Redis**：跨进程的账号并发槽位（`WB_REDIS_INFLIGHT`，默认 8）和健康检查；
-  账号满槽时可排队 `WB_REDIS_WAIT_MS`（默认 1500）再切换，减少冷账号溢出；
-  不配 Redis 时退回本地并发限制。
+- **Redis**：跨进程的账号并发槽位（`WB_REDIS_INFLIGHT`，CLI 默认 0，Compose
+  默认 8）、API Key 并发槽位和健康检查；所有账号都满槽时可排队
+  `WB_REDIS_WAIT_MS`（默认 1500）再返回 429，减少冷账号溢出；不配 Redis
+  时退回本地并发限制。
 - **`./data`**：仍保留 catalog、active realm、quota、jobs 等文件；旧版 standalone 模式不需要
   PostgreSQL/Redis，继续使用文件 + `usage.db`。
 - 容器以非 root 用户运行，应用健康检查走 `/health`。
@@ -101,7 +105,8 @@ services:
 | `-postgres-dsn` / `WB_POSTGRES_DSN` | 空 | 启用 PostgreSQL 账号/设置/用量存储；空则使用文件 + `usage.db` |
 | `-redis-addr` / `WB_REDIS_ADDR` | 空 | 启用 Redis；空则不启用跨进程状态 |
 | `-redis-inflight` / `WB_REDIS_INFLIGHT` | `0` | 每账号 Redis 并发槽位；0 = 关闭 |
-| `-redis-wait-ms` / `WB_REDIS_WAIT_MS` | `0` | 满槽时排队等待毫秒数，超时才切换账号；0 = 立即切换 |
+| `-redis-wait-ms` / `WB_REDIS_WAIT_MS` | `0` | 所有账号都满槽时排队等待毫秒数，超时才返回 429；0 = 不排队 |
+| `-first-output-ms` / `WB_FIRST_OUTPUT_MS` | `0` | 流式首包超时；超过该毫秒数仍无语义输出则换号，0 = 关闭（Compose 默认 30000） |
 | `-port` | `8788` | 监听端口 |
 | `-host` / `-lan` | `127.0.0.1` / 关 | 监听地址；`-lan` 等价于所有网卡 |
 | `-accounts-dir` | `accounts` | 账号 JSON 目录 |
@@ -113,7 +118,7 @@ services:
 | `-per-account-inflight` | `0` | 单账号并发上限，0 = 不限（网关不额外限制） |
 | `-sticky-escape-ttft-ms` | `15000` | 会话亲和账号 TTFT EWMA 超过该值时临时逃逸 |
 | `-sticky-escape-error-rate` | `0.5` | 会话亲和账号错误率 EWMA 超过该值时临时逃逸 |
-| `-sched-top-k` / `WB_SCHED_TOP_K` | `1` | 从负载最低的 K 个可用账号中选择；1 = 严格最低负载 |
+| `-sched-top-k` / `WB_SCHED_TOP_K` | `1` | 从评分最优的 K 个可用账号中选择；1 = 严格最优 |
 | `-no-modelsdev` | 关 | 不访问 models.dev 的额度数据 |
 | `-debug` | 关 | 暴露 `/debug/runtime` |
 

@@ -79,6 +79,13 @@ export function KeysSection({ s }: { s: SettingsView }) {
       render: (v: number) => (v < 0 ? <Typography.Text type="secondary">关闭</Typography.Text> : v === 0 ? <Typography.Text type="secondary">跟随</Typography.Text> : `${v} t/s`),
     },
     {
+      title: '并发',
+      dataIndex: 'concurrency_limit',
+      width: 80,
+      responsive: ['lg'],
+      render: (v: number) => (v > 0 ? v : <Typography.Text type="secondary">不限</Typography.Text>),
+    },
+    {
       title: '启用',
       dataIndex: 'enabled',
       width: 80,
@@ -169,6 +176,7 @@ function KeyEditor(props: { initial: KeyView | null; onClose: () => void; onSave
   const [realm, setRealm] = useState<string>(k?.realm ?? '')
   const [models, setModels] = useState((k?.models ?? []).join('\n'))
   const [tps, setTps] = useState<number>(k?.tps_limit ?? 0)
+  const [conc, setConc] = useState<number>(k?.concurrency_limit ?? 0)
   const [secret, setSecret] = useState('')
   const m = useMutation({
     mutationFn: async () => {
@@ -177,6 +185,7 @@ function KeyEditor(props: { initial: KeyView | null; onClose: () => void; onSave
         realm,
         models: models.split(/[\s,]+/).filter(Boolean),
         tps_limit: tps,
+        concurrency_limit: conc,
       }
       if (!k) {
         if (secret.trim()) body.key = secret.trim()
@@ -224,6 +233,10 @@ function KeyEditor(props: { initial: KeyView | null; onClose: () => void; onSave
         <div>
           <Typography.Text type="secondary">流式输出 TPS 上限（0 = 跟随全局，-1 = 此 Key 关闭，{'>'}0 = 覆盖）</Typography.Text>
           <InputNumber style={{ width: '100%' }} min={-1} max={1000} step={0.5} value={tps} onChange={(v) => setTps(v ?? 0)} />
+        </div>
+        <div>
+          <Typography.Text type="secondary">并发上限（0 = 不限；多副本经 Redis 共享，无 Redis 时本机生效）</Typography.Text>
+          <InputNumber style={{ width: '100%' }} min={0} max={100000} step={1} value={conc} onChange={(v) => setConc(v ?? 0)} />
         </div>
         <div>
           <Typography.Text type="secondary">允许的模型（每行一条，支持 * 通配；留空 = 不限）</Typography.Text>

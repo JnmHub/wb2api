@@ -97,9 +97,18 @@ type Handler struct {
 	Limiter InflightLimiter
 	// AccountInflight is the per-account limit used with Limiter (0 = off).
 	AccountInflight int
-	// AccountWait bounds how long a request queues for a full account before
-	// failing over (0 = fail over immediately).
+	// AccountWait bounds how long a request queues on one full account after
+	// the non-blocking probe found every ready account full (0 = fail over
+	// immediately).
 	AccountWait time.Duration
+	// KeyLimiter optionally shares per-API-key concurrency across replicas.
+	// Nil falls back to a local process gate.
+	KeyLimiter KeyLimiter
+	// FirstOutputTimeout bounds how long an upstream stream may stay silent
+	// (or send only setup events) before the attempt is treated as failed and
+	// another account is tried. Headers are held until semantic output exists.
+	// Zero disables the guard.
+	FirstOutputTimeout time.Duration
 	// Sched optionally lets sticky routing escape a slow/error-prone account.
 	Sched SchedulerFeedback
 	// DefaultRealm is the fallback when CurrentRealm gives none (intl).
@@ -117,6 +126,8 @@ type Handler struct {
 	Limits *usageest.Estimator
 
 	keyCache   atomic.Pointer[keyCache]
+	keyMu      sync.Mutex
+	keyGates   map[string]*keyGate
 	promptMu   sync.Mutex
 	promptFile string
 	promptMod  time.Time

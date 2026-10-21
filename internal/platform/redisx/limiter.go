@@ -69,15 +69,58 @@ func (l *Limiter) AcquireWait(ctx context.Context, accountID string, max int, me
 	}
 }
 
-// Acquire reserves one slot. max <= 0 is unlimited. The returned release
-// function is safe to call once.
+// Acquire reserves one account slot. max <= 0 is unlimited. The returned
+// release function is safe to call once.
 func (l *Limiter) Acquire(ctx context.Context, accountID string, max int, member string) (func(), bool, error) {
+	return l.acquire(ctx, l.prefix+accountID, max, member)
+}
+
+// AcquireKey reserves one API-key slot in the same Redis-sorted-set form. It
+// keeps per-key concurrency shared across replicas instead of being a local
+// process counter.
+func (l *Limiter) AcquireKey(ctx context.Context, keyID string, max int, member string) (func(), bool, error) {
+	return l.acquire(ctx, "wb:keyinflight:"+keyID, max, member)
+}
+
+// AcquireKeyWait is the bounded queue for a busy key.
+func (l *Limiter) AcquireKeyWait(ctx context.Context, keyID string, max int, member string, maxWait time.Duration) (func(), bool, error) {
+	if maxWait <= 0 {
+		return l.AcquireKey(ctx, keyID, max, member)
+	}
+	deadline := time.Now().Add(maxWait)
+	delay := 40 * time.Millisecond
+	for {
+		rel, ok, err := l.AcquireKey(ctx, keyID, max, member)
+		if err != nil || ok {
+			return rel, ok, err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, false, nil
+		}
+		if delay > remaining {
+			delay = remaining
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, false, ctx.Err()
+		case <-timer.C:
+		}
+		if delay < 500*time.Millisecond {
+			delay = delay * 3 / 2
+		}
+	}
+}
+
+func (l *Limiter) acquire(ctx context.Context, key string, max int, member string) (func(), bool, error) {
 	if l == nil || l.c == nil || max <= 0 {
 		return func() {}, true, nil
 	}
 	now := time.Now().UnixMilli()
 	n, err := acquireScript.Run(ctx, l.c.Client,
-		[]string{l.prefix + accountID},
+		[]string{key},
 		now, l.ttl.Milliseconds(), max, member,
 	).Int()
 	if err != nil {
@@ -89,6 +132,6 @@ func (l *Limiter) Acquire(ctx context.Context, accountID string, max int, member
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = l.c.ZRem(ctx, l.prefix+accountID, member).Err()
+		_ = l.c.ZRem(ctx, key, member).Err()
 	}, true, nil
 }

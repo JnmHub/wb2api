@@ -5,8 +5,8 @@ files + SQLite deployment to the Sub2API-style split:
 
 - PostgreSQL is the authoritative store for account, settings and request usage
   state.
-- Redis carries cross-process runtime state (per-account in-flight slots and a
-  short scheduler wait queue).
+- Redis carries cross-process runtime state (per-account in-flight slots, per-key
+  concurrency slots and a short scheduler wait queue).
 - The standalone file/SQLite mode remains available when no DSN is set.
 
 ## Implemented in this phase
@@ -26,12 +26,34 @@ files + SQLite deployment to the Sub2API-style split:
   existing cursor order as the tie-breaker (an idle pool still rotates exactly as
   before). This spreads new sessions across the pool without sacrificing the
   warm-session path.
-- Redis limiter now has `AcquireWait`: when an account is full, the request
-  keeps its sticky account and polls for a slot for `WB_REDIS_WAIT_MS` (compose
-  default 1500 ms) before giving up and failing over. Polling backs off from
-  40 ms to 500 ms, respects request cancellation, and uses the same Redis ZSET
-  slots/TTL as `Acquire`. This mirrors Sub2API's per-account queue and avoids
-  cold-account spills caused by a momentary burst.
+- Slot acquisition is two-phase: a non-blocking probe visits every ready account
+  first, so a free account always wins over waiting on a full sticky account.
+  Only when every candidate is full does the request queue on the best-ranked one
+  for `WB_REDIS_WAIT_MS`; a timeout returns a retryable 429 instead of sleeping
+  once per account. Pinned routes keep their dedicated `AcquireWait` path.
+- The scheduler score currently combines the TTFT/error EWMA, in-flight load
+  (normalised by the account's max-inflight cap) and the manual weight.
+  `Pool.SetScorer` is wired to `Handler.AccountScore`; top-K selection and the
+  non-top-K fallback both use the same score, with the original load tie-break
+  as the last resort. Queue depth, explicit priority rank, quota headroom, reset
+  window and upstream cost are not yet terms in this score.
+- Redis limiter now has `AcquireWait`: after the non-blocking probe has found
+  every ready account full, the request queues on one ranked account for
+  `WB_REDIS_WAIT_MS` (compose default 1500 ms) before returning a retryable 429.
+  Polling backs off from 40 ms to 500 ms, respects request cancellation, and
+  uses the same Redis ZSET slots/TTL as `Acquire`.
+- API-key concurrency uses the same Redis ZSET form (`wb:keyinflight:`) through
+  `Limiter.AcquireKeyWait`; a process-local `keyGate` is the fallback when Redis
+  is absent. A busy key queues briefly and then returns a retryable 429.
+- Streaming requests are staged before response headers are sent:
+  `stageFirstOutput` reads until the first semantic delta (text, reasoning, tool
+  call, Responses delta or Anthropic content block) with a timeout. A silent or
+  failed account is cancelled and retried before any client bytes are written;
+  `WB_FIRST_OUTPUT_MS` controls the bound (compose default 30000).
+- The shared upstream connection pool keeps up to 32 idle connections per host
+  (raised from 4) so a burst does not pay a new TLS handshake per request.
+- Request usage leaves the hot path through the existing asynchronous writer;
+  the queue is bounded and request handlers only enqueue.
 - `internal/store/pgaccounts`: account records stored as JSONB, with a one-time
   import from `accounts/*.json` when the table is empty.
 - `internal/store/pgsettings`: singleton settings document stored as JSONB, with
@@ -52,7 +74,8 @@ files + SQLite deployment to the Sub2API-style split:
 - A PostgreSQL-backed usage round-trip test runs in CI (`postgres` job, service
   container) in addition to the SQLite tests.
 - `settings.OpenWith`: file-free settings store used by the PostgreSQL backend.
-- `cmd/hub`: `WB_POSTGRES_DSN`, `WB_REDIS_ADDR`, `WB_REDIS_INFLIGHT`, `WB_REDIS_WAIT_MS`; when
+- `cmd/hub`: `WB_POSTGRES_DSN`, `WB_REDIS_ADDR`, `WB_REDIS_INFLIGHT`,
+  `WB_REDIS_WAIT_MS`, `WB_SCHED_TOP_K` and `WB_FIRST_OUTPUT_MS`; when
   configured, account persistence/import/delete and settings updates go to
   PostgreSQL, and `/health` reports backend status.
 - `compose.yaml`: one command starts PostgreSQL, Redis and wb2api, with health
@@ -74,22 +97,18 @@ files + SQLite deployment to the Sub2API-style split:
 
 ## Next phases
 
-1. **Scheduler**: port the remaining Sub2API loop:
-   - first-output timeout/failover before semantic output;
-   - fold TTFT/error into the top-K score (the current top-K window ranks by
-     in-flight load only).
-2. **Shared state**: move active realm, quota windows, pricing overrides,
+1. **Shared state**: move active realm, quota windows, pricing overrides,
    jobs/leader election and affinity to PostgreSQL/Redis so more than one wb2api
-   replica is safe. Panel sessions already use the shared backend.
-3. **Observability**: add backend status and scheduler metrics to the panel.
-4. **Load tests**: compare file/SQLite vs PostgreSQL/Redis at 200+ concurrent
+   replica is safe. Panel sessions and per-key/account slots already use shared
+   backends.
+2. **Observability**: add backend status and scheduler metrics to the panel.
+3. **Load tests**: compare file/SQLite vs PostgreSQL/Redis at 200+ concurrent
    streams, and verify a two-replica deployment does not double-schedule.
 
 ## Non-goals in this phase
 
-- The account scheduler is still the existing pool scheduler plus the TTFT/error
-  sticky escape, warm-account load preference, a short Redis wait queue and an
-  optional load-only top-K window (`-sched-top-k`); TTFT/error scoring and
-  first-output failover are not complete yet.
 - Running multiple wb2api processes against the same **file** data directory is
   still unsupported; use the PostgreSQL/Redis mode for that.
+- The scheduler uses in-process EWMA feedback. Two replicas can make different
+  TTFT/error decisions because that feedback is not yet shared through Redis;
+  active realm/quota/pricing/jobs/affinity remain file-backed as noted above.
