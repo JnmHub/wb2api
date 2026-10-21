@@ -81,6 +81,21 @@ func (s *Stats) Observe(uid string, ttft time.Duration, failed bool) {
 	st.seen = now
 }
 
+// Score returns the current TTFT (ms) and error EWMA for an account. ok is
+// false when there is no fresh sample.
+func (s *Stats) Score(uid string) (ttft, errRate float64, ok bool) {
+	if s == nil || uid == "" {
+		return 0, 0, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.accounts[uid]
+	if st == nil || time.Since(st.seen) > s.maxAge {
+		return 0, 0, false
+	}
+	return st.ttft, st.err, st.hasTTFT || st.samples > 0
+}
+
 // ShouldEscape reports whether the warm account should be skipped for this
 // request. Stale samples do not pin an account forever.
 func (s *Stats) ShouldEscape(uid string) bool {

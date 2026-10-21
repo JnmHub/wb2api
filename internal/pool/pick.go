@@ -278,16 +278,31 @@ func (p *Pool) pick(realm, model string, exclude map[string]struct{}, page *Page
 // prefix upstream); page marks a conversation past the affinity length cap,
 // which rotates over one page of the pool instead of pinning.
 func (p *Pool) PickForSession(realm, sessionKey string, exclude map[string]struct{}, model string, page *Page) *Account {
+	return p.PickForSessionBest(realm, sessionKey, exclude, model, page, nil)
+}
+
+// PickForSessionBest is PickForSession with a preference among the warm
+// accounts of one conversation. better reports whether a is a better choice
+// than b; nil keeps the most-recent-first order.
+func (p *Pool) PickForSessionBest(realm, sessionKey string, exclude map[string]struct{}, model string, page *Page, better func(a, b *Account) bool) *Account {
 	if sessionKey != "" && page == nil {
 		now := time.Now()
+		var best *Account
 		for _, uid := range p.affinity.Recent(sessionKey) {
 			if _, skip := exclude[uid]; skip {
 				continue
 			}
-			if a := p.Get(uid); a != nil && a.Realm == realm && a.Ready(model, now) {
-				p.affinity.Bind(sessionKey, uid)
-				return a
+			a := p.Get(uid)
+			if a == nil || a.Realm != realm || !a.Ready(model, now) {
+				continue
 			}
+			if best == nil || (better != nil && better(a, best)) {
+				best = a
+			}
+		}
+		if best != nil {
+			p.affinity.Bind(sessionKey, best.UID)
+			return best
 		}
 	}
 	a := p.pick(realm, model, exclude, page)

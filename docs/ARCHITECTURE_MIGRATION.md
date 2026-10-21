@@ -17,6 +17,10 @@ files + SQLite deployment to the Sub2API-style split:
   a warm account when its recent TTFT exceeds `WB_STICKY_ESCAPE_TTFT_MS`
   (default 15s) or its error EWMA exceeds
   `WB_STICKY_ESCAPE_ERROR_RATE` (default 0.5). Client aborts are not counted.
+- `Pool.PickForSessionBest`: among the conversation's warm accounts, choose the
+  least-loaded one, then the one with the better TTFT/error score; the most
+  recent account still wins on a tie. This keeps prefix cache while avoiding a
+  single hot account when another warm account is idle.
 - `internal/store/pgaccounts`: account records stored as JSONB, with a one-time
   import from `accounts/*.json` when the table is empty.
 - `internal/store/pgsettings`: singleton settings document stored as JSONB, with
@@ -55,8 +59,8 @@ files + SQLite deployment to the Sub2API-style split:
 ## Non-goals in this phase
 
 - The account scheduler itself is still the existing pool scheduler plus the
-  TTFT/error sticky escape; top-K load scoring and the Redis limiter wait queue
-  are not complete yet.
+  TTFT/error sticky escape and warm-account load preference; global top-K load
+  scoring and the Redis limiter wait queue are not complete yet.
 - SQLite usage data is not migrated automatically yet. The compose stack keeps
   `/data/usage` as a volume so both modes can coexist during the transition.
 - Running multiple wb2api processes against the same **file** data directory is

@@ -227,7 +227,7 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 					if len(q.at.avoid) > 0 {
 						exclude = unionExclude(q.at.tried, q.at.avoid)
 					}
-					acc = h.Pool.PickForSession(q.realm, q.sessionKey, exclude, q.model, q.page)
+					acc = h.Pool.PickForSessionBest(q.realm, q.sessionKey, exclude, q.model, q.page, h.betterAccount)
 				}
 				if acc == nil {
 					// transient trouble: give the pool a moment and go round again
@@ -314,6 +314,26 @@ func unionExclude(a, b map[string]struct{}) map[string]struct{} {
 		out[k] = struct{}{}
 	}
 	return out
+}
+
+// betterAccount prefers the least-loaded warm account; if load ties, it uses
+// the TTFT/error EWMA so a degraded warm account does not keep the session.
+func (h *Handler) betterAccount(a, b *pool.Account) bool {
+	if a == nil || b == nil {
+		return a != nil
+	}
+	if ai, bi := a.Inflight(), b.Inflight(); ai != bi {
+		return ai < bi
+	}
+	if h.Sched == nil {
+		return false
+	}
+	at, ae, aok := h.Sched.Score(a.UID)
+	bt, be, bok := h.Sched.Score(b.UID)
+	if !aok || !bok {
+		return false
+	}
+	return at+ae*20000 < bt+be*20000
 }
 
 // finishError relays an upstream error that must not be retried elsewhere.

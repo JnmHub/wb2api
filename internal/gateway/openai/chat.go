@@ -55,6 +55,7 @@ type InflightLimiter interface {
 // its recent TTFT/error feedback is poor.
 type SchedulerFeedback interface {
 	ShouldEscape(accountID string) bool
+	Score(accountID string) (ttftMs, errRate float64, ok bool)
 }
 
 type Handler struct {
