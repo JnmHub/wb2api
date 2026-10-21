@@ -346,7 +346,18 @@ export function AccountsPage() {
             showTotal: (n) => `共 ${num(n)} 个账号`,
             onChange: setPage,
           }}
-          locale={{ emptyText: '没有符合条件的账号' }}
+          locale={{
+            emptyText: filters.status ? (
+              <div style={{ padding: 16 }}>
+                当前筛选「{statusLabel[filters.status] ?? filters.status}」没有账号。
+                <Button type="link" onClick={() => setFilters((f) => ({ ...f, status: '' }))}>
+                  查看全部 {num(sum?.total ?? 0)} 个
+                </Button>
+              </div>
+            ) : (
+              '没有符合条件的账号'
+            ),
+          }}
         />
       </Card>
 
