@@ -140,9 +140,10 @@ npm run uitest -- --url http://127.0.0.1:18888 --password real-test
 
 ## 9. 并发上限与长上下文
 
-- **网关侧不再限制并发**：删除了按 API Key 的 `concurrency_limit` 拒绝逻辑（字段保留但忽略），
-  `TestKeyConcurrencyIsNotCapped` 断言已存 `concurrency_limit=1` 时第二个在途请求仍返回 200。
-  单账号仍可用 `-per-account-inflight` 限制（默认 0 = 不限），但默认不设任何并发上限。
+- **API Key 并发限制已恢复执行**：`concurrency_limit` 为 0 时不限制；大于 0 时
+  第二个在途请求会等待槽位，超时返回 429。`TestKeyConcurrencyIsEnforced` 覆盖这一
+  行为；配置 Redis 后同一限制跨副本共享。单账号仍可用 `-per-account-inflight`
+  限制（默认 0 = 不限）。
 - **长上下文高并发**：`TestLongContextHighConcurrency`（`internal/gateway/openai`）用真实
   gateway 路径压测：100 个并发非流式请求 + 48 个并发流式请求，每个 prompt 约 200 KB，
   上游返回约 12.8 KB 内容。断言全部 200、非流式与流式内容逐字节等于期望值、无截断/串流/
@@ -351,7 +352,7 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
 - 本机没有 Docker daemon，**没有实际启动 compose 栈**；这一步需要在有 Docker
   的机器上补做。无 DSN 的 standalone 模式已用浏览器 smoke 回归。
 
-## 20. PostgreSQL 用量、面板会话与调度可靠性（v2.1.4 / v2.1.5 / v2.1.6 / v2.2.0）
+## 20. PostgreSQL 用量、面板会话与调度可靠性（v2.1.4 至 v2.2.1）
 
 - 请求用量支持 PostgreSQL，日/时预聚合在写入事务中同步维护；SQLite 仍是
   standalone 默认后端。
@@ -389,8 +390,16 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
 - active realm 在 PostgreSQL 模式下存入 `wb_state`，`realmswitch` 每秒刷新一次，
   另一个副本切换后 1 秒内生效；`TestBackendRefreshesAcrossReplicas`、
   `TestBackendSaveFailureKeepsCurrent` 覆盖跨副本刷新和保存失败回退。
+- 会话亲和绑定经 Redis `wb:aff:<hash>` 共享，会话 key 先哈希再落 Redis；本地
+  缓存 5 秒，成功绑定异步写、失败账号 demote 同步写。
+  `TestAffinitySharesBindingsBetweenReplicas`、
+  `TestAffinityDemoteIsVisibleToOtherReplicas`、`TestAffinityCachesStoreReads`、
+  `TestAffinityBindIsLocalBeforeStoreWrite`、`TestAffinitySyncStatsReportsSharedMode`
+  覆盖跨副本、缓存、失败回退和队列统计；
+  `TestAffinityStoreSharesAndTrimsBindings`、`TestAffinityStoreHashesSessionKey`、
+  `TestAffinityStoreExpiresEntries` 覆盖 Redis 排序集、历史裁剪、哈希和过期。
 - 账号页新增调度指标卡：在途/容量、平均首包、平均错误率、Top-K 和反馈样本数；
-  `TestSchedulerSummaryAggregatesLiveState` 覆盖聚合与排序。
+  `TestSchedulerSummaryAggregatesLiveState` 覆盖聚合、排序和 affinity 同步状态。
 
-尚未完成（后续阶段）：quota/pricing/jobs/affinity 的共享存储、真实 compose
+尚未完成（后续阶段）：quota/pricing/jobs 的共享存储、真实 compose
 双副本栈与多副本压测。详见 `docs/ARCHITECTURE_MIGRATION.md`。

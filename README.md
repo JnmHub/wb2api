@@ -13,7 +13,8 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
 - **账号池**：多账号轮换、权重、按 Key 绑定出口/模型、手动置顶、失败切换、
   429 作用域（账号/模型/6004）、冷却与风控停放、免费模型积分回退。
 - **配额与调度**：24 小时窗口探针、主动额度体检、剩余用量估算与优先调度、
-  会话亲和与慢账号逃逸、最低负载优先、可选 top-K 负载分散、PostgreSQL 用量记账；
+  会话亲和（配置 Redis 后跨副本共享）与慢账号逃逸、最低负载优先、可选 top-K
+  负载分散、PostgreSQL 用量记账；
   账号槽位和 API Key 并发可选用 Redis 跨进程共享，全部满槽时短暂排队后返回 429。
 - **首包保护**：流式请求在收到语义输出前不向客户端发送响应头；超过
   `WB_FIRST_OUTPUT_MS` 仍未产出时取消该账号并换号，避免把半截 SSE 暴露给客户端。
@@ -68,7 +69,7 @@ docker compose up -d --build
   `panel_sessions.json` 导入数据库，之后读写走数据库。`usage.db` 只读导入，原文件保留，
   导入进度记录在 `meta` 表。
 - **Redis**：跨进程的账号并发槽位（`WB_REDIS_INFLIGHT`，CLI 默认 0，Compose
-  默认 8）、API Key 并发槽位和健康检查；所有账号都满槽时可排队
+  默认 8）、API Key 并发槽位、会话亲和绑定和健康检查；所有账号都满槽时可排队
   `WB_REDIS_WAIT_MS`（默认 1500）再返回 429，减少冷账号溢出；不配 Redis
   时退回本地并发限制。
 - **`./data`**：仍保留 catalog、quota、jobs 等文件；PostgreSQL 模式下 active realm

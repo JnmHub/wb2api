@@ -83,15 +83,23 @@ files + SQLite deployment to the Sub2API-style split:
 - `wb_state`: small shared runtime-state table. The active realm is stored under
   `active_realm`; each replica refreshes it once per second, so a panel switch
   propagates without a restart.
+- Redis affinity: `wb:aff:<sha256-prefix>` holds a per-conversation sorted set
+  (score = expiry, member = account uid). The session key is hashed before it
+  reaches Redis. Each replica keeps a five-second local cache; a miss reads the
+  shared set, a successful bind is queued so the request path never waits on
+  Redis, and a failed-account demote is written synchronously so other replicas
+  stop choosing it.
 - `GET /api/v2/scheduler/summary`: aggregate in-flight/capacity, average
-  TTFT/error rate, Top-K and the twenty highest-scoring accounts. The accounts
+  TTFT/error rate, Top-K and the twenty highest-scoring accounts. It also
+  reports affinity queue depth, dropped writes and store errors. The accounts
   page polls it every ten seconds for its scheduler tiles.
 
 ### Compatibility
 
 - `WB_POSTGRES_DSN` empty: exactly the previous file + SQLite behavior.
-- `WB_REDIS_ADDR` empty: no Redis limiter; local `-per-account-inflight`
-  still works. Compose sets `WB_REDIS_INFLIGHT=8`; the standalone default is 0.
+- `WB_REDIS_ADDR` empty: no Redis limiter and affinity stays process-local; the
+  local `-per-account-inflight` still works. Compose sets
+  `WB_REDIS_INFLIGHT=8`; the standalone default is 0.
 - Existing account files/settings are imported only when the corresponding
   PostgreSQL table is empty, so an upgrade does not require manual migration.
 - In PostgreSQL mode the legacy `usage.db` is imported automatically on first
@@ -103,10 +111,10 @@ files + SQLite deployment to the Sub2API-style split:
 
 ## Next phases
 
-1. **Shared state**: move quota windows, pricing overrides, jobs/leader election
-   and affinity to PostgreSQL/Redis so more than one wb2api replica is safe.
-   Panel sessions, per-key/account slots and the active realm already use shared
-   backends.
+1. **Shared state**: move quota windows, pricing overrides and jobs/leader
+   election to PostgreSQL/Redis so more than one wb2api replica is safe. Panel
+   sessions, per-key/account slots, the active realm and conversation affinity
+   already use shared backends.
 2. **Observability**: expose usage-worker queue/drop metrics in addition to the
    scheduler tile now on the accounts page.
 3. **Load tests**: compare file/SQLite vs PostgreSQL/Redis at 200+ concurrent
@@ -118,4 +126,4 @@ files + SQLite deployment to the Sub2API-style split:
   still unsupported; use the PostgreSQL/Redis mode for that.
 - The scheduler uses in-process EWMA feedback. Two replicas can make different
   TTFT/error decisions because that feedback is not yet shared through Redis;
-  quota/pricing/jobs/affinity remain file-backed as noted above.
+  quota/pricing/jobs remain file-backed as noted above.

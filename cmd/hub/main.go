@@ -254,6 +254,9 @@ func main() {
 		if *redisInflight > 0 {
 			h.Limiter = lim
 		}
+		// Conversation affinity is best-effort cross-replica state: a missed
+		// binding only costs a cold prompt cache on another replica.
+		p.Affinity().SetStore(redisx.NewAffinityStore(rdb.Client))
 	}
 	var realmSw *realmswitch.Switch
 	if pgDB != nil {

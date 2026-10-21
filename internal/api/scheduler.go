@@ -94,11 +94,16 @@ func (s *Scheduler) summary(w http.ResponseWriter, r *http.Request) {
 	if s.TopK != nil {
 		topK = s.TopK()
 	}
+	affinity := s.Pool.Affinity().SyncStats()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"realm": realm, "top_k": topK,
 		"total": len(all), "inflight": inflight, "capacity": capacity,
 		"tracked": tracked, "ttft_ms": avgTTFT, "error_rate": avgErr,
 		"states": states, "hot": rows,
+		"affinity": map[string]any{
+			"shared": affinity.Shared, "pending": affinity.Pending,
+			"dropped": affinity.Dropped, "errors": affinity.Errors,
+		},
 	})
 }
 

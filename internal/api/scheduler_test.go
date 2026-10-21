@@ -67,4 +67,8 @@ func TestSchedulerSummaryAggregatesLiveState(t *testing.T) {
 	if states["ready"].(float64) != 2 {
 		t.Fatalf("states = %v", states)
 	}
+	affinity := out["affinity"].(map[string]any)
+	if affinity["shared"] != false || affinity["dropped"].(float64) != 0 {
+		t.Fatalf("affinity = %v", affinity)
+	}
 }
