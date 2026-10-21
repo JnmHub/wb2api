@@ -231,3 +231,16 @@ func TestStateShowsBreakerAndBalanceAsCooling(t *testing.T) {
 		t.Fatalf("balance reason = %q", b.UnavailableReason("", now))
 	}
 }
+
+func TestPickPrefersLeastLoadedAccount(t *testing.T) {
+	p := New(mkRecs(3, time.Hour))
+	busy := p.All()[0]
+	busy.Acquire()
+	defer busy.Release()
+	for i := 0; i < 10; i++ {
+		a := p.Pick("intl", "m", nil)
+		if a == nil || a.UID == busy.UID {
+			t.Fatalf("pick chose the busy account: %v", a)
+		}
+	}
+}

@@ -21,6 +21,10 @@ files + SQLite deployment to the Sub2API-style split:
   least-loaded one, then the one with the better TTFT/error score; the most
   recent account still wins on a tie. This keeps prefix cache while avoiding a
   single hot account when another warm account is idle.
+- `Pool.pick` fallback now chooses the least-loaded ready account, with the
+  existing cursor order as the tie-breaker (an idle pool still rotates exactly as
+  before). This spreads new sessions across the pool without sacrificing the
+  warm-session path.
 - `internal/store/pgaccounts`: account records stored as JSONB, with a one-time
   import from `accounts/*.json` when the table is empty.
 - `internal/store/pgsettings`: singleton settings document stored as JSONB, with

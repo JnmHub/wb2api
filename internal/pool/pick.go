@@ -260,16 +260,24 @@ func (p *Pool) pick(realm, model string, exclude map[string]struct{}, page *Page
 		return nil
 	}
 	start := cur.Add(1) - 1
+	// Among ready accounts prefer the least loaded one. Ties keep the cursor
+	// order, so an idle pool still rotates exactly as before.
+	var best *Account
+	bestLoad := 0
 	for i := 0; i < n; i++ {
 		a := group[int((start+uint64(i))%uint64(n))]
 		if _, skip := exclude[a.UID]; skip {
 			continue
 		}
-		if a.Ready(model, now) {
-			return a
+		if !a.Ready(model, now) {
+			continue
+		}
+		load := a.Inflight()
+		if best == nil || load < bestLoad {
+			best, bestLoad = a, load
 		}
 	}
-	return nil
+	return best
 }
 
 // PickForSession picks the account for one turn of a conversation: a bound
