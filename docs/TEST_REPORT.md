@@ -151,7 +151,7 @@ npm run uitest -- --url http://127.0.0.1:18888 --password real-test
   handler，已改为按请求量扩容；不是网关长上下文传输 bug。
 - Docker：`docker compose config` 校验通过；本机只有 Docker CLI，Docker daemon 未安装，
   因此镜像构建未在本机执行。GitHub Actions `release` 工作流已真实跑通，
-  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 至 v2.0.12。
+  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 至 v2.0.13。
 - **CI 真跑出了两个真实问题**：GitHub 的 `-race` 发现 `wireBody` 的 `eof/done` 与 ACP
   扫描协程并发读写（已加锁，并且只有 Close 前已观察到 EOF 才归还连接）；Windows runner
   上的 `wsarecv: ... was aborted` 未被识别为陈旧连接（已加入重试判断并补测试）。
@@ -227,20 +227,22 @@ You are an AI assistant built on DeepSeek.
 ```
 
 按上游 v1.7.18 的口径，`internal/gateway/shape/sanitize.go` 把 **system / developer**
-消息里的这类整句改写为中性句：
+消息里的这些整句改写为中性句（同时兼容早期的 `agent powered by` 句式和
+v1.7.18 的 `assistant built on` 句式）：
 
 ```text
 You are a helpful AI assistant.
 ```
 
-- 只匹配「You are an [AI ]assistant built on … .」整句，大小写不敏感；
+- 匹配 `You are an [AI ]agent powered by … .`、`You are a coding agent powered by … .`、
+  `You are an [AI ]assistant built on … .` 整句，大小写不敏感；
 - user / assistant / tool 里的同文本属于用户数据，保持原样；
 - 句末后面的工具/行为契约不动；
 - 品牌名不再保留（v1.7.18 的通用化做法，不依赖具体品牌）。
 
 验证：
 
-- `TestDSHAgentFingerprintRewrite`（Harness / 纯品牌 / 带点型号 / 大小写 / 后续文本）、
+- `TestDSHAgentFingerprintRewrite`（agent powered by / assistant built on / 带点型号 / 大小写 / 后续文本）、
   `TestDSHIdentityOnlyAppliesToSystemAndDeveloper`、`TestDSHSystemPromptKeepsToolContract`；
 - 真实 CN 账号：修复前同一请求 400/11128；重启后 `hy3` 返回 **200**；
   `deepseek-v4.1-flash` 返回 **429**（当日模型额度用尽，不再出现 11128），说明 WAF 拦截已解除；

@@ -14,6 +14,21 @@ func TestDSHAgentFingerprintRewrite(t *testing.T) {
 		want string
 	}{
 		{
+			name: "harness agent powered by",
+			in:   "You are an AI agent powered by DeepSeek Harness.",
+			want: "You are a helpful AI assistant.",
+		},
+		{
+			name: "coding agent powered by",
+			in:   "You are a coding agent powered by the deepseek-v4.1-flash model.",
+			want: "You are a helpful AI assistant.",
+		},
+		{
+			name: "lowercase agent powered by",
+			in:   "you are an ai agent powered by deepseek harness.",
+			want: "You are a helpful AI assistant.",
+		},
+		{
 			name: "harness",
 			in:   "You are an AI assistant built on DeepSeek Harness.",
 			want: "You are a helpful AI assistant.",

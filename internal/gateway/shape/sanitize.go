@@ -41,12 +41,14 @@ var (
 	sanitizeBareHdrRe = regexp.MustCompile(`(?i)x-anthropic-billing-header`)
 	sanitizeKVRe      = regexp.MustCompile(`(?i)\bcc_[a-z0-9_]+=[^;\r\n]*;?\s*`)
 	sanitizeOmoRe     = regexp.MustCompile(`(?i)Sisyphus-Junior - Focused executor from OhMyOpenCode`)
-	// DeepSeek Harness / similar clients introduce themselves with these exact
-	// sentences. The upstream WAF (11128) rejects the attribution clause, while
-	// the rest of the system prompt is a behaviour contract and must stay put.
-	// Only the opening clause is replaced; the model/product name, the sentence
-	// ending and everything after it are preserved byte for byte.
-	sanitizeDSHIdentityRe = regexp.MustCompile(`(?i)You are an (AI )?assistant built on[^\r\n]*?[.!?](\s|$)`)
+	// DSH and similar clients introduce themselves with one of these forms:
+	//   You are an AI agent powered by <brand>.
+	//   You are a coding agent powered by <brand>.
+	//   You are an (AI) assistant built on <brand>.
+	// The upstream WAF (11-128) rejects the whole sentence; replace it with a
+	// neutral one for system/developer messages only. user/assistant/tool
+	// content is user data and is left untouched.
+	sanitizeDSHIdentityRe = regexp.MustCompile(`(?i)You are (an (AI )?(agent powered by|assistant built on)|a coding agent powered by)[^\r\n]*?[.!?](\s|$)`)
 )
 
 const (
@@ -95,7 +97,7 @@ func sanitizeSystemText(text string) string {
 	if !sanitizeDSHIdentityRe.MatchString(text) {
 		return sanitizeText(text)
 	}
-	text = sanitizeDSHIdentityRe.ReplaceAllString(text, "You are a helpful AI assistant.${2}")
+	text = sanitizeDSHIdentityRe.ReplaceAllString(text, "You are a helpful AI assistant.${4}")
 	return sanitizeBase(text)
 }
 
