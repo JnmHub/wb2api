@@ -71,7 +71,8 @@ docker compose up -d --build
   默认 8）、API Key 并发槽位和健康检查；所有账号都满槽时可排队
   `WB_REDIS_WAIT_MS`（默认 1500）再返回 429，减少冷账号溢出；不配 Redis
   时退回本地并发限制。
-- **`./data`**：仍保留 catalog、active realm、quota、jobs 等文件；旧版 standalone 模式不需要
+- **`./data`**：仍保留 catalog、quota、jobs 等文件；PostgreSQL 模式下 active realm
+  存在 `wb_state` 表，所有副本 1 秒内同步。旧版 standalone 模式不需要
   PostgreSQL/Redis，继续使用文件 + `usage.db`。
 - 容器以非 root 用户运行，应用健康检查走 `/health`。
 

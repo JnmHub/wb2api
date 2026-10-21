@@ -197,7 +197,7 @@ func (s *Settings) patch(w http.ResponseWriter, r *http.Request) {
 	}
 	fail := func(err error) { writeErr(w, http.StatusBadRequest, err.Error()) }
 	if p.Realm != nil && !s.Realm.Set(*p.Realm) {
-		writeErr(w, http.StatusBadRequest, "realm must be intl or cn")
+		writeErr(w, http.StatusBadRequest, "realm must be intl or cn, and the switch must be persisted")
 		return
 	}
 	for k, v := range p.Switches {

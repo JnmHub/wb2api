@@ -48,6 +48,7 @@ import (
 	"wb2api/internal/scheduler"
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/store/pgaccounts"
+	"wb2api/internal/store/pgrealm"
 	"wb2api/internal/store/pgsessions"
 	"wb2api/internal/store/pgsettings"
 	"wb2api/internal/store/settings"
@@ -254,7 +255,24 @@ func main() {
 			h.Limiter = lim
 		}
 	}
-	realmSw := realmswitch.Open(*accountsDir, "intl")
+	var realmSw *realmswitch.Switch
+	if pgDB != nil {
+		if _, err := pgrealm.Load(startupCtx, pgDB.Pool, *accountsDir, "intl"); err != nil {
+			log.Error("cannot seed the active realm from PostgreSQL", "err", err)
+			os.Exit(1)
+		}
+		realmSw = realmswitch.OpenWith(
+			func() (string, error) {
+				return pgrealm.Get(context.Background(), pgDB.Pool)
+			},
+			func(realm string) error {
+				return pgrealm.Save(context.Background(), pgDB.Pool, realm)
+			},
+			"intl",
+		)
+	} else {
+		realmSw = realmswitch.Open(*accountsDir, "intl")
+	}
 	h.CurrentRealm = realmSw.Get
 	cat := &catalog.Service{
 		Pool: p, Up: up, Dir: *accountsDir, CacheDir: *catalogDir, Log: log,
@@ -408,6 +426,11 @@ func main() {
 	accountsAPI.Ops, accountsAPI.Prober = opsClient, h
 	accountsAPI.Register(mux, auth.Require)
 	accountsAPI.StartEvents(bg, time.Second)
+	(&api.Scheduler{
+		Pool: p, Feedback: feedback, TopK: p.TopK,
+		Score: func(a *pool.Account) int64 { return h.AccountScore(a, "") },
+		Realm: realmSw.Get,
+	}).Register(mux, auth.Require)
 	sched := &scheduler.Scheduler{
 		Pool: p, Ops: opsClient, Refresher: refresher, Settings: st, Log: log, Windows: windows, Scan: scanner,
 		Hold: func(realm string) time.Duration { return h.RiskHold(realm) },

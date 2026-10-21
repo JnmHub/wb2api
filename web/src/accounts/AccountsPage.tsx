@@ -18,7 +18,15 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { Download, MoreHorizontal, Plus, RefreshCw, Search, Upload, UserPlus } from 'lucide-react'
-import { get, post, type Account, type AccountPage, type AccountSummary, type Status } from '../api'
+import {
+  get,
+  post,
+  type Account,
+  type AccountPage,
+  type AccountSummary,
+  type SchedulerSummary,
+  type Status,
+} from '../api'
 import { credit, debounce, num, realmLabel, statusLabel, tokens, until } from '../format'
 import { AccountDrawer } from './AccountDrawer'
 import { AddAccountModal } from './AddAccountModal'
@@ -81,6 +89,11 @@ export function AccountsPage() {
     queryFn: () => get<AccountSummary>('/api/v2/accounts/summary'),
     refetchInterval: 30_000,
   })
+  const scheduler = useQuery({
+    queryKey: ['scheduler-summary'],
+    queryFn: () => get<SchedulerSummary>('/api/v2/scheduler/summary'),
+    refetchInterval: 10_000,
+  })
   const list = useQuery({
     queryKey: ['accounts', filters, page],
     queryFn: () => get<AccountPage>(`/api/v2/accounts?${queryString(filters, { offset: (page - 1) * PAGE_SIZE, limit: PAGE_SIZE })}`),
@@ -89,6 +102,7 @@ export function AccountsPage() {
   })
 
   const sum = summary.data
+  const ss = scheduler.data
   const count = (s: Status) => sum?.by_status[s] ?? 0
   const items = list.data?.items ?? []
   const total = list.data?.total ?? 0
@@ -240,6 +254,18 @@ export function AccountsPage() {
         <StatTile label="模型冷却" value={num(sum?.model_cooling)} dot="#f59e0b" />
         <StatTile label="风控限制" value={num(count('restricted'))} dot="#ef4444" />
         <StatTile label="需重新登录" value={num(count('need_login'))} dot="#ef4444" />
+      </Row>
+
+      <Row gutter={12} className="stat-row">
+        <StatTile
+          label="在途 / 容量"
+          value={ss ? `${num(ss.inflight)} / ${ss.capacity > 0 ? num(ss.capacity) : '不限'}` : '—'}
+          dot="#0ea5e9"
+        />
+        <StatTile label="平均首包" value={ss ? `${ss.ttft_ms.toFixed(0)} ms` : '—'} dot="#8b5cf6" />
+        <StatTile label="平均错误率" value={ss ? `${ss.error_rate.toFixed(1)}%` : '—'} dot="#ef4444" />
+        <StatTile label="调度 Top-K" value={ss ? (ss.top_k > 0 ? String(ss.top_k) : '关闭') : '—'} dot="#14b8a6" />
+        <StatTile label="反馈样本账号" value={ss ? num(ss.tracked) : '—'} dot="#f59e0b" />
       </Row>
 
       <Row gutter={[12, 12]} className="credit-row">

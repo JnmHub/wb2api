@@ -80,6 +80,12 @@ files + SQLite deployment to the Sub2API-style split:
   PostgreSQL, and `/health` reports backend status.
 - `compose.yaml`: one command starts PostgreSQL, Redis and wb2api, with health
   dependencies.
+- `wb_state`: small shared runtime-state table. The active realm is stored under
+  `active_realm`; each replica refreshes it once per second, so a panel switch
+  propagates without a restart.
+- `GET /api/v2/scheduler/summary`: aggregate in-flight/capacity, average
+  TTFT/error rate, Top-K and the twenty highest-scoring accounts. The accounts
+  page polls it every ten seconds for its scheduler tiles.
 
 ### Compatibility
 
@@ -97,11 +103,12 @@ files + SQLite deployment to the Sub2API-style split:
 
 ## Next phases
 
-1. **Shared state**: move active realm, quota windows, pricing overrides,
-   jobs/leader election and affinity to PostgreSQL/Redis so more than one wb2api
-   replica is safe. Panel sessions and per-key/account slots already use shared
+1. **Shared state**: move quota windows, pricing overrides, jobs/leader election
+   and affinity to PostgreSQL/Redis so more than one wb2api replica is safe.
+   Panel sessions, per-key/account slots and the active realm already use shared
    backends.
-2. **Observability**: add backend status and scheduler metrics to the panel.
+2. **Observability**: expose usage-worker queue/drop metrics in addition to the
+   scheduler tile now on the accounts page.
 3. **Load tests**: compare file/SQLite vs PostgreSQL/Redis at 200+ concurrent
    streams, and verify a two-replica deployment does not double-schedule.
 
@@ -111,4 +118,4 @@ files + SQLite deployment to the Sub2API-style split:
   still unsupported; use the PostgreSQL/Redis mode for that.
 - The scheduler uses in-process EWMA feedback. Two replicas can make different
   TTFT/error decisions because that feedback is not yet shared through Redis;
-  active realm/quota/pricing/jobs/affinity remain file-backed as noted above.
+  quota/pricing/jobs/affinity remain file-backed as noted above.

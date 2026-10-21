@@ -383,8 +383,14 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
   `TestLimiterKeySlotsSharedAcrossLimiters`、
   `TestLimiterKeySlotsAreSeparateFromAccountSlots` 覆盖跨实例共享、释放和
   账号槽位隔离。
-- CI `postgres` job 已通过。
+- CI `postgres` job 覆盖 `TestPostgresActiveRealm`：`wb_state` 的种子、
+  读取、写入和非法值拒绝。
 
-尚未完成（后续阶段）：active realm/quota/pricing/jobs/affinity 的共享存储、
-调度指标面板、真实 compose 双副本栈与多副本压测。详见
-`docs/ARCHITECTURE_MIGRATION.md`。
+- active realm 在 PostgreSQL 模式下存入 `wb_state`，`realmswitch` 每秒刷新一次，
+  另一个副本切换后 1 秒内生效；`TestBackendRefreshesAcrossReplicas`、
+  `TestBackendSaveFailureKeepsCurrent` 覆盖跨副本刷新和保存失败回退。
+- 账号页新增调度指标卡：在途/容量、平均首包、平均错误率、Top-K 和反馈样本数；
+  `TestSchedulerSummaryAggregatesLiveState` 覆盖聚合与排序。
+
+尚未完成（后续阶段）：quota/pricing/jobs/affinity 的共享存储、真实 compose
+双副本栈与多副本压测。详见 `docs/ARCHITECTURE_MIGRATION.md`。

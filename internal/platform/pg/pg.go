@@ -72,6 +72,11 @@ create table if not exists wb_panel_meta (
 	key text primary key,
 	value text not null
 );
+create table if not exists wb_state (
+	key text primary key,
+	data jsonb not null,
+	updated_at timestamptz not null default now()
+);
 `
 
 func migrate(ctx context.Context, p *pgxpool.Pool) error {

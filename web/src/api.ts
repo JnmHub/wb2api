@@ -138,6 +138,31 @@ export interface AccountSummary {
   keys?: number
 }
 
+export interface SchedulerSummary {
+  realm: string
+  top_k: number
+  total: number
+  inflight: number
+  capacity: number
+  tracked: number
+  ttft_ms: number
+  error_rate: number
+  states: Partial<Record<Status, number>>
+  hot: {
+    uid: string
+    short_id: string
+    nickname: string
+    realm: string
+    state: Status
+    inflight: number
+    max_inflight: number
+    weight: number
+    score: number
+    ttft_ms?: number
+    error_rate?: number
+  }[]
+}
+
 export interface Job {
   id: string
   kind: string
