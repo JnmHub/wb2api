@@ -61,7 +61,8 @@ docker compose up -d --build
 面板：`http://127.0.0.1:8788/`。
 
 - **PostgreSQL**：账号、`settings.json` 和**请求用量**的权威存储；首次启动会把现有
-  `./data/accounts/*.json`、`settings.json` 和 `usage.jsonl` 导入数据库，之后读写走数据库。
+  `./data/accounts/*.json`、`settings.json`、`usage.jsonl` 和旧版 `usage.db` 导入数据库，
+  之后读写走数据库。`usage.db` 只读导入，原文件保留，导入进度记录在 `meta` 表。
 - **Redis**：跨进程的账号并发槽位（`WB_REDIS_INFLIGHT`，默认 8）和健康检查；
   账号满槽时可排队 `WB_REDIS_WAIT_MS`（默认 1500）再切换，减少冷账号溢出；
   不配 Redis 时退回本地并发限制。

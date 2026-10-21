@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"wb2api/internal/jsonx"
@@ -25,6 +26,14 @@ func metaKey(path string) string {
 		abs = path
 	}
 	return "import:" + abs
+}
+
+func sqliteMetaKey(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	return "import-sqlite:" + abs
 }
 
 func (d *DB) getMeta(k string) (string, bool) {
@@ -223,4 +232,247 @@ func (d *DB) ImportJSONL(ctx context.Context, path string, progress ImportProgre
 		return imported, cerr
 	}
 	return imported, nil
+}
+
+// sqliteValue helpers accept the dynamic types returned by database/sql for a
+// SQLite row: INTEGER is int64, REAL is float64 and TEXT is []byte or string.
+
+func sqliteStr(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case []byte:
+		return string(t)
+	}
+	return ""
+}
+
+func sqliteFloat(v any) (float64, bool) {
+	switch t := v.(type) {
+	case float64:
+		return t, true
+	case int64:
+		return float64(t), true
+	case []byte:
+		f, err := strconv.ParseFloat(string(t), 64)
+		return f, err == nil
+	case string:
+		f, err := strconv.ParseFloat(t, 64)
+		return f, err == nil
+	}
+	return 0, false
+}
+
+func sqliteInt(v any) (int64, bool) {
+	f, ok := sqliteFloat(v)
+	return int64(f), ok
+}
+
+func sqliteBool(v any) bool {
+	if n, ok := sqliteInt(v); ok {
+		return n != 0
+	}
+	if b, ok := v.(bool); ok {
+		return b
+	}
+	return false
+}
+
+func optSQLiteInt(m map[string]any, k string) *int64 {
+	v, ok := m[k]
+	if !ok || v == nil {
+		return nil
+	}
+	n, ok := sqliteInt(v)
+	if !ok {
+		return nil
+	}
+	return &n
+}
+
+// sqliteRowToEvent converts one row of the old SQLite requests table. The
+// column set may differ between releases, so it reads by column name instead of
+// binding a fixed SELECT list.
+func sqliteRowToEvent(m map[string]any) (Event, int64, bool) {
+	id, _ := sqliteInt(m["id"])
+	at, ok := sqliteFloat(m["at"])
+	if !ok || at <= 0 {
+		return Event{}, id, false
+	}
+	e := Event{
+		At: time.Unix(0, int64(at*1e9)), Model: sqliteStr(m["model"]), Account: sqliteStr(m["account"]),
+		Realm: sqliteStr(m["realm"]), KeyID: sqliteStr(m["key_id"]), Stream: sqliteBool(m["stream"]),
+		Outcome: sqliteStr(m["outcome"]), Status: int(sqliteIntValue(m["status"])),
+		ElapsedMs: sqliteIntValue(m["elapsed_ms"]), TTFTMs: optSQLiteInt(m, "ttft_ms"), GenMs: optSQLiteInt(m, "gen_ms"),
+		HeldMs: sqliteIntValue(m["held_ms"]), Prompt: sqliteIntValue(m["prompt"]),
+		Completion: sqliteIntValue(m["completion"]), Reasoning: sqliteIntValue(m["reasoning"]),
+		Cached: sqliteIntValue(m["cached"]), Total: sqliteIntValue(m["total"]), Effort: sqliteStr(m["effort"]),
+		Error: sqliteStr(m["error"]),
+	}
+	if e.KeyID == "" {
+		e.KeyID = sqliteStr(m["key"])
+	}
+	if e.Error == "true" || e.Error == "1" {
+		e.Error = sqliteStr(m["message"])
+	}
+	e.Credit, _ = sqliteFloat(m["credit"])
+	e.Estimated = sqliteBool(m["estimated"])
+	if e.Outcome == "" {
+		if e.Error != "" {
+			e.Outcome = "failed"
+		} else {
+			e.Outcome = "completed"
+		}
+	}
+	if e.Realm == "" {
+		e.Realm = realm.DetectModelRealm(e.Model, realm.Intl)
+	}
+	if raw := sqliteStr(m["extra"]); raw != "" && json.Valid([]byte(raw)) {
+		e.Extra = json.RawMessage(raw)
+	}
+	return e, id, true
+}
+
+func sqliteIntValue(v any) int64 {
+	n, _ := sqliteInt(v)
+	return n
+}
+
+// ImportSQLite copies the request rows of a legacy SQLite usage.db into a
+// PostgreSQL usage store. It is a no-op for SQLite targets and resumable: the
+// highest imported request id is stored in meta in the same transaction as the
+// rows, so a restart never duplicates a batch. The source is opened read-only,
+// so a still-running standalone gateway can keep writing it.
+func (d *DB) ImportSQLite(ctx context.Context, path string) (int, error) {
+	if d.driver != "pg" {
+		return 0, nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	legacy, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return 0, err
+	}
+	defer legacy.Close()
+	if err := legacy.PingContext(ctx); err != nil {
+		return 0, err
+	}
+	var probe int
+	if err := legacy.QueryRowContext(ctx, "SELECT 1 FROM requests LIMIT 1").Scan(&probe); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "no such table") {
+			return 0, nil
+		}
+		// An empty table returns sql.ErrNoRows; that is a valid legacy DB.
+		if err != sql.ErrNoRows {
+			return 0, err
+		}
+	}
+	key := sqliteMetaKey(path)
+	var lastID int64
+	if v, ok := d.getMeta(key); ok {
+		lastID, _ = strconv.ParseInt(v, 10, 64)
+	}
+	imported := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return imported, err
+		}
+		rows, err := legacy.QueryContext(ctx,
+			"SELECT * FROM requests WHERE id > ? ORDER BY id ASC LIMIT 2000", lastID)
+		if err != nil {
+			return imported, err
+		}
+		cols, err := rows.Columns()
+		if err != nil {
+			rows.Close()
+			return imported, err
+		}
+		batch := make([]Event, 0, 2000)
+		batchLast := lastID
+		for rows.Next() {
+			vals := make([]any, len(cols))
+			ptrs := make([]any, len(cols))
+			for i := range vals {
+				ptrs[i] = &vals[i]
+			}
+			if err := rows.Scan(ptrs...); err != nil {
+				rows.Close()
+				return imported, err
+			}
+			m := make(map[string]any, len(cols))
+			for i, c := range cols {
+				m[c] = vals[i]
+			}
+			ev, id, ok := sqliteRowToEvent(m)
+			if id > batchLast {
+				batchLast = id
+			}
+			if ok {
+				batch = append(batch, ev)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return imported, err
+		}
+		rows.Close()
+		if batchLast == lastID {
+			// No new rows: record the position so an empty legacy DB is not
+			// scanned on every boot, then stop.
+			if err := d.setMeta(key, lastID); err != nil {
+				return imported, err
+			}
+			return imported, nil
+		}
+		if err := d.importSQLiteBatch(batch, key, batchLast); err != nil {
+			return imported, err
+		}
+		imported += len(batch)
+		lastID = batchLast
+		if len(batch) < 2000 {
+			return imported, nil
+		}
+	}
+}
+
+func (d *DB) setMeta(key string, id int64) error {
+	_, err := d.sql.Exec(d.bind("INSERT INTO meta(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v"),
+		key, strconv.FormatInt(id, 10))
+	return err
+}
+
+func (d *DB) importSQLiteBatch(events []Event, key string, lastID int64) error {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return err
+	}
+	ins, err := d.prepare(tx, insertSQL)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	st, err := d.prepareRollups(tx)
+	if err != nil {
+		ins.Close()
+		tx.Rollback()
+		return err
+	}
+	st.ins = ins
+	defer st.close()
+	for i := range events {
+		if err := st.store(&events[i]); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	if _, err := tx.Exec(d.bind("INSERT INTO meta(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v"),
+		key, strconv.FormatInt(lastID, 10)); err != nil {
+		tx.Rollback()
+		return err
+	}
+	return tx.Commit()
 }

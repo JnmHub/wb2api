@@ -41,6 +41,10 @@ files + SQLite deployment to the Sub2API-style split:
   boot; SQLite `?` placeholders are rewritten to `$1..$n`, aggregates use
   `CASE` instead of SQLite booleans, and bucket expressions use `to_char` on
   PostgreSQL. `cmd/hub` selects PostgreSQL whenever `WB_POSTGRES_DSN` is set.
+- `usagedb.ImportSQLite`: when PostgreSQL mode starts and a legacy
+  `usage/usage.db` exists, its request rows are copied in the background. The
+  importer reads the old file read-only, commits each batch and its highest
+  request id in one transaction, and resumes safely after a restart.
 - A PostgreSQL-backed usage round-trip test runs in CI (`postgres` job, service
   container) in addition to the SQLite tests.
 - `settings.OpenWith`: file-free settings store used by the PostgreSQL backend.
@@ -57,6 +61,9 @@ files + SQLite deployment to the Sub2API-style split:
   still works. Compose sets `WB_REDIS_INFLIGHT=8`; the standalone default is 0.
 - Existing account files/settings are imported only when the corresponding
   PostgreSQL table is empty, so an upgrade does not require manual migration.
+- In PostgreSQL mode the legacy `usage.db` is imported automatically on first
+  boot; the old file stays untouched and the marker is stored in the `meta`
+  table, so the import does not repeat on later restarts.
 
 ## Next phases
 
@@ -75,9 +82,5 @@ files + SQLite deployment to the Sub2API-style split:
 - The account scheduler is still the existing pool scheduler plus the TTFT/error
   sticky escape, warm-account load preference and a short Redis wait queue;
   global top-K load scoring and first-output failover are not complete yet.
-- SQLite usage data is migrated to PostgreSQL by the one-time `usage.jsonl`
-  importer, but an existing `usage.db` file is not converted automatically: the
-  standalone mode continues to use it, while PostgreSQL mode starts fresh (plus
-  the legacy JSONL import).
 - Running multiple wb2api processes against the same **file** data directory is
   still unsupported; use the PostgreSQL/Redis mode for that.

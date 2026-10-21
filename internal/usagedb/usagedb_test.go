@@ -416,6 +416,69 @@ func TestBindPostgresPlaceholders(t *testing.T) {
 	}
 }
 
+func TestSQLiteRowToEvent(t *testing.T) {
+	at := float64(time.Now().Add(-time.Minute).UnixNano()) / 1e9
+	ev, id, ok := sqliteRowToEvent(map[string]any{
+		"id": int64(7), "at": at, "model": "legacy", "account": "a1", "key": "k1",
+		"stream": int64(1), "outcome": "completed", "status": int64(200),
+		"elapsed_ms": int64(1200), "ttft_ms": int64(300), "prompt": int64(10),
+		"completion": int64(4), "credit": 0.5, "estimated": int64(0),
+	})
+	if !ok || id != 7 || ev.Model != "legacy" || ev.KeyID != "k1" || !ev.Stream {
+		t.Fatalf("event = %+v, id=%d ok=%v", ev, id, ok)
+	}
+	if ev.TTFTMs == nil || *ev.TTFTMs != 300 || ev.Credit != 0.5 || ev.Realm == "" {
+		t.Fatalf("event fields = %+v", ev)
+	}
+}
+
+func TestImportSQLiteIntoPostgres(t *testing.T) {
+	dsn := os.Getenv("WB_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("WB_TEST_POSTGRES_DSN not set")
+	}
+	path := filepath.Join(t.TempDir(), "usage.db")
+	src, err := Open(path, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().Add(-time.Minute).Truncate(time.Second)
+	src.Record(Event{At: at, Model: "legacy-a", Account: "a1", Realm: "intl", KeyID: "k1",
+		Outcome: "completed", Status: 200, Prompt: 10, Completion: 4, Total: 14})
+	src.Record(Event{At: at.Add(time.Second), Model: "legacy-b", Account: "a2", Realm: "cn", KeyID: "k2",
+		Outcome: "failed", Status: 500, Error: "boom", Prompt: 2, Total: 2})
+	if err := src.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := OpenPostgres(dsn, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.sql.Exec("TRUNCATE requests, daily, hourly, meta"); err != nil {
+		t.Fatal(err)
+	}
+	n, err := db.ImportSQLite(context.Background(), path)
+	if err != nil || n != 2 {
+		t.Fatalf("first import = %d, %v; want 2", n, err)
+	}
+	if n, err := db.ImportSQLite(context.Background(), path); err != nil || n != 0 {
+		t.Fatalf("second import = %d, %v; want 0", n, err)
+	}
+	rows, err := db.Recent(10, 0, Filter{})
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("recent = %d, %v", len(rows), err)
+	}
+	if rows[0].Model != "legacy-b" || rows[0].Error != "boom" {
+		t.Fatalf("recent[0] = %+v", rows[0])
+	}
+	agg, err := db.Totals(Filter{})
+	if err != nil || agg.Requests != 2 || agg.Total != 16 {
+		t.Fatalf("totals = %+v, %v", agg, err)
+	}
+}
+
 func TestPostgresRoundTrip(t *testing.T) {
 	dsn := os.Getenv("WB_TEST_POSTGRES_DSN")
 	if dsn == "" {

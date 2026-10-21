@@ -56,9 +56,9 @@ services:
       WB_REDIS_WAIT_MS: ${WB_REDIS_WAIT_MS:-1500}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
-      # Existing accounts/settings.json are imported into PostgreSQL on the
-      # first boot. Usage is stored in PostgreSQL too; catalog, jobs, panel
-      # sessions and the legacy usage.jsonl import source still live here.
+      # Existing accounts/settings.json and legacy usage.db/usage.jsonl are
+      # imported into PostgreSQL on the first boot. New usage is stored in
+      # PostgreSQL; catalog, jobs and panel sessions still live here.
       - ./data:/data
     command:
       - -lan

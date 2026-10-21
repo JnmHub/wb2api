@@ -298,6 +298,15 @@ func main() {
 		case n > 0:
 			log.Info("usage.jsonl imported", "rows", n)
 		}
+		if *postgresDSN != "" {
+			n, err := udb.ImportSQLite(context.Background(), filepath.Join(*usageDir, "usage.db"))
+			switch {
+			case err != nil:
+				log.Warn("usage.db import stopped", "err", err, "imported", n)
+			case n > 0:
+				log.Info("usage.db imported", "rows", n)
+			}
+		}
 	}()
 
 	if *panelPassword != "" {
