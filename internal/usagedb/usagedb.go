@@ -387,6 +387,10 @@ func (d *DB) Close() error {
 const (
 	batchMax   = 256
 	batchDelay = 150 * time.Millisecond
+
+	// pgUsageWriterLock serialises PostgreSQL batch transactions across writer
+	// goroutines and replicas (ASCII "wb2api-u").
+	pgUsageWriterLock int64 = 0x7762326170692d75
 )
 
 func (d *DB) writer() {
@@ -551,6 +555,17 @@ func (d *DB) writeBatch(events []Event) error {
 	tx, err := d.sql.Begin()
 	if err != nil {
 		return err
+	}
+	// PostgreSQL rollup upserts from concurrent writer goroutines (and from
+	// other replicas) can touch the same daily/hourly rows in different orders,
+	// which PostgreSQL reports as a deadlock. Serialise the whole batch on a
+	// transaction-scoped advisory lock; batching keeps this cheap compared with
+	// losing usage rows.
+	if d.driver == "pg" {
+		if _, err := tx.Exec("select pg_advisory_xact_lock($1)", pgUsageWriterLock); err != nil {
+			tx.Rollback()
+			return err
+		}
 	}
 	ins, err := d.prepare(tx, insertSQL)
 	if err != nil {

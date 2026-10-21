@@ -19,6 +19,17 @@ type Scheduler struct {
 	TopK     func() int
 	Score    func(*pool.Account) int64
 	Realm    func() string
+	// MaxInflight is the shared per-account slot limit (Redis), used when an
+	// account has no explicit local cap. Without it the panel reports zero
+	// capacity even though the shared limiter is enforcing a bound.
+	MaxInflight int
+}
+
+func (s *Scheduler) limit(a *pool.Account) int {
+	if max := a.MaxInflight(); max > 0 {
+		return max
+	}
+	return s.MaxInflight
 }
 
 func (s *Scheduler) Register(mux *http.ServeMux, wrap func(http.Handler) http.Handler) {
@@ -50,9 +61,8 @@ func (s *Scheduler) summary(w http.ResponseWriter, r *http.Request) {
 		state := string(a.State(now))
 		states[state]++
 		inflight += a.Inflight()
-		if max := a.MaxInflight(); max > 0 {
-			capacity += max
-		}
+		limit := s.limit(a)
+		capacity += limit
 		var ttft, errRate float64
 		if s.Feedback != nil {
 			if v, e, ok := s.Feedback.Score(a.UID); ok {
@@ -68,7 +78,7 @@ func (s *Scheduler) summary(w http.ResponseWriter, r *http.Request) {
 		}
 		rows = append(rows, schedulerAccount{
 			UID: a.UID, ShortID: shortID(a.UID), Nickname: a.Record().Nickname, Realm: a.Realm,
-			State: state, Inflight: a.Inflight(), MaxInflight: a.MaxInflight(), Weight: a.Weight(),
+			State: state, Inflight: a.Inflight(), MaxInflight: limit, Weight: a.Weight(),
 			Score: score, TTFTMS: round1(ttft), ErrorRate: round1(errRate * 100),
 		})
 	}

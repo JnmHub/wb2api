@@ -352,7 +352,7 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
 - 本机没有 Docker daemon，**没有实际启动 compose 栈**；这一步需要在有 Docker
   的机器上补做。无 DSN 的 standalone 模式已用浏览器 smoke 回归。
 
-## 20. PostgreSQL 用量、面板会话与调度可靠性（v2.1.4 至 v2.3.3）
+## 20. PostgreSQL 用量、面板会话与调度可靠性（v2.1.4 至 v2.3.4）
 
 - 请求用量支持 PostgreSQL，日/时预聚合在写入事务中同步维护；SQLite 仍是
   standalone 默认后端。
@@ -361,7 +361,10 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
   默认 `drop`。`TestWriterStatsReflectOptions` 覆盖容量/worker/计数，
   `TestSampleOverflowKeepsAccountingComplete` 覆盖采样下
   `written+dropped` 不丢账。`/api/v2/usage/summary` 与用量页显示积压、丢弃和
-  失败批次。
+  失败批次。PostgreSQL 批次在写入日/时聚合前获取事务级 advisory lock，
+  避免并发 writer/副本按不同顺序锁同一聚合行而触发 deadlock；
+  `TestPostgresWriterHandlesConcurrentRollups` 用 4 个 worker 写入 400 条事件，
+  断言 `failed=0` 且全部落库。
 - 旧 `usage.db` 在 PostgreSQL 模式首次启动时后台只读导入。每批 2000 行与
   `meta` 游标在同一事务提交，重启后从最大 request id 继续，不重复导入。
 - 列按名称读取，兼容旧 schema 缺少 `held_ms`/`effort`/`extra` 等列。
@@ -409,6 +412,8 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
   `TestAffinityStoreExpiresEntries` 覆盖 Redis 排序集、历史裁剪、哈希和过期。
 - 账号页新增调度指标卡：在途/容量、平均首包、平均错误率、Top-K 和反馈样本数；
   `TestSchedulerSummaryAggregatesLiveState` 覆盖聚合、排序和 affinity 同步状态。
+  `TestSchedulerSummaryUsesSharedCapacityFallback` 覆盖 Redis 模式下账号未设置
+  本地上限时，容量回退到 `WB_REDIS_INFLIGHT`，避免面板显示容量 0。
 
 - 模型额度窗口经 `wb_state` 的 `quota_windows` 共享，任一网关记录 429 后其他
   副本 2 秒内可见；本地 `model_windows.json` 只在数据库行不存在时作为种子，
@@ -429,6 +434,27 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
   覆盖跨副本可见性与取消转发，CI 的 `TestPostgresJobsShareSnapshotsAndCancel`
   覆盖 `wb_jobs` 快照、取消标记保留和已结束任务拒绝取消。
 
-尚未完成（后续阶段）：主动额度扫描计划、跨副本 EWMA 反馈的
-共享存储，以及真实 compose 双副本栈与多副本压测。详见
+### 双副本实机验证
+
+- 使用真实 PostgreSQL 16、Redis 7 和两个独立的 wb2api 进程（端口 8788/8789，
+  共享账号、PostgreSQL 存储和 Redis），50 个账号、top-K 7、每账号 8 个
+  Redis 槽位。
+- active realm 在副本 A 切换为 `cn` 后，副本 B 在 1.3 秒内读到 `cn`；再切回
+  `intl` 正常。
+- 在副本 A 创建 `refresh_credits` 任务，副本 B 立即可见同一 `id`、`owner` 和
+  进度；在副本 B 用 `DELETE /api/v2/jobs/{id}` 取消，副本 A 的任务状态变为
+  `cancelled`，证明共享任务历史和跨副本取消经 PostgreSQL 生效。
+- 两个副本各 50 并发、各 250 条流式请求，共 500 条：500/500 成功；副本 A
+  p50 TTFT 780 ms、p99 5.49 s，副本 B p50 851 ms、p99 7.17 s。首包和总耗时
+  受本机 mock 上游逐 token 限速与 Windows 定时器影响，但无 429、无截断。
+- 调度汇总两个副本容量均为 400（50 账号 × 8 槽），`top_k=7`，
+  `usage.queue.failed=0`、`dropped=0`、`depth=0`；修复前压测曾出现
+  PostgreSQL `deadlock detected (SQLSTATE 40P01)` 和 3 个失败批次，现有
+  advisory lock 回归测试与本次 500 请求压测均未再出现。
+- 仅一个副本持有后台 leader（日志 `background leader acquired`），另一个副本
+  没有启动巡检周期。
+
+尚未完成（后续阶段）：主动额度扫描计划、跨副本 EWMA 反馈的共享存储；以及
+`compose.ha.yaml` + Caddy 整套镜像栈的启动验证（本次是真实 PostgreSQL/Redis
+上的双进程验证，未走 Caddy 容器入口）。详见
 `docs/ARCHITECTURE_MIGRATION.md`。

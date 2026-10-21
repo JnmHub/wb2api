@@ -530,6 +530,38 @@ func TestImportSQLiteIntoPostgres(t *testing.T) {
 	}
 }
 
+func TestPostgresWriterHandlesConcurrentRollups(t *testing.T) {
+	dsn := os.Getenv("WB_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("WB_TEST_POSTGRES_DSN not set")
+	}
+	db, err := OpenPostgresWithOptions(dsn, Options{QueueSize: 2048, Workers: 4, Overflow: OverflowDrop})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.sql.Exec("TRUNCATE requests, daily, hourly, meta"); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	at := time.Now().Add(-time.Minute)
+	for i := 0; i < 400; i++ {
+		db.Record(Event{
+			At: at, Model: "pg-concurrent", Account: fmt.Sprintf("acct-%d", i%25),
+			Realm: "intl", KeyID: "k1", Outcome: "completed", Status: 200,
+			Prompt: 10, Completion: 1, Total: 11,
+		})
+	}
+	db.Flush()
+	st := db.Stats()
+	if st.Failed != 0 || st.Written != 400 {
+		t.Fatalf("stats = %+v, want 400 written and no failed batches", st)
+	}
+	agg, err := db.Totals(Filter{})
+	if err != nil || agg.Requests != 400 {
+		t.Fatalf("totals = %+v, %v", agg, err)
+	}
+}
+
 func TestPostgresRoundTrip(t *testing.T) {
 	dsn := os.Getenv("WB_TEST_POSTGRES_DSN")
 	if dsn == "" {

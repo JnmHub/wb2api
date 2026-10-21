@@ -79,6 +79,10 @@ files + SQLite deployment to the Sub2API-style split:
 - A PostgreSQL-backed usage round-trip test runs in CI (`postgres` job, service
   container) in addition to the SQLite tests; the same job covers panel
   sessions, active realm, quota windows, shared jobs and leader election.
+  PostgreSQL batches take a transaction-scoped advisory lock before touching
+  the daily/hourly rollups, so concurrent writers and replicas cannot deadlock
+  on the same aggregate rows; a regression test records 400 events through four
+  workers and requires zero failed batches.
 - `settings.OpenWith`: file-free settings store used by the PostgreSQL backend.
 - `cmd/hub`: `WB_POSTGRES_DSN`, `WB_REDIS_ADDR`, `WB_REDIS_INFLIGHT`,
   `WB_REDIS_WAIT_MS`, `WB_SCHED_TOP_K`, `WB_FIRST_OUTPUT_MS`,
@@ -115,9 +119,12 @@ files + SQLite deployment to the Sub2API-style split:
   flag on its next sync and cancels its local context. The file/SQLite mode
   keeps jobs in memory only.
 - `GET /api/v2/scheduler/summary`: aggregate in-flight/capacity, average
-  TTFT/error rate, Top-K and the twenty highest-scoring accounts. It also
-  reports affinity queue depth, dropped writes and store errors. The accounts
-  page polls it every ten seconds for its scheduler tiles.
+  TTFT/error rate, Top-K and the twenty highest-scoring accounts. When an
+  account has no explicit local cap, capacity uses the shared Redis
+  `WB_REDIS_INFLIGHT` value, so the panel does not report zero while the
+  limiter is enforcing a bound. It also reports affinity queue depth, dropped
+  writes and store errors. The accounts page polls it every ten seconds for its
+  scheduler tiles.
 
 ### Compatibility
 
@@ -143,11 +150,15 @@ files + SQLite deployment to the Sub2API-style split:
 1. **Remaining shared state**: the active quota-scan schedule is still
    process-local. It does not affect routing and only the leader runs scans.
    Shared EWMA feedback is also still open.
-2. **Load tests**: `compose.ha.yaml` provides the two-replica + Caddy topology,
-   but it has not been launched end-to-end. Compare file/SQLite vs
-   PostgreSQL/Redis at 200+ concurrent streams and verify the two replicas do
-   not double-schedule. This requires a running Docker daemon, which was
-   unavailable during development.
+2. **Load tests**: a manual two-process run against real PostgreSQL and Redis
+   (fifty accounts, 500 concurrent streams split across both replicas) completed
+   with 500/500 successful streams, shared realm propagation in about one
+   second, a job created on one replica visible and cancellable from the other,
+   and a scheduler capacity of 400 slots. It also exposed a PostgreSQL rollup
+   deadlock, now fixed by the usage advisory lock. The full
+   `compose.ha.yaml` + Caddy stack has not been launched end-to-end; compare it
+   at 200+ concurrent streams and verify the two replicas do not
+   double-schedule. This requires pulling/building the Compose images.
 
 ## Non-goals in this phase
 

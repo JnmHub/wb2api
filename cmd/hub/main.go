@@ -483,7 +483,7 @@ func main() {
 	(&api.Scheduler{
 		Pool: p, Feedback: feedback, TopK: p.TopK,
 		Score: func(a *pool.Account) int64 { return h.AccountScore(a, "") },
-		Realm: realmSw.Get,
+		Realm: realmSw.Get, MaxInflight: *redisInflight,
 	}).Register(mux, auth.Require)
 	sched := &scheduler.Scheduler{
 		Pool: p, Ops: opsClient, Refresher: refresher, Settings: st, Log: log, Windows: windows, Scan: scanner,

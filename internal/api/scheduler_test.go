@@ -12,6 +12,34 @@ import (
 	"wb2api/internal/store/accounts"
 )
 
+func TestSchedulerSummaryUsesSharedCapacityFallback(t *testing.T) {
+	exp := time.Now().Add(24 * time.Hour).Unix()
+	p := pool.New([]*accounts.Record{
+		{UID: "acct-0001", Realm: "intl", AccessToken: "t", ExpiresAt: exp},
+		{UID: "acct-0002", Realm: "intl", AccessToken: "t", ExpiresAt: exp},
+	})
+	mux := http.NewServeMux()
+	(&Scheduler{Pool: p, TopK: p.TopK, MaxInflight: 8}).Register(mux,
+		func(h http.Handler) http.Handler { return h })
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/api/v2/scheduler/summary", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["capacity"].(float64) != 16 {
+		t.Fatalf("capacity = %v, want 16", out["capacity"])
+	}
+	hot := out["hot"].([]any)
+	if len(hot) == 0 || hot[0].(map[string]any)["max_inflight"].(float64) != 8 {
+		t.Fatalf("hot rows = %v", hot)
+	}
+}
+
 func TestSchedulerSummaryAggregatesLiveState(t *testing.T) {
 	exp := time.Now().Add(24 * time.Hour).Unix()
 	p := pool.New([]*accounts.Record{
