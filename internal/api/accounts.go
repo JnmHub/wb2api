@@ -235,7 +235,10 @@ func (a *Accounts) matching(q query, now time.Time) []row {
 			continue
 		}
 		st := acc.State(now)
-		modelCooling := len(acc.ModelCooldowns(now)) > 0
+		modelCooling := false
+		if q.modelCooling {
+			modelCooling = acc.HasModelCooldown(now)
+		}
 		statusOK := q.status == nil || q.status[st]
 		modelOK := q.modelCooling && modelCooling
 		if q.status != nil || q.modelCooling {
@@ -387,10 +390,11 @@ func (a *Accounts) summary(w http.ResponseWriter, r *http.Request) {
 		tokens += d.Tokens
 		requests += d.Requests
 		todayCredit += d.Credit
-		if len(acc.ModelCooldowns(now)) > 0 {
+		hasModelCool := acc.HasModelCooldown(now)
+		if hasModelCool {
 			modelCooling++
 		}
-		if st == string(pool.StatusCooling) || len(acc.ModelCooldowns(now)) > 0 {
+		if st == string(pool.StatusCooling) || hasModelCool {
 			coolingTotal++
 		}
 

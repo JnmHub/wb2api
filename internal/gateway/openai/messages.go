@@ -240,12 +240,14 @@ func (h *Handler) messagesStream(q *request, acc *pool.Account, cancelUp context
 		if len(line) > 0 {
 			idle.Reset(idleD)
 			if data := sseData(line); data != nil && !bytes.Equal(data, []byte("[DONE]")) {
-				if n := chunkOutputTokens(data); n > 0 {
-					if perr := pacer.wait(q.r.Context(), n); perr != nil {
-						clientClosed = true
-						break
+				if pacer != nil {
+					if n := chunkOutputTokens(data); n > 0 {
+						if perr := pacer.wait(q.r.Context(), n); perr != nil {
+							clientClosed = true
+							break
+						}
+						idle.Reset(idleD)
 					}
-					idle.Reset(idleD)
 				}
 				now := time.Now()
 				if firstAt.IsZero() {

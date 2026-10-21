@@ -174,7 +174,8 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 - **v1.7.18 对照**：DSH 身份句改为仅 system/developer 的整句中性化（user/assistant/tool 原样）；
   新增 WorkBuddy_Valorant 固定专家任务；全池刷新积分加单飞（重复点击复用运行中的 job）。
   不适用/待补项见 TEST_REPORT 第 15 节。
-- **并发与发布**：按 Key 的并发限制已移除（字段保留但忽略），网关转发所有请求；新增 100 并发非流式 + 48 并发流式的 200 KB 长上下文测试，逐字节校验无截断。账号支持勾选后导出（含批量条“导出选中”），导入支持一次选多个 JSON 文件并按顺序合并报告。公开仓库 <https://github.com/JnmHub/wb2api>（作者 JnmHub），更新检查指向该仓库；`release.yml` 已产出 v2.0.0 至 v2.0.13 的 Linux amd64/arm64 二进制与 sha256。批量账号操作全局最多 4 个上游请求，可在“设置 → 批量账号任务”里配置并发（1–16）和账号间间隔（0–60000ms），保存立即生效；450 账号实测批量刷积分时网关 TTFT 基本不变，吞吐约 -2%。提供多阶段 `Dockerfile`、`compose.yaml`、`.dockerignore`；本机无 Docker daemon，只校验了 compose 配置，镜像未本机构建。CI 的 `-race` 抓到并修复了 `wireBody` 的并发读写，Windows runner 抓到并修复了 `wsarecv ... was aborted` 未重试问题。
+- **性能优化**：TPS 关闭时流式路径不再为每个 chunk 做第二次 JSON 解析（Chat 复用已解析 chunk）；账号列表只在筛选冷却时扫描模型冷却，summary 每账号只扫描一次（新增无分配/无排序的 `HasModelCooldown`）。
+- **并发与发布**：按 Key 的并发限制已移除（字段保留但忽略），网关转发所有请求；新增 100 并发非流式 + 48 并发流式的 200 KB 长上下文测试，逐字节校验无截断。账号支持勾选后导出（含批量条“导出选中”），导入支持一次选多个 JSON 文件并按顺序合并报告。公开仓库 <https://github.com/JnmHub/wb2api>（作者 JnmHub），更新检查指向该仓库；`release.yml` 已产出 v2.0.0 至 v2.0.14 的 Linux amd64/arm64 二进制与 sha256。批量账号操作全局最多 4 个上游请求，可在“设置 → 批量账号任务”里配置并发（1–16）和账号间间隔（0–60000ms），保存立即生效；450 账号实测批量刷积分时网关 TTFT 基本不变，吞吐约 -2%。提供多阶段 `Dockerfile`、`compose.yaml`、`.dockerignore`；本机无 Docker daemon，只校验了 compose 配置，镜像未本机构建。CI 的 `-race` 抓到并修复了 `wireBody` 的并发读写，Windows runner 抓到并修复了 `wsarecv ... was aborted` 未重试问题。
 
 ## 还没做
 

@@ -151,7 +151,7 @@ npm run uitest -- --url http://127.0.0.1:18888 --password real-test
   handler，已改为按请求量扩容；不是网关长上下文传输 bug。
 - Docker：`docker compose config` 校验通过；本机只有 Docker CLI，Docker daemon 未安装，
   因此镜像构建未在本机执行。GitHub Actions `release` 工作流已真实跑通，
-  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 至 v2.0.13。
+  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 至 v2.0.14。
 - **CI 真跑出了两个真实问题**：GitHub 的 `-race` 发现 `wireBody` 的 `eof/done` 与 ACP
   扫描协程并发读写（已加锁，并且只有 Close 前已观察到 EOF 才归还连接）；Windows runner
   上的 `wsarecv: ... was aborted` 未被识别为陈旧连接（已加入重试判断并补测试）。
@@ -298,7 +298,16 @@ Docker Compose 也会透传 `WB_MAX_BODY_MB`。`TestBodyTooLarge` 覆盖自定�
   “模型冷却”计数与行内标签，避免模型级 429 被误认为账号正常。
   `TestCoolingFilterIncludesModelCooldowns` 覆盖。
 
-## 17. 复现
+## 17. 性能优化（TPS 关闭零额外解析 / 冷却扫描）
+
+- **TPS 关闭**时不再调用 `chunkOutputTokens`：Chat 复用已经 `parseChunk` 的 chunk，
+  Responses/Anthropic 在 pacer 为 nil 时直接跳过 token 估算；只有 TPS > 0 才做额外解析。
+- **账号列表**只在真正筛选冷却时调用 `HasModelCooldown`（无分配、无排序）；
+  **summary** 每个账号只扫描一次模型冷却，不再调用两次 `ModelCooldowns`。
+- 不改变任何协议输出或筛选语义；`TestOutputTPSHighConcurrency`、冷却筛选测试和
+  完整 `go test ./...` 均通过。
+
+## 18. 复现
 
 ```powershell
 # 模拟并发基准（自带 mock 与假账号池）

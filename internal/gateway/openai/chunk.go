@@ -51,6 +51,18 @@ func parseChunk(data []byte) (*chunk, bool) {
 	return c, true
 }
 
+// outputTokens estimates visible/reasoning output in this chunk. Used only when
+// stream pacing is enabled; the parsed chunk is reused instead of decoding the
+// same JSON twice.
+func (c *chunk) outputTokens() int {
+	n := 0
+	for i := range c.deltas {
+		n += estimateTextTokens(c.content(i))
+		n += estimateTextTokens(c.reasoning(i))
+	}
+	return n
+}
+
 // usage returns the chunk's usage object (raw) when present and non-empty.
 func (c *chunk) usage() json.RawMessage {
 	if u, ok := c.top["usage"]; ok && !isFalsyRaw(u) {

@@ -562,12 +562,14 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 						break
 					}
 					now := time.Now()
-					if n := chunkOutputTokens(data); n > 0 {
-						if perr := pacer.wait(q.r.Context(), n); perr != nil {
-							clientClosed = true
-							break
+					if pacer != nil {
+						if n := chunkOutputTokens(data); n > 0 {
+							if perr := pacer.wait(q.r.Context(), n); perr != nil {
+								clientClosed = true
+								break
+							}
+							idle.Reset(idleD)
 						}
-						idle.Reset(idleD)
 					}
 					if firstAt.IsZero() {
 						firstAt = now

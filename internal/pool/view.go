@@ -115,6 +115,21 @@ type ModelCooldown struct {
 	Until time.Time
 }
 
+// HasModelCooldown reports whether any model on this account is still in its
+// cooldown window. Unlike ModelCooldowns it does not allocate or sort; list and
+// summary endpoints call it once per account.
+func (a *Account) HasModelCooldown(now time.Time) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	ns := now.UnixNano()
+	for _, until := range a.modelCool {
+		if until > ns {
+			return true
+		}
+	}
+	return false
+}
+
 // ModelCooldowns lists the cooldowns still running at now, soonest first.
 func (a *Account) ModelCooldowns(now time.Time) []ModelCooldown {
 	a.mu.Lock()

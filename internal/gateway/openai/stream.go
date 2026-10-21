@@ -271,18 +271,20 @@ loop:
 			now := time.Now()
 			if data := sseData(line); data != nil && !bytes.Equal(data, []byte("[DONE]")) {
 				nChunks++
-				if n := chunkOutputTokens(data); n > 0 {
-					if perr := pacer.wait(r.Context(), n); perr != nil {
-						clientClosed = true
-						break loop
+				c, ok := parseChunk(data)
+				if ok && pacer != nil {
+					if n := c.outputTokens(); n > 0 {
+						if perr := pacer.wait(r.Context(), n); perr != nil {
+							clientClosed = true
+							break loop
+						}
+						idle.Reset(idleD)
 					}
-					idle.Reset(idleD)
 				}
 				if firstAt.IsZero() {
 					firstAt = now
 				}
 				lastAt = now
-				c, ok := parseChunk(data)
 				if !ok {
 					if werr := writeData(data); werr != nil {
 						clientClosed = true

@@ -136,7 +136,9 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 		q.httpErr(http.StatusBadRequest, msg, "invalid_request_error")
 		return
 	}
-	q.maxTPS = h.streamTPS(key)
+	if q.stream {
+		q.maxTPS = h.streamTPS(key)
+	}
 	// No client-side concurrency cap: the gateway forwards every request it
 	// receives and lets the upstream decide. Per-key concurrency_limit remains
 	// in the stored settings for compatibility but is not enforced.
