@@ -158,7 +158,7 @@ async function main() {
     { hash: 'usage', title: '用量', checks: ['请求数', '价格估算'] },
     { hash: 'models', title: '模型', checks: ['能力', '上下文'] },
     { hash: 'requests', title: '请求记录', checks: ['最近的网关请求'] },
-    { hash: 'settings', title: '设置', checks: ['API Key', '模型清单', '上游与提示词'] },
+    { hash: 'settings', title: '设置', checks: ['API Key', '模型清单', '上游与提示词', '流式输出速度限制'] },
     { hash: 'logs', title: '日志', checks: ['跟随最新'] },
     { hash: 'tasks', title: '任务', checks: ['后台任务', '国内成长任务'] },
   ]
