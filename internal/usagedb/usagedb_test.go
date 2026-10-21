@@ -25,6 +25,57 @@ func open(t *testing.T) *DB {
 
 func i64(v int64) *int64 { return &v }
 
+func TestWriterStatsReflectOptions(t *testing.T) {
+	d, err := OpenWithOptions(filepath.Join(t.TempDir(), "usage.db"),
+		Options{QueueSize: 32, Workers: 3, Overflow: OverflowSample, SampleEvery: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	st := d.Stats()
+	if st.QueueCapacity != 32 || st.Workers != 3 || st.Overflow != "sample" {
+		t.Fatalf("unexpected stats: %+v", st)
+	}
+	d.Record(Event{At: time.Now(), Model: "m", Outcome: "completed", Total: 7})
+	d.Flush()
+	st = d.Stats()
+	if st.Written != 1 || st.Dropped != 0 || st.Batches == 0 {
+		t.Fatalf("after flush: %+v", st)
+	}
+}
+
+func TestSampleOverflowKeepsAccountingComplete(t *testing.T) {
+	d, err := OpenWithOptions(filepath.Join(t.TempDir(), "usage.db"),
+		Options{QueueSize: 8, Workers: 1, Overflow: OverflowSample, SampleEvery: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	// Hold SQLite's write lock so the queue backs up and sampling kicks in.
+	tx, err := d.sql.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("INSERT INTO meta(k, v) VALUES('lock','1')"); err != nil {
+		t.Fatal(err)
+	}
+	const total = 2000
+	for i := 0; i < total; i++ {
+		d.Record(Event{At: time.Now(), Model: "m", Outcome: "completed", Total: 1})
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	d.Flush()
+	st := d.Stats()
+	if st.Dropped == 0 {
+		t.Fatalf("sample mode should have dropped some events under pressure: %+v", st)
+	}
+	if st.Written+st.Dropped != total {
+		t.Fatalf("written %d + dropped %d != %d", st.Written, st.Dropped, total)
+	}
+}
+
 type expAgg struct {
 	Requests   int64   `json:"requests"`
 	OK         int64   `json:"ok"`

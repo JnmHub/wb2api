@@ -48,6 +48,7 @@ import (
 	"wb2api/internal/scheduler"
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/store/pgaccounts"
+	"wb2api/internal/store/pgpricing"
 	"wb2api/internal/store/pgrealm"
 	"wb2api/internal/store/pgsessions"
 	"wb2api/internal/store/pgsettings"
@@ -114,6 +115,10 @@ func main() {
 	stickyErr := flag.Float64("sticky-escape-error-rate", envFloat("WB_STICKY_ESCAPE_ERROR_RATE", 0.5), "escape a sticky account when its error EWMA exceeds this")
 	topK := flag.Int("sched-top-k", envInt("WB_SCHED_TOP_K", 1), "choose among the K least-loaded ready accounts (1 = strict least-loaded)")
 	usageDir := flag.String("usage-dir", envOr("WB_PROXY_USAGE_DIR", "usage"), "directory for usage.db (and the legacy usage.jsonl to import)")
+	usageQueue := flag.Int("usage-queue", envInt("WB_USAGE_QUEUE", 0), "usage write-queue capacity (0 = 8192)")
+	usageWorkers := flag.Int("usage-workers", envInt("WB_USAGE_WORKERS", 0), "parallel usage writers (0 = 1 SQLite / 4 PostgreSQL)")
+	usageOverflow := flag.String("usage-overflow", envOr("WB_USAGE_OVERFLOW", "drop"), "usage overflow policy: drop or sample")
+	usageSample := flag.Int("usage-sample", envInt("WB_USAGE_SAMPLE", 20), "keep 1/N events under pressure when -usage-overflow=sample")
 	panelPassword := flag.String("panel-password", os.Getenv("WB_PANEL_PASSWORD"), "set the dashboard password at start-up")
 	catalogDir := flag.String("catalog-dir", envOr("WB_PROXY_CATALOG_DIR", "catalog"), "archive directory for the last /v3/config responses")
 	postgresDSN := flag.String("postgres-dsn", os.Getenv("WB_POSTGRES_DSN"), "PostgreSQL DSN (empty keeps the file/SQLite stores)")
@@ -292,10 +297,14 @@ func main() {
 		udb *usagedb.DB
 		err error
 	)
+	usageOpts := usagedb.Options{
+		QueueSize: *usageQueue, Workers: *usageWorkers,
+		Overflow: usagedb.OverflowPolicy(*usageOverflow), SampleEvery: *usageSample,
+	}
 	if *postgresDSN != "" {
-		udb, err = usagedb.OpenPostgres(*postgresDSN, 0)
+		udb, err = usagedb.OpenPostgresWithOptions(*postgresDSN, usageOpts)
 	} else {
-		udb, err = usagedb.Open(filepath.Join(*usageDir, "usage.db"), 0)
+		udb, err = usagedb.OpenWithOptions(filepath.Join(*usageDir, "usage.db"), usageOpts)
 	}
 	if err != nil {
 		log.Error("cannot open the usage database", "err", err)
@@ -412,6 +421,14 @@ func main() {
 		_ = json.NewEncoder(w).Encode(map[string]any{"current": realmSw.Get(), "options": []string{"intl", "cn"}})
 	})
 	pricingStore := pricing.Open(*accountsDir)
+	if pgDB != nil {
+		if err := pricingStore.UsePolicySource(pgpricing.New(pgDB.Pool, *accountsDir)); err != nil {
+			log.Warn("cannot load shared pricing policies; keeping the local file", "err", err)
+		} else {
+			pricingStore.StartPolicySync(bg, 5*time.Second)
+			log.Info("shared pricing policies enabled")
+		}
+	}
 	go refreshPricingLoop(pricingStore, log)
 	(&api.Usage{DB: udb, Est: limits, Pricing: pricingStore}).Register(mux, auth.Require)
 	bus := events.New(512)

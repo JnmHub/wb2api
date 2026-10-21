@@ -196,7 +196,17 @@ export interface UsageSummary {
   by_key: (UsageAgg & { key: string })[]
   by_realm: (UsageAgg & { key: string })[]
   by_account_truncated: boolean
-  queue: { written: number; dropped: number; last_error: string }
+  queue: {
+    written: number
+    dropped: number
+    last_error: string
+    depth: number
+    capacity: number
+    workers: number
+    batches: number
+    failed: number
+    overflow: string
+  }
 }
 
 export interface SeriesPoint extends UsageAgg {

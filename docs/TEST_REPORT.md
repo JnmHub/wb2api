@@ -352,10 +352,16 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
 - 本机没有 Docker daemon，**没有实际启动 compose 栈**；这一步需要在有 Docker
   的机器上补做。无 DSN 的 standalone 模式已用浏览器 smoke 回归。
 
-## 20. PostgreSQL 用量、面板会话与调度可靠性（v2.1.4 至 v2.2.1）
+## 20. PostgreSQL 用量、面板会话与调度可靠性（v2.1.4 至 v2.2.2）
 
 - 请求用量支持 PostgreSQL，日/时预聚合在写入事务中同步维护；SQLite 仍是
   standalone 默认后端。
+- 用量写入使用有界队列 + 批量并行事务：SQLite 默认 1 个 writer（避免锁竞争），
+  PostgreSQL 默认 4 个；队列 75% 满时 `sample` 模式按 `WB_USAGE_SAMPLE` 采样，
+  默认 `drop`。`TestWriterStatsReflectOptions` 覆盖容量/worker/计数，
+  `TestSampleOverflowKeepsAccountingComplete` 覆盖采样下
+  `written+dropped` 不丢账。`/api/v2/usage/summary` 与用量页显示积压、丢弃和
+  失败批次。
 - 旧 `usage.db` 在 PostgreSQL 模式首次启动时后台只读导入。每批 2000 行与
   `meta` 游标在同一事务提交，重启后从最大 request id 继续，不重复导入。
 - 列按名称读取，兼容旧 schema 缺少 `held_ms`/`effort`/`extra` 等列。
@@ -385,7 +391,10 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
   `TestLimiterKeySlotsAreSeparateFromAccountSlots` 覆盖跨实例共享、释放和
   账号槽位隔离。
 - CI `postgres` job 覆盖 `TestPostgresActiveRealm`：`wb_state` 的种子、
-  读取、写入和非法值拒绝。
+  读取、写入和非法值拒绝；`TestPostgresPricingPolicies` 覆盖价格覆盖的
+  文件种子、共享读写。价格覆盖通过 `wb_state` 的 `pricing_policies` 行共享，
+  副本每 5 秒轮询；`TestSharedPolicySourceSeedsAndPropagates` 覆盖本地文件
+  种子、跨副本读取、轮询同步和共享保存失败回退。
 
 - active realm 在 PostgreSQL 模式下存入 `wb_state`，`realmswitch` 每秒刷新一次，
   另一个副本切换后 1 秒内生效；`TestBackendRefreshesAcrossReplicas`、
@@ -401,5 +410,5 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
 - 账号页新增调度指标卡：在途/容量、平均首包、平均错误率、Top-K 和反馈样本数；
   `TestSchedulerSummaryAggregatesLiveState` 覆盖聚合、排序和 affinity 同步状态。
 
-尚未完成（后续阶段）：quota/pricing/jobs 的共享存储、真实 compose
+尚未完成（后续阶段）：quota windows 与 jobs/leader 的共享存储、真实 compose
 双副本栈与多副本压测。详见 `docs/ARCHITECTURE_MIGRATION.md`。

@@ -35,6 +35,7 @@ export function UsagePage() {
     ...live,
   })
   const t = sum.data?.totals
+  const q = sum.data?.queue
   const success = t && t.requests ? (t.ok / t.requests) * 100 : undefined
   const points = (series.data?.points ?? []).map((p) => ({
     bucket: bucket === 'hour' ? p.bucket.slice(11, 13) + ':00' : p.bucket.slice(5),
@@ -145,10 +146,16 @@ export function UsagePage() {
 
       <PricingCard base={base} />
 
-      {sum.data && sum.data.queue.dropped > 0 && (
-        <Tag color="warning" style={{ marginBottom: 12 }}>
-          已丢弃 {num(sum.data.queue.dropped)} 条用量记录
-        </Tag>
+      {q && (q.dropped > 0 || q.failed > 0 || q.depth > 0) && (
+        <Space wrap style={{ marginBottom: 12 }}>
+          {q.depth > 0 && (
+            <Tag color={q.depth * 4 >= q.capacity * 3 ? 'error' : 'processing'}>
+              写入队列 {num(q.depth)}/{num(q.capacity)} · {q.workers} worker
+            </Tag>
+          )}
+          {q.failed > 0 && <Tag color="error">写入失败 {num(q.failed)} 批 · {q.last_error}</Tag>}
+          {q.dropped > 0 && <Tag color="warning">已丢弃 {num(q.dropped)} 条用量记录（{q.overflow}）</Tag>}
+        </Space>
       )}
 
       <Row gutter={[12, 12]}>

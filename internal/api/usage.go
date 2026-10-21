@@ -215,7 +215,12 @@ func (u *Usage) summary(w http.ResponseWriter, r *http.Request) {
 		out["by_"+by] = list
 		out["by_"+by+"_truncated"] = truncated
 	}
-	out["queue"] = map[string]any{"written": u.DB.Written(), "dropped": u.DB.Dropped(), "last_error": u.DB.LastError()}
+	qs := u.DB.Stats()
+	out["queue"] = map[string]any{
+		"written": qs.Written, "dropped": qs.Dropped, "last_error": qs.LastError,
+		"depth": qs.QueueDepth, "capacity": qs.QueueCapacity, "workers": qs.Workers,
+		"batches": qs.Batches, "failed": qs.Failed, "overflow": qs.Overflow,
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 

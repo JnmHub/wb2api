@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -61,18 +62,27 @@ type Policy struct {
 	Note       string   `json:"note,omitempty"`
 }
 
+// PolicySource persists the per-model overrides outside the local file. A
+// PostgreSQL-backed source lets every replica see the same prices.
+type PolicySource interface {
+	LoadPolicies() (map[string]Policy, error)
+	SavePolicies(map[string]Policy) error
+}
+
 // Store owns the snapshot and the per-model policies under one data directory.
 type Store struct {
 	Dir      string
 	Client   *http.Client
 	FetchURL string
 
-	mu       sync.RWMutex
-	snap     Snapshot
-	policies map[string]Policy
-	loaded   bool
-	lastErr  string
-	now      func() time.Time
+	mu            sync.RWMutex
+	snap          Snapshot
+	policies      map[string]Policy
+	policySource  PolicySource
+	policyVersion atomic.Uint64
+	loaded        bool
+	lastErr       string
+	now           func() time.Time
 }
 
 // Open loads the snapshot and policies (missing files are fine).
@@ -85,6 +95,87 @@ func Open(dir string) *Store {
 
 func (s *Store) snapshotPath() string { return filepath.Join(s.Dir, "pricing.json") }
 func (s *Store) policyPath() string   { return filepath.Join(s.Dir, "pricing_policies.json") }
+
+// UsePolicySource loads policies from a shared source and makes later writes go
+// there. An empty shared set is seeded from the local file so an upgrade keeps
+// the existing overrides.
+func (s *Store) UsePolicySource(src PolicySource) error {
+	if src == nil {
+		return nil
+	}
+	shared, err := src.LoadPolicies()
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if shared == nil {
+		shared = map[string]Policy{}
+	}
+	if len(shared) == 0 && len(s.policies) > 0 {
+		if err := src.SavePolicies(copyPolicies(s.policies)); err != nil {
+			return err
+		}
+		shared = copyPolicies(s.policies)
+	}
+	s.policies = shared
+	s.policySource = src
+	s.policyVersion.Add(1)
+	return nil
+}
+
+// StartPolicySync polls the shared policy source so a change made on another
+// replica becomes visible here. A local write racing with the poll wins.
+func (s *Store) StartPolicySync(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				s.syncPolicies()
+			}
+		}
+	}()
+}
+
+func (s *Store) syncPolicies() {
+	s.mu.RLock()
+	src := s.policySource
+	s.mu.RUnlock()
+	if src == nil {
+		return
+	}
+	before := s.policyVersion.Load()
+	shared, err := src.LoadPolicies()
+	if err != nil {
+		s.setErr(err)
+		return
+	}
+	if shared == nil {
+		shared = map[string]Policy{}
+	}
+	s.mu.Lock()
+	if s.policyVersion.Load() != before {
+		s.mu.Unlock() // a panel write landed while we were reading
+		return
+	}
+	s.policies = shared
+	s.mu.Unlock()
+}
+
+func copyPolicies(in map[string]Policy) map[string]Policy {
+	out := make(map[string]Policy, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
 
 func (s *Store) load() {
 	s.mu.Lock()
@@ -257,21 +348,38 @@ func (s *Store) SetPolicy(model string, p Policy) error {
 		p.ORID, p.Input, p.Output, p.CacheRead, p.CacheWrite = "", nil, nil, nil, nil
 	case "":
 		s.mu.Lock()
+		prev, had := s.policies[model]
 		delete(s.policies, model)
+		s.policyVersion.Add(1)
 		err := s.savePoliciesLocked()
+		if err != nil && had {
+			s.policies[model] = prev
+		}
 		s.mu.Unlock()
 		return err
 	default:
 		return fmt.Errorf("mode must be auto, manual or ignore")
 	}
 	s.mu.Lock()
+	prev, had := s.policies[model]
 	s.policies[model] = p
+	s.policyVersion.Add(1)
 	err := s.savePoliciesLocked()
+	if err != nil {
+		if had {
+			s.policies[model] = prev
+		} else {
+			delete(s.policies, model)
+		}
+	}
 	s.mu.Unlock()
 	return err
 }
 
 func (s *Store) savePoliciesLocked() error {
+	if s.policySource != nil {
+		return s.policySource.SavePolicies(copyPolicies(s.policies))
+	}
 	return writeAtomic(s.policyPath(), map[string]any{"policies": s.policies})
 }
 

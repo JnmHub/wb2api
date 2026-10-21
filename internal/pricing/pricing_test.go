@@ -131,4 +131,63 @@ func TestPoliciesPersistAndValidate(t *testing.T) {
 	}
 }
 
+func TestSharedPolicySourceSeedsAndPropagates(t *testing.T) {
+	src := &memPolicies{}
+	a := Open(t.TempDir())
+	if err := a.SetPolicy("m", Policy{Mode: "manual", Output: ptr(2)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.UsePolicySource(src); err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := src.m["m"]; !ok || p.Output == nil || *p.Output != 2 {
+		t.Fatalf("local policy was not seeded: %+v", src.m)
+	}
+	b := Open(t.TempDir())
+	if err := b.UsePolicySource(src); err != nil {
+		t.Fatal(err)
+	}
+	if p := b.Policies()["m"]; p.Output == nil || *p.Output != 2 {
+		t.Fatalf("replica did not load shared policy: %+v", p)
+	}
+	if err := b.SetPolicy("n", Policy{Mode: "ignore"}); err != nil {
+		t.Fatal(err)
+	}
+	a.syncPolicies()
+	if p, ok := a.Policies()["n"]; !ok || p.Mode != "ignore" {
+		t.Fatalf("poll did not see the replica write: %+v", p)
+	}
+	src.fail = true
+	if err := a.SetPolicy("m", Policy{Mode: "ignore"}); err == nil {
+		t.Fatal("a failed shared save must be reported")
+	}
+	if p := a.Policies()["m"]; p.Mode != "manual" {
+		t.Fatalf("failed save must keep the old policy: %+v", p)
+	}
+}
+
+type memPolicies struct {
+	m    map[string]Policy
+	fail bool
+}
+
+func (s *memPolicies) LoadPolicies() (map[string]Policy, error) {
+	out := make(map[string]Policy, len(s.m))
+	for k, v := range s.m {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func (s *memPolicies) SavePolicies(m map[string]Policy) error {
+	if s.fail {
+		return os.ErrPermission
+	}
+	s.m = make(map[string]Policy, len(m))
+	for k, v := range m {
+		s.m[k] = v
+	}
+	return nil
+}
+
 func ptr(v float64) *float64 { return &v }

@@ -60,6 +60,11 @@ services:
       # Hold response headers until the account emits semantic output; fail over
       # when it stays silent longer than this. 0 keeps the legacy behavior.
       WB_FIRST_OUTPUT_MS: ${WB_FIRST_OUTPUT_MS:-30000}
+      # Usage accounting is asynchronous; PostgreSQL can commit several batches
+      # in parallel without touching request latency.
+      WB_USAGE_QUEUE: ${WB_USAGE_QUEUE:-16384}
+      WB_USAGE_WORKERS: ${WB_USAGE_WORKERS:-4}
+      WB_USAGE_OVERFLOW: ${WB_USAGE_OVERFLOW:-drop}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       # Existing accounts/settings.json and legacy usage.db/usage.jsonl are

@@ -131,25 +131,107 @@ CREATE TABLE IF NOT EXISTS hourly (
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 `
 
+// OverflowPolicy controls what happens when the write queue is saturated.
+type OverflowPolicy string
+
+const (
+	// OverflowDrop discards the event and counts it. This is the default: the
+	// request path must never block on usage accounting.
+	OverflowDrop OverflowPolicy = "drop"
+	// OverflowSample discards most events once the queue is 75% full, keeping
+	// one in SampleEvery. Useful when approximate accounting is acceptable and
+	// a database cannot keep up with a burst.
+	OverflowSample OverflowPolicy = "sample"
+)
+
+// Options configures the asynchronous usage writer.
+type Options struct {
+	QueueSize   int            // buffered events; <=0 uses 8192
+	Workers     int            // parallel batch writers; <=0 picks a driver default
+	Overflow    OverflowPolicy // empty means OverflowDrop
+	SampleEvery int            // keep 1/N under pressure when OverflowSample; <=0 uses 20
+}
+
+// Stats is a point-in-time view of the write pipeline.
+type Stats struct {
+	QueueDepth    int    `json:"queue_depth"`
+	QueueCapacity int    `json:"queue_capacity"`
+	Workers       int    `json:"workers"`
+	Written       int64  `json:"written"`
+	Dropped       int64  `json:"dropped"`
+	Batches       int64  `json:"batches"`
+	Failed        int64  `json:"failed"`
+	Overflow      string `json:"overflow"`
+	LastError     string `json:"last_error"`
+}
+
 // DB is an open usage database. It speaks SQLite by default and PostgreSQL
 // when opened with OpenPostgres; the schema and queries are shared.
 type DB struct {
 	sql    *sql.DB
 	driver string // "sqlite" or "pg"
 
-	queue   chan Event
-	flushCh chan chan struct{}
-	stop    chan struct{}
-	done    chan struct{}
-	once    sync.Once
+	queue       chan Event
+	flushCh     chan chan struct{}
+	stop        chan struct{}
+	done        chan struct{}
+	once        sync.Once
+	workers     int
+	queueCap    int
+	overflow    OverflowPolicy
+	sampleEvery uint64
+	sampleTick  atomic.Uint64
 
-	dropped atomic.Int64
-	written atomic.Int64
-	lastErr atomic.Value // string
+	dropped  atomic.Int64
+	written  atomic.Int64
+	batches  atomic.Int64
+	failures atomic.Int64
+	lastErr  atomic.Value // string
+}
+
+func normalizeOptions(o Options, driver string) Options {
+	if o.QueueSize <= 0 {
+		o.QueueSize = 8192
+	}
+	if o.Workers <= 0 {
+		if driver == "pg" {
+			o.Workers = 4
+		} else {
+			o.Workers = 1 // SQLite serialises writers; parallelism only adds lock waits
+		}
+	}
+	if o.Workers > 64 {
+		o.Workers = 64
+	}
+	if o.Overflow != OverflowSample {
+		o.Overflow = OverflowDrop
+	}
+	if o.SampleEvery <= 0 {
+		o.SampleEvery = 20
+	}
+	return o
+}
+
+func newDB(h *sql.DB, driver string, opts Options) *DB {
+	opts = normalizeOptions(opts, driver)
+	d := &DB{
+		sql: h, driver: driver, workers: opts.Workers, queueCap: opts.QueueSize,
+		overflow: opts.Overflow, sampleEvery: uint64(opts.SampleEvery),
+		queue: make(chan Event, opts.QueueSize), flushCh: make(chan chan struct{}),
+		stop: make(chan struct{}), done: make(chan struct{}),
+	}
+	go d.writer()
+	return d
 }
 
 // Open opens (creating if needed) the database at path and starts the writer.
+// It keeps the historical signature for callers that only tune the queue.
 func Open(path string, queueSize int) (*DB, error) {
+	return OpenWithOptions(path, Options{QueueSize: queueSize})
+}
+
+// OpenWithOptions opens SQLite with explicit writer options.
+func OpenWithOptions(path string, opts Options) (*DB, error) {
 	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(0)"
 	h, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -160,21 +242,18 @@ func Open(path string, queueSize int) (*DB, error) {
 		h.Close()
 		return nil, fmt.Errorf("usagedb schema: %w", err)
 	}
-	if queueSize <= 0 {
-		queueSize = 8192
-	}
-	d := &DB{
-		sql: h, driver: "sqlite", queue: make(chan Event, queueSize), flushCh: make(chan chan struct{}),
-		stop: make(chan struct{}), done: make(chan struct{}),
-	}
-	go d.writer()
-	return d, nil
+	return newDB(h, "sqlite", opts), nil
 }
 
 // OpenPostgres opens the usage store in PostgreSQL. The tables are created on
 // first use in the given database; callers normally pass the same DSN as the
 // account/settings store.
 func OpenPostgres(dsn string, queueSize int) (*DB, error) {
+	return OpenPostgresWithOptions(dsn, Options{QueueSize: queueSize})
+}
+
+// OpenPostgresWithOptions opens PostgreSQL with explicit writer options.
+func OpenPostgresWithOptions(dsn string, opts Options) (*DB, error) {
 	h, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, err
@@ -199,15 +278,7 @@ func OpenPostgres(dsn string, queueSize int) (*DB, error) {
 			return nil, fmt.Errorf("usagedb postgres schema: %w", err)
 		}
 	}
-	if queueSize <= 0 {
-		queueSize = 8192
-	}
-	d := &DB{
-		sql: h, driver: "pg", queue: make(chan Event, queueSize), flushCh: make(chan chan struct{}),
-		stop: make(chan struct{}), done: make(chan struct{}),
-	}
-	go d.writer()
-	return d, nil
+	return newDB(h, "pg", opts), nil
 }
 
 // postgresSchema reuses the SQLite schema with the minimal syntax changes:
@@ -265,8 +336,26 @@ func (d *DB) LastError() string {
 	return s
 }
 
-// Record enqueues an event without ever blocking the caller.
+// Stats returns the writer queue depths and counters for health panels. The
+// depth is sampled without locking and may lag a concurrent enqueue by one.
+func (d *DB) Stats() Stats {
+	return Stats{
+		QueueDepth: len(d.queue), QueueCapacity: d.queueCap, Workers: d.workers,
+		Written: d.written.Load(), Dropped: d.dropped.Load(), Batches: d.batches.Load(),
+		Failed: d.failures.Load(), Overflow: string(d.overflow), LastError: d.LastError(),
+	}
+}
+
+// Record enqueues an event without ever blocking the caller. Once the queue is
+// 75% full, sample mode keeps only one event per SampleEvery to shed load
+// before the hard drop point.
 func (d *DB) Record(e Event) {
+	if d.overflow == OverflowSample && d.sampleEvery > 1 && len(d.queue)*4 >= d.queueCap*3 {
+		if d.sampleTick.Add(1)%d.sampleEvery != 0 {
+			d.dropped.Add(1)
+			return
+		}
+	}
 	select {
 	case d.queue <- e:
 	default:
@@ -309,11 +398,7 @@ func (d *DB) writer() {
 		if len(batch) == 0 {
 			return
 		}
-		if err := d.writeBatch(batch); err != nil {
-			d.lastErr.Store(err.Error())
-		} else {
-			d.written.Add(int64(len(batch)))
-		}
+		d.writePool(batch)
 		batch = batch[:0]
 	}
 	drain := func() {
@@ -413,6 +498,54 @@ const pgUpsertHourlySQL = `INSERT INTO hourly (hour, realm, model, requests, ok,
     gen_ms_sum=hourly.gen_ms_sum+excluded.gen_ms_sum, gen_tokens=hourly.gen_tokens+excluded.gen_tokens`
 
 func epoch(t time.Time) float64 { return float64(t.UnixNano()) / 1e9 }
+
+// writePool splits one batch across the configured workers. Each chunk gets
+// its own transaction, so a slow commit does not serialise the whole queue on
+// PostgreSQL. SQLite defaults to one worker because concurrent writers only
+// queue on the database lock.
+func (d *DB) writePool(events []Event) {
+	d.batches.Add(1)
+	workers := d.workers
+	if workers > len(events) {
+		workers = len(events)
+	}
+	if workers <= 1 {
+		if err := d.writeBatch(events); err != nil {
+			d.failures.Add(1)
+			d.lastErr.Store(err.Error())
+			return
+		}
+		d.written.Add(int64(len(events)))
+		return
+	}
+	chunk := (len(events) + workers - 1) / workers
+	var wg sync.WaitGroup
+	var written, failed atomic.Int64
+	var setErr sync.Once
+	var firstErr string
+	for start := 0; start < len(events); start += chunk {
+		end := start + chunk
+		if end > len(events) {
+			end = len(events)
+		}
+		wg.Add(1)
+		go func(part []Event) {
+			defer wg.Done()
+			if err := d.writeBatch(part); err != nil {
+				failed.Add(1)
+				setErr.Do(func() { firstErr = err.Error() })
+				return
+			}
+			written.Add(int64(len(part)))
+		}(events[start:end])
+	}
+	wg.Wait()
+	d.written.Add(written.Load())
+	d.failures.Add(failed.Load())
+	if firstErr != "" {
+		d.lastErr.Store(firstErr)
+	}
+}
 
 func (d *DB) writeBatch(events []Event) error {
 	tx, err := d.sql.Begin()

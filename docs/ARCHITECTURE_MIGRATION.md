@@ -52,8 +52,13 @@ files + SQLite deployment to the Sub2API-style split:
   `WB_FIRST_OUTPUT_MS` controls the bound (compose default 30000).
 - The shared upstream connection pool keeps up to 32 idle connections per host
   (raised from 4) so a burst does not pay a new TLS handshake per request.
-- Request usage leaves the hot path through the existing asynchronous writer;
-  the queue is bounded and request handlers only enqueue.
+- Request usage leaves the hot path through a bounded asynchronous queue. A
+  dispatcher batches up to 256 events and spreads each batch over
+  `WB_USAGE_WORKERS` transactions (default 1 for SQLite, 4 for PostgreSQL).
+  Saturation drops by default; `WB_USAGE_OVERFLOW=sample` keeps one in
+  `WB_USAGE_SAMPLE` once the queue is 75% full. `/api/v2/usage/summary` exposes
+  depth/capacity, workers, written/dropped/failed batches and the last error;
+  the usage page shows backlog and drop tags.
 - `internal/store/pgaccounts`: account records stored as JSONB, with a one-time
   import from `accounts/*.json` when the table is empty.
 - `internal/store/pgsettings`: singleton settings document stored as JSONB, with
@@ -75,14 +80,17 @@ files + SQLite deployment to the Sub2API-style split:
   container) in addition to the SQLite tests.
 - `settings.OpenWith`: file-free settings store used by the PostgreSQL backend.
 - `cmd/hub`: `WB_POSTGRES_DSN`, `WB_REDIS_ADDR`, `WB_REDIS_INFLIGHT`,
-  `WB_REDIS_WAIT_MS`, `WB_SCHED_TOP_K` and `WB_FIRST_OUTPUT_MS`; when
-  configured, account persistence/import/delete and settings updates go to
-  PostgreSQL, and `/health` reports backend status.
+  `WB_REDIS_WAIT_MS`, `WB_SCHED_TOP_K`, `WB_FIRST_OUTPUT_MS`,
+  `WB_USAGE_QUEUE`, `WB_USAGE_WORKERS`, `WB_USAGE_OVERFLOW` and
+  `WB_USAGE_SAMPLE`; when configured, account persistence/import/delete and
+  settings updates go to PostgreSQL, and `/health` reports backend status.
 - `compose.yaml`: one command starts PostgreSQL, Redis and wb2api, with health
   dependencies.
 - `wb_state`: small shared runtime-state table. The active realm is stored under
   `active_realm`; each replica refreshes it once per second, so a panel switch
-  propagates without a restart.
+  propagates without a restart. Per-model pricing overrides live under
+  `pricing_policies`; `pricing_policies.json` seeds the row on first boot and
+  replicas poll every five seconds. A panel write wins over a concurrent poll.
 - Redis affinity: `wb:aff:<sha256-prefix>` holds a per-conversation sorted set
   (score = expiry, member = account uid). The session key is hashed before it
   reaches Redis. Each replica keeps a five-second local cache; a miss reads the
@@ -111,13 +119,11 @@ files + SQLite deployment to the Sub2API-style split:
 
 ## Next phases
 
-1. **Shared state**: move quota windows, pricing overrides and jobs/leader
-   election to PostgreSQL/Redis so more than one wb2api replica is safe. Panel
-   sessions, per-key/account slots, the active realm and conversation affinity
-   already use shared backends.
-2. **Observability**: expose usage-worker queue/drop metrics in addition to the
-   scheduler tile now on the accounts page.
-3. **Load tests**: compare file/SQLite vs PostgreSQL/Redis at 200+ concurrent
+1. **Shared state**: move quota windows and jobs/leader election to
+   PostgreSQL/Redis so more than one wb2api replica is safe. Panel sessions,
+   per-key/account slots, the active realm, pricing overrides and conversation
+   affinity already use shared backends.
+2. **Load tests**: compare file/SQLite vs PostgreSQL/Redis at 200+ concurrent
    streams, and verify a two-replica deployment does not double-schedule.
 
 ## Non-goals in this phase

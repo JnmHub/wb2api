@@ -16,6 +16,8 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
   会话亲和（配置 Redis 后跨副本共享）与慢账号逃逸、最低负载优先、可选 top-K
   负载分散、PostgreSQL 用量记账；
   账号槽位和 API Key 并发可选用 Redis 跨进程共享，全部满槽时短暂排队后返回 429。
+- **用量写入池**：有界异步队列 + 批量并行事务（SQLite 默认 1、PostgreSQL 默认 4），
+  队列饱和可按 `drop` 丢弃计数或 `sample` 采样；面板显示积压、丢弃和失败批次。
 - **首包保护**：流式请求在收到语义输出前不向客户端发送响应头；超过
   `WB_FIRST_OUTPUT_MS` 仍未产出时取消该账号并换号，避免把半截 SSE 暴露给客户端。
 - **运营**：国内签到/活跃上报/成长任务/猫猫旅行/连登管家，国际每日活跃
@@ -64,10 +66,11 @@ docker compose up -d --build
 
 面板：`http://127.0.0.1:8788/`。
 
-- **PostgreSQL**：账号、`settings.json`、**请求用量**和**面板登录会话**的权威存储；首次启动会把现有
-  `./data/accounts/*.json`、`settings.json`、`usage.jsonl`、旧版 `usage.db` 和
-  `panel_sessions.json` 导入数据库，之后读写走数据库。`usage.db` 只读导入，原文件保留，
-  导入进度记录在 `meta` 表。
+- **PostgreSQL**：账号、`settings.json`、**请求用量**、**面板登录会话**和**价格覆盖**
+  的权威存储；首次启动会把现有 `./data/accounts/*.json`、`settings.json`、`usage.jsonl`、
+  旧版 `usage.db`、`panel_sessions.json` 和 `pricing_policies.json` 导入数据库，之后读写
+  走数据库。`usage.db` 只读导入，原文件保留，导入进度记录在 `meta` 表；价格覆盖在副本间
+  5 秒内同步。
 - **Redis**：跨进程的账号并发槽位（`WB_REDIS_INFLIGHT`，CLI 默认 0，Compose
   默认 8）、API Key 并发槽位、会话亲和绑定和健康检查；所有账号都满槽时可排队
   `WB_REDIS_WAIT_MS`（默认 1500）再返回 429，减少冷账号溢出；不配 Redis
@@ -113,6 +116,10 @@ services:
 | `-host` / `-lan` | `127.0.0.1` / 关 | 监听地址；`-lan` 等价于所有网卡 |
 | `-accounts-dir` | `accounts` | 账号 JSON 目录 |
 | `-usage-dir` | `usage` | `usage.db` 与日志 |
+| `-usage-queue` / `WB_USAGE_QUEUE` | `8192` | 用量异步写入队列容量 |
+| `-usage-workers` / `WB_USAGE_WORKERS` | `1` / `4` | 每批并行写入事务数；SQLite 默认 1，PostgreSQL 默认 4 |
+| `-usage-overflow` / `WB_USAGE_OVERFLOW` | `drop` | 队列满时策略：`drop` 丢弃并计数，`sample` 保留采样 |
+| `-usage-sample` / `WB_USAGE_SAMPLE` | `20` | `sample` 模式下队列达 75% 后每 N 条保留 1 条 |
 | `-catalog-dir` | `catalog` | 模型目录缓存 |
 | `-panel-password` | 空 | 面板密码，也可用 `WB_PANEL_PASSWORD` |
 | `-max-attempts` | `5` | 单请求最多切换账号次数 |
