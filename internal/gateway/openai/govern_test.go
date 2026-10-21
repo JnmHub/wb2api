@@ -451,3 +451,23 @@ func TestEffortIsRecordedOnTheUsageEvent(t *testing.T) {
 		t.Fatalf("effort %q", ev.Effort)
 	}
 }
+
+func TestModelScoped5xxDoesNotChargeAccount(t *testing.T) {
+	up := newRawUpstream(t, func(i int, r rawReq, c net.Conn) {
+		status(c, 500, `{"code":11134,"msg":"the model provider is temporarily unavailable"}`)
+	})
+	f := newFixture(t, up, accSpec{})
+	for i := 0; i < 3; i++ {
+		code, _, _ := f.post(t, conv(i), nil)
+		if code != 500 {
+			t.Fatalf("request %d: status %d", i, code)
+		}
+	}
+	a := f.pool.All()[0]
+	if !a.Ready("glm-5.3", time.Now()) {
+		t.Fatalf("a model-scoped 500 must not park the account: %q", a.UnavailableReason("glm-5.3", time.Now()))
+	}
+	if _, _, fails, _ := a.Streaks(); fails != 0 {
+		t.Fatalf("a model-scoped 500 must not charge the account: fails=%d", fails)
+	}
+}

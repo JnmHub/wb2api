@@ -12,6 +12,7 @@ import (
 	"wb2api/internal/jsonx"
 	"wb2api/internal/pool"
 	"wb2api/internal/realm"
+	"wb2api/internal/store/settings"
 )
 
 // Info serves the read-only gateway endpoints: /v1/models (and /models),
@@ -37,8 +38,12 @@ func (i *Info) defaultRealm() string { return i.Chat.activeRealm() }
 // X-Realm, then ?realm=, then the pinned account's realm, then the active one.
 // "all" is accepted for listings. Unknown values fall back so a client cannot
 // grow the per-realm cache.
-func (i *Info) requestRealm(r *http.Request, key string) string {
-	for _, c := range []string{key, r.Header.Get("X-Realm"), r.URL.Query().Get("realm")} {
+func (i *Info) requestRealm(r *http.Request, key *settings.APIKey) string {
+	bound := ""
+	if key != nil {
+		bound = key.Realm
+	}
+	for _, c := range []string{bound, r.Header.Get("X-Realm"), r.URL.Query().Get("realm")} {
 		switch c {
 		case realm.Intl, realm.CN, "all":
 			return c
@@ -80,34 +85,35 @@ func pyFloat(f float64) json.Number {
 	return json.Number(s)
 }
 
-func (i *Info) authorize(w http.ResponseWriter, r *http.Request) (key string, ok bool) {
+func (i *Info) authorize(w http.ResponseWriter, r *http.Request) (*settings.APIKey, bool) {
 	k, ok := i.Chat.Authenticate(r)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "missing or invalid API key", "invalid_request_error")
-		return "", false
+		return nil, false
 	}
-	if k != nil {
-		return k.Realm, true
-	}
-	return "", true
+	return k, true
 }
 
 func (i *Info) models(w http.ResponseWriter, r *http.Request) {
 	if !readOnly(w, r) {
 		return
 	}
-	boundRealm, ok := i.authorize(w, r)
+	boundKey, ok := i.authorize(w, r)
 	if !ok {
 		return
 	}
-	rl := i.requestRealm(r, boundRealm)
+	rl := i.requestRealm(r, boundKey)
 	data, meta := i.Catalog.Entries(r.Context(), rl)
 	list := make([]any, 0, len(data))
 	pinned := PinnedFrom(r.Context())
+	filterByKey := i.Chat != nil && i.Chat.Settings != nil && i.Chat.Settings.FilterModelsByKey()
 	for _, d := range data {
 		id, _ := d.Get("id").(string)
 		// a local deny-list keeps blocked models out of every client's picker
 		if i.Chat != nil && i.Chat.Settings != nil && i.Chat.Settings.ModelBanned(id) {
+			continue
+		}
+		if filterByKey && boundKey != nil && len(boundKey.Models) > 0 && !boundKey.AllowsModel(id) {
 			continue
 		}
 		// a pinned route lists what that account can actually take
@@ -164,11 +170,11 @@ func (i *Info) balance(w http.ResponseWriter, r *http.Request) {
 	if !readOnly(w, r) {
 		return
 	}
-	boundRealm, ok := i.authorize(w, r)
+	boundKey, ok := i.authorize(w, r)
 	if !ok {
 		return
 	}
-	rl := i.requestRealm(r, boundRealm)
+	rl := i.requestRealm(r, boundKey)
 	enabled, known := 0, 0
 	total := 0.0
 	var updated float64

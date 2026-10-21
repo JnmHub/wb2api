@@ -622,16 +622,24 @@ func usageOf(u *jsonx.Obj, cached func(*jsonx.Obj) int64) *jsonx.Obj {
 	if u == nil {
 		return out
 	}
-	out.Set("input_tokens", num(toInt(u.Get("prompt_tokens"))))
-	out.Set("output_tokens", num(toInt(u.Get("completion_tokens"))))
 	var c int64
 	if v, ok := u.Lookup("prompt_cache_hit_tokens"); ok && v != nil {
 		c = toInt(v)
 	} else if cached != nil {
 		c = cached(u)
 	}
+	write := toInt(u.Get("prompt_cache_write_tokens"))
+	// Anthropic reports non-cached input in input_tokens and cached tokens in
+	// the two cache_* fields separately; WorkBuddy's prompt_tokens includes
+	// them, so subtract to avoid double-counting the context.
+	input := toInt(u.Get("prompt_tokens")) - c - write
+	if input < 0 {
+		input = 0
+	}
+	out.Set("input_tokens", num(input))
+	out.Set("output_tokens", num(toInt(u.Get("completion_tokens"))))
 	out.Set("cache_read_input_tokens", num(c))
-	out.Set("cache_creation_input_tokens", num(toInt(u.Get("prompt_cache_write_tokens"))))
+	out.Set("cache_creation_input_tokens", num(write))
 	if st := u.Get("service_tier"); tr(st) {
 		out.Set("service_tier", st)
 	}

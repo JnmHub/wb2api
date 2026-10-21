@@ -100,17 +100,31 @@ func asInvalid(err error, out **ErrInvalid) bool {
 }
 
 func TestChatToMessages(t *testing.T) {
-	for i, c := range load(t).ToMessages {
+	v := load(t)
+	dirty := false
+	for i := range v.ToMessages {
+		c := &v.ToMessages[i]
 		chat, _ := parse(t, c.Chat).(*jsonx.Obj)
 		got := enc(t, ChatToMessages(chat, counterEnv(), DefaultCached))
 		if got != c.Want {
+			if os.Getenv("UPDATE_GOLDEN") == "1" {
+				c.Want = got
+				dirty = true
+				continue
+			}
 			t.Errorf("case %d\n got %s\nwant %s", i, got, c.Want)
 		}
+	}
+	if dirty {
+		saveGolden(t, v)
 	}
 }
 
 func TestStream(t *testing.T) {
-	for i, c := range load(t).Stream {
+	v := load(t)
+	dirty := false
+	for i := range v.Stream {
+		c := &v.Stream[i]
 		s := NewStream("glm-5.3", counterEnv(), DefaultCached)
 		var out bytes.Buffer
 		write := func(fs []Frame) {
@@ -128,11 +142,30 @@ func TestStream(t *testing.T) {
 		write(s.Line([]byte("data: [DONE]\n")))
 		write(s.Finish())
 		if out.String() != c.Want {
-			t.Errorf("case %d differs\n got %s\nwant %s", i, out.String(), c.Want)
+			if os.Getenv("UPDATE_GOLDEN") == "1" {
+				c.Want = out.String()
+				dirty = true
+			} else {
+				t.Errorf("case %d differs\n got %s\nwant %s", i, out.String(), c.Want)
+			}
 		}
 		if (s.Usage() == nil) != (string(c.Usage) == "null") {
 			t.Errorf("case %d usage %v want %s", i, s.Usage(), c.Usage)
 		}
+	}
+	if dirty {
+		saveGolden(t, v)
+	}
+}
+
+func saveGolden(t *testing.T, v *vectors) {
+	t.Helper()
+	b, err := json.MarshalIndent(v, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("testdata/anthropic.json", append(b, '\n'), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

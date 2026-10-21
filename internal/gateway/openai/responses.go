@@ -511,6 +511,7 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 	defer idle.Stop()
 
 	s := responses.NewStream(model, info, responses.Env{})
+	pacer := newStreamPacer(q.maxTPS)
 	var (
 		firstAt      time.Time
 		lastAt       time.Time
@@ -561,6 +562,13 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 						break
 					}
 					now := time.Now()
+					if n := chunkOutputTokens(data); n > 0 {
+						if perr := pacer.wait(q.r.Context(), n); perr != nil {
+							clientClosed = true
+							break
+						}
+						idle.Reset(idleD)
+					}
 					if firstAt.IsZero() {
 						firstAt = now
 					}

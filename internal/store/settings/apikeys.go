@@ -15,6 +15,7 @@ type APIKey struct {
 	Realm            string // "", "intl" or "cn"
 	Models           []string
 	ConcurrencyLimit int
+	TPSLimit         float64 // -1 = off, 0 = follow global, >0 = per-key cap
 	Enabled          bool
 	CreatedAt        string
 	DeletedAt        string
@@ -118,7 +119,8 @@ func (s *Store) APIKeys(includeDeleted bool) []APIKey {
 			e := APIKey{
 				ID: truthyStr(m["id"]), Name: name, Key: key, Realm: realm,
 				Models: cleanModelPatterns(m["models"]), ConcurrencyLimit: conc,
-				Enabled: enabled, CreatedAt: truthyStr(m["created_at"]), DeletedAt: deleted,
+				TPSLimit: keyTPSLimit(m), Enabled: enabled,
+				CreatedAt: truthyStr(m["created_at"]), DeletedAt: deleted,
 			}
 			if e.Key != "" {
 				if seenSecret[e.Key] {
@@ -141,6 +143,21 @@ func (s *Store) APIKeys(includeDeleted bool) []APIKey {
 		}
 	}
 	return []APIKey{}
+}
+
+func keyTPSLimit(m map[string]any) float64 {
+	raw, ok := m["tps_limit"]
+	if !ok {
+		return 0 // inherit global
+	}
+	f := floatOf(raw)
+	if f < -1 {
+		return -1
+	}
+	if f > 1000 {
+		return 1000
+	}
+	return f
 }
 
 // uniqueKeyID mirrors _unique_key_id except that, for an empty candidate, it

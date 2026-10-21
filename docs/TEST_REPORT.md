@@ -151,7 +151,7 @@ npm run uitest -- --url http://127.0.0.1:18888 --password real-test
   handler，已改为按请求量扩容；不是网关长上下文传输 bug。
 - Docker：`docker compose config` 校验通过；本机只有 Docker CLI，Docker daemon 未安装，
   因此镜像构建未在本机执行。GitHub Actions `release` 工作流已真实跑通，
-  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 至 v2.0.10。
+  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 至 v2.0.11。
 - **CI 真跑出了两个真实问题**：GitHub 的 `-race` 发现 `wireBody` 的 `eof/done` 与 ACP
   扫描协程并发读写（已加锁，并且只有 Close 前已观察到 EOF 才归还连接）；Windows runner
   上的 `wsarecv: ... was aborted` 未被识别为陈旧连接（已加入重试判断并补测试）。
@@ -275,11 +275,25 @@ Docker Compose 也会透传 `WB_MAX_BODY_MB`。`TestBodyTooLarge` 覆盖自定�
 
 - DSH 的 `cordis.patch.yml` profile 补丁层与放宽后的 `retryPolicy`（当前只写 `settings.yaml`，DSH 升级后可能不生效；需要保持注释的 YAML 编辑器）；
 - 面板/日志/导出中的手机号昵称脱敏；
-- `/v1/models` 按 API Key 模型限制过滤（可选开关）；
-- Anthropic `input_tokens` 扣除缓存命中/写入，以及流式 usage 尾帧的严格位置；
-- 模型级 5xx 不计入账号熔断的细分。
+- 流式 usage 尾帧的严格位置与模型级 5xx 的更细分类（本轮已处理模型级 5xx 不计熔断）。
 
-## 16. 复现
+## 16. 流式 TPS、模型过滤与 usage 修正
+
+- **流式 TPS**：全局 `output_tps_limit`（默认 0=关闭）+ 每个 API Key 的 `tps_limit`
+  （0=跟随全局，-1=该 Key 关闭，>0=覆盖）；只对流式响应生效，非流式不受影响。
+  首 token 立即发送，后续按估算输出 token 的平均速率节流；上游生成/计费速度不变。
+  高并发用例 `TestOutputTPSHighConcurrency`：50 路并发、每路 40 个 token、上限 100 t/s，
+  全部 50 路返回完整内容；单路由 0.4s 的目标时长验证了节流确实生效（整组约 2.6s）。
+- **`/v1/models` 按 Key 过滤**：新增开关 `filter_models_by_key`（默认关闭）。
+  打开后，配了模型限制的 Key 只看到允许的模型；未限制的 Key 和面板仍看全部。
+  `TestModelsFilteredByKeyWhenEnabled` 覆盖开关开/关。
+- **Anthropic `input_tokens`**：从 `prompt_tokens` 中扣除 `cache_read` 和
+  `cache_creation`，避免缓存命中的上下文被双计；golden 数据已按新口径更新。
+- **模型级 5xx**：上游 `11102/11129/11134/11150/11158` 这类明确表示模型/服务不可用的
+  5xx 不再计入账号熔断，直接返回上游错误，不轮转账号；
+  `TestModelScoped5xxDoesNotChargeAccount` 覆盖。
+
+## 17. 复现
 
 ```powershell
 # 模拟并发基准（自带 mock 与假账号池）

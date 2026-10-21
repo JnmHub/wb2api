@@ -269,6 +269,7 @@ type request struct {
 	enc        map[string]*encoded
 	sink       sinkFunc // renders the upstream stream (nil = chat completions)
 	page       *pool.Page
+	maxTPS     float64
 	at         attemptState
 	effortVal  string
 	effortDone bool

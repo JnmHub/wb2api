@@ -34,6 +34,7 @@ const switchInfo: { key: string; label: string; hint: string }[] = [
   { key: 'free_model_credit_fallback', label: '免费模型用尽后回退到付费同款', hint: '仅国际版 deepseek-v4.1-flash → -sg：所有账号的免费窗口都用尽后才会触发一次，会真实消耗积分。' },
   { key: 'remaining_priority_enabled', label: '剩余用量优先调度', hint: '估计剩余越接近耗尽的「账号×模型」分到越多请求，先把快用完的额度用掉；默认关闭，需要先真实撞过限额才有预算样本。' },
   { key: 'local_web_tools', label: '本地执行 web_search / web_fetch', hint: '仅 /v1/responses：网关自己搜索/抓取并把结果喂回模型，默认关闭。搜索走 DuckDuckGo / Wikipedia / Google News，抓取只允许公网 http(s) 文本页。' },
+  { key: 'filter_models_by_key', label: '按 API Key 过滤 /v1/models', hint: '打开后，配了模型限制的 Key 在 /v1/models 里只看到允许的模型；未限制的 Key 和面板仍看全部。默认关闭，保持全量目录。' },
   { key: 'daily_chat_web', label: '国际版每日活跃：网页会话', hint: '除桌面端轻量对话外，再建一条网页端 agent 会话并驱动它跑完。网页会话才计入每日活跃积分；默认开启，30/50 积分的官方任务依赖它。' },
   { key: 'daily_chat_web_retry', label: '网页会话失败重试', hint: '会话没在首轮等待时间内跑完时再试，等待时间每轮翻倍（首轮 120s → 240s → 480s），默认开启。' },
   { key: 'enable_anthropic_messages', label: '启用 Anthropic Messages（/v1/messages）', hint: '网关会忽略 cache_control，可能多耗积分，默认关闭。' },
@@ -121,6 +122,7 @@ export function SettingsPage() {
 
       <DailyChatSection s={s} />
       <OpsSection s={s} />
+      <TpsSection s={s} />
       <UpstreamSection s={s} />
       <ProbeSection s={s} />
       <ModelsSection s={s} />
@@ -163,6 +165,34 @@ function OpsSection({ s }: { s: SettingsView }) {
           </div>
         </div>
       </Space>
+      {save.isError && <div className="err" style={{ marginTop: 8 }}>{String(save.error)}</div>}
+    </Card>
+  )
+}
+
+function TpsSection({ s }: { s: SettingsView }) {
+  const save = useSaveSettings()
+  const [tps, setTps] = useState<number>(s.output_tps_limit)
+  const dirty = tps !== s.output_tps_limit
+  return (
+    <Card
+      title="流式输出速度限制"
+      extra={
+        <Button type="primary" size="small" disabled={!dirty} loading={save.isPending} onClick={() => save.mutate({ output_tps_limit: tps })}>
+          保存
+        </Button>
+      }
+    >
+      <Typography.Paragraph type="secondary" style={{ marginTop: 0 }}>
+        仅限制流式响应的输出速度（token/秒），首字延迟不受影响。0 = 关闭；Key 可单独覆盖，Key 的 0 表示跟随这里，-1 表示该 Key 关闭。
+        上游仍按自己的速度生成和计费，网关只控制转发节奏。
+      </Typography.Paragraph>
+      <div>
+        <Typography.Text type="secondary">全局默认上限（token/s，0–1000）</Typography.Text>
+        <div style={{ marginTop: 4 }}>
+          <InputNumber min={0} max={1000} step={0.5} value={tps} onChange={(v) => setTps(v ?? 0)} style={{ width: 180 }} />
+        </div>
+      </div>
       {save.isError && <div className="err" style={{ marginTop: 8 }}>{String(save.error)}</div>}
     </Card>
   )

@@ -136,6 +136,7 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 		q.httpErr(http.StatusBadRequest, msg, "invalid_request_error")
 		return
 	}
+	q.maxTPS = h.streamTPS(key)
 	// No client-side concurrency cap: the gateway forwards every request it
 	// receives and lets the upstream decide. Per-key concurrency_limit remains
 	// in the stored settings for compatibility but is not enforced.
@@ -362,7 +363,7 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 	if q.sink != nil {
 		q.sink(q, acc, cancel, idle, resp.Body)
 	} else if q.stream {
-		h.pipeStream(q.w, q.r, cancel, idle, resp.Body, acc, q.model, q.keyID, q.effort(h), q.start)
+		h.pipeStream(q.w, q.r, cancel, idle, resp.Body, acc, q.model, q.keyID, q.effort(h), q.start, q.maxTPS)
 	} else {
 		h.aggregate(q.w, q.r, cancel, idle, resp.Body, acc, q.model, q.keyID, q.effort(h), q.start)
 	}
@@ -591,6 +592,14 @@ func (h *Handler) classify(q *request, acc *pool.Account, status int, body []byt
 		return result{kind: stop, status: status, body: body}
 
 	case status >= 500:
+		if code := modelScopedErrorCode(body); code != 0 && modelScopedErrorCodes[code] {
+			// A dead/unsupported model must not be charged to the account: the
+			// body says the model/service is unavailable, not the credential.
+			// Stop rotating (another account would hit the same model error).
+			h.logger().Warn("upstream model-scoped error; not charging the account",
+				"account", short(acc.UID), "model", q.model, "code", code, "status", status)
+			return result{kind: stop, status: status, body: body}
+		}
 		q.at.transient++
 		q.demote(h, acc)
 		if h.Settings.EgressBackoff() && (status == 502 || status == 503 || status == 504) {

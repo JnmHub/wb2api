@@ -156,7 +156,7 @@ func usageTotal(u json.RawMessage) int64 {
 
 // pipeStream relays an upstream SSE stream to the client.
 func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp func(), idleD time.Duration, body io.Reader,
-	acc *pool.Account, model, keyID, effort string, start time.Time) {
+	acc *pool.Account, model, keyID, effort string, start time.Time, maxTPS float64) {
 
 	hdr := w.Header()
 	hdr.Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -200,6 +200,7 @@ func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp fu
 		holdMax = 20 * time.Second
 	}
 	filter := leak.NewFilter(h.FilterMode)
+	pacer := newStreamPacer(maxTPS)
 	var (
 		br           = bufio.NewReaderSize(body, sseReadBlock)
 		acc2         []byte
@@ -270,6 +271,13 @@ loop:
 			now := time.Now()
 			if data := sseData(line); data != nil && !bytes.Equal(data, []byte("[DONE]")) {
 				nChunks++
+				if n := chunkOutputTokens(data); n > 0 {
+					if perr := pacer.wait(r.Context(), n); perr != nil {
+						clientClosed = true
+						break loop
+					}
+					idle.Reset(idleD)
+				}
 				if firstAt.IsZero() {
 					firstAt = now
 				}

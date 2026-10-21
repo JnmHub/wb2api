@@ -221,6 +221,7 @@ func (h *Handler) messagesStream(q *request, acc *pool.Account, cancelUp context
 	defer idle.Stop()
 
 	s := anthropic.NewStream(model, anthropic.Env{}, anthropic.DefaultCached)
+	pacer := newStreamPacer(q.maxTPS)
 	var (
 		br           = bufio.NewReaderSize(body, sseReadBlock)
 		acc2         []byte
@@ -239,6 +240,13 @@ func (h *Handler) messagesStream(q *request, acc *pool.Account, cancelUp context
 		if len(line) > 0 {
 			idle.Reset(idleD)
 			if data := sseData(line); data != nil && !bytes.Equal(data, []byte("[DONE]")) {
+				if n := chunkOutputTokens(data); n > 0 {
+					if perr := pacer.wait(q.r.Context(), n); perr != nil {
+						clientClosed = true
+						break
+					}
+					idle.Reset(idleD)
+				}
 				now := time.Now()
 				if firstAt.IsZero() {
 					firstAt = now

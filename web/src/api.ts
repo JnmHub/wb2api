@@ -237,6 +237,7 @@ export interface KeyView {
   realm: '' | 'intl' | 'cn'
   models: string[]
   concurrency_limit: number
+  tps_limit: number
   enabled: boolean
   created_at: string
   deleted_at: string
@@ -288,6 +289,7 @@ export interface SettingsView {
   daily_chat_web_timeout: number
   ops_concurrency: number
   ops_interval_ms: number
+  output_tps_limit: number
   proxy_slots: ProxySlot[]
   catalog?: CatalogStatus[]
 }

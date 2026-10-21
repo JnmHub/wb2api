@@ -56,7 +56,8 @@ func mask(secret string) string {
 func keyView(k settings.APIKey) map[string]any {
 	return map[string]any{
 		"id": k.ID, "name": k.Name, "key_preview": mask(k.Key), "realm": k.Realm, "models": k.Models,
-		"concurrency_limit": k.ConcurrencyLimit, "enabled": k.Enabled, "created_at": k.CreatedAt,
+		"concurrency_limit": k.ConcurrencyLimit, "tps_limit": k.TPSLimit,
+		"enabled": k.Enabled, "created_at": k.CreatedAt,
 		"deleted_at": k.DeletedAt, "deleted": k.DeletedAt != "",
 	}
 }
@@ -64,7 +65,7 @@ func keyView(k settings.APIKey) map[string]any {
 var switchNames = []string{
 	"auto_switch_product", "egress_backoff_enabled", "free_model_credit_fallback", "enable_anthropic_messages",
 	"auth_disabled", "remaining_priority_enabled", "local_web_tools", "update_check_enabled",
-	"daily_chat_web", "daily_chat_web_retry",
+	"daily_chat_web", "daily_chat_web_retry", "filter_models_by_key",
 }
 
 func (s *Settings) snapshot() map[string]any {
@@ -108,6 +109,7 @@ func (s *Settings) snapshot() map[string]any {
 		"daily_chat_web_timeout":  s.Store.DailyChatWebTimeout(),
 		"ops_concurrency":         s.Store.OpsConcurrency(),
 		"ops_interval_ms":         s.Store.OpsIntervalMS(),
+		"output_tps_limit":        s.Store.OutputTPSLimit(),
 	}
 	if s.Catalog != nil {
 		out["catalog"] = s.Catalog.Status()
@@ -177,6 +179,7 @@ type settingsPatch struct {
 	DailyChatWebTimeout  *int                   `json:"daily_chat_web_timeout"`
 	OpsConcurrency       *int                   `json:"ops_concurrency"`
 	OpsIntervalMS        *int                   `json:"ops_interval_ms"`
+	OutputTPSLimit       *float64               `json:"output_tps_limit"`
 }
 
 type limitChange struct {
@@ -282,6 +285,12 @@ func (s *Settings) patch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if p.OutputTPSLimit != nil {
+		if err := s.Store.SetOutputTPSLimit(*p.OutputTPSLimit); err != nil {
+			fail(err)
+			return
+		}
+	}
 	if (p.OpsConcurrency != nil || p.OpsIntervalMS != nil) && s.Ops != nil {
 		s.Ops.Configure(s.Store.OpsConcurrency(), time.Duration(s.Store.OpsIntervalMS())*time.Millisecond)
 	}
@@ -323,12 +332,13 @@ type keyBody struct {
 	Realm            *string   `json:"realm"`
 	Models           *[]string `json:"models"`
 	ConcurrencyLimit *int      `json:"concurrency_limit"`
+	TPSLimit         *float64  `json:"tps_limit"`
 	Enabled          *bool     `json:"enabled"`
 }
 
 func (b keyBody) input() settings.KeyInput {
 	return settings.KeyInput{Name: b.Name, Key: b.Key, Realm: b.Realm, Models: b.Models,
-		ConcurrencyLimit: b.ConcurrencyLimit, Enabled: b.Enabled}
+		ConcurrencyLimit: b.ConcurrencyLimit, TPSLimit: b.TPSLimit, Enabled: b.Enabled}
 }
 
 func (s *Settings) createKey(w http.ResponseWriter, r *http.Request) {

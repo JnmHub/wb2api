@@ -18,6 +18,9 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
   （桌面 + 网页 ACP 会话），OAuth 登录，积分刷新，账号导入导出。
 - **可观测**：账号积分总览（剩余/可用/到期/零积分）、请求记录、用量趋势、模型用量、
   价格估算、日志、活动历史、逐请求详情、CSV 导出、后台任务进度。
+- **输出限速**：仅对流式响应生效的 TPS 上限，可设全局默认并让每个 API Key 覆盖（0 跟随、
+  -1 关闭）；首 token 不受影响，上游计费不变。
+- **模型过滤**：可选让 `/v1/models` 只返回当前 API Key 允许的模型（默认关闭，保持全量）。
 - **接入工具**：导入 WorkBuddy 桌面客户端凭据（手工密钥）、一键接管 Claude
   Code / Codex / OpenCode / DSH / Crush / ZCode 的本机配置。
 - **本地 web 工具**：可选在网关侧执行 Responses 的 `web_search` / `web_fetch`。

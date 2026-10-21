@@ -394,3 +394,35 @@ func TestFailedRefreshKeepsPreviousList(t *testing.T) {
 		t.Error("a failed refresh must keep the previous list")
 	}
 }
+
+func TestModelsFilteredByKeyWhenEnabled(t *testing.T) {
+	settingsJSON := `{"filter_models_by_key":true,"api_keys":[{"id":"k1","name":"limited","key":"sk-limited","enabled":true,"models":["glm-*"]}]}`
+	e := newInfoEnv(t, settingsJSON, nil, 200)
+	code, out := e.get(t, "/v1/models", map[string]string{"Authorization": "Bearer sk-limited"})
+	if code != 200 {
+		t.Fatalf("status %d", code)
+	}
+	list := ids(out)
+	if len(list) == 0 {
+		t.Fatal("no models")
+	}
+	for _, id := range list {
+		if !strings.HasPrefix(id, "glm-") {
+			t.Fatalf("a key restricted to glm-* sees %q: %v", id, list)
+		}
+	}
+
+	// The switch is opt-in: off keeps the full catalogue for the same key.
+	e2 := newInfoEnv(t, `{"api_keys":[{"id":"k1","name":"limited","key":"sk-limited","enabled":true,"models":["glm-*"]}]}`, nil, 200)
+	_, out2 := e2.get(t, "/v1/models", map[string]string{"Authorization": "Bearer sk-limited"})
+	full := ids(out2)
+	hasHy := false
+	for _, id := range full {
+		if id == "hy3" {
+			hasHy = true
+		}
+	}
+	if !hasHy {
+		t.Fatalf("filter off must keep the full catalogue: %v", full)
+	}
+}

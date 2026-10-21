@@ -37,6 +37,7 @@ type KeyInput struct {
 	Realm            *string
 	Models           *[]string
 	ConcurrencyLimit *int
+	TPSLimit         *float64
 	Enabled          *bool
 }
 
@@ -53,6 +54,12 @@ func (in KeyInput) validate() error {
 	}
 	if in.ConcurrencyLimit != nil && *in.ConcurrencyLimit < 0 {
 		return errors.New("concurrency_limit cannot be negative")
+	}
+	if in.TPSLimit != nil && (*in.TPSLimit < -1 || *in.TPSLimit > 1000) {
+		return errors.New("tps_limit must be -1 (off), 0 (follow global) or between 0.1 and 1000")
+	}
+	if in.TPSLimit != nil && *in.TPSLimit > 0 && *in.TPSLimit < 0.1 {
+		return errors.New("tps_limit must be at least 0.1 when enabled")
 	}
 	return nil
 }
@@ -90,6 +97,9 @@ func applyKeyInput(m map[string]any, in KeyInput) {
 	}
 	if in.ConcurrencyLimit != nil {
 		m["concurrency_limit"] = *in.ConcurrencyLimit
+	}
+	if in.TPSLimit != nil {
+		m["tps_limit"] = *in.TPSLimit
 	}
 	if in.Enabled != nil {
 		m["enabled"] = *in.Enabled
@@ -382,7 +392,7 @@ var switchKeys = map[string]bool{
 	"auto_switch_product": true, "egress_backoff_enabled": true, "free_model_credit_fallback": true,
 	"enable_anthropic_messages": true, "auth_disabled": true, "remaining_priority_enabled": true,
 	"local_web_tools": true, "log_db_enabled": true, "update_check_enabled": true,
-	"daily_chat_web": true, "daily_chat_web_retry": true,
+	"daily_chat_web": true, "daily_chat_web_retry": true, "filter_models_by_key": true,
 }
 
 // SetDailyChatWebAttempts stores the total web-turn attempts (1..5).

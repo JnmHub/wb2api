@@ -204,6 +204,26 @@ func intOf(v any) int {
 	return 0
 }
 
+func floatOf(v any) float64 {
+	switch t := v.(type) {
+	case string:
+		if f, err := strconv.ParseFloat(strings.TrimSpace(t), 64); err == nil {
+			return f
+		}
+	case json.Number:
+		if f, err := t.Float64(); err == nil {
+			return f
+		}
+	case float64:
+		return t
+	case int:
+		return float64(t)
+	case int64:
+		return float64(t)
+	}
+	return 0
+}
+
 // PanelPasswordIsDefault reports whether the panel still uses the default
 // password (fresh install or explicitly reset to it).
 func (s *Store) PanelPasswordIsDefault() bool {

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Button, Card, Collapse, Input, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Typography } from 'antd'
+import { Button, Card, Collapse, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { Copy, Pencil, Plus, Trash2 } from 'lucide-react'
 import { del, get, patch, post, type KeyView, type SettingsView } from '../api'
@@ -70,6 +70,13 @@ export function KeysSection({ s }: { s: SettingsView }) {
         ) : (
           <Typography.Text type="secondary">不限模型</Typography.Text>
         ),
+    },
+    {
+      title: 'TPS',
+      dataIndex: 'tps_limit',
+      width: 96,
+      responsive: ['lg'],
+      render: (v: number) => (v < 0 ? <Typography.Text type="secondary">关闭</Typography.Text> : v === 0 ? <Typography.Text type="secondary">跟随</Typography.Text> : `${v} t/s`),
     },
     {
       title: '启用',
@@ -161,6 +168,7 @@ function KeyEditor(props: { initial: KeyView | null; onClose: () => void; onSave
   const [name, setName] = useState(k?.name ?? '')
   const [realm, setRealm] = useState<string>(k?.realm ?? '')
   const [models, setModels] = useState((k?.models ?? []).join('\n'))
+  const [tps, setTps] = useState<number>(k?.tps_limit ?? 0)
   const [secret, setSecret] = useState('')
   const m = useMutation({
     mutationFn: async () => {
@@ -168,6 +176,7 @@ function KeyEditor(props: { initial: KeyView | null; onClose: () => void; onSave
         name,
         realm,
         models: models.split(/[\s,]+/).filter(Boolean),
+        tps_limit: tps,
       }
       if (!k) {
         if (secret.trim()) body.key = secret.trim()
@@ -212,6 +221,10 @@ function KeyEditor(props: { initial: KeyView | null; onClose: () => void; onSave
             <Input.Password className="mono" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder="至少 4 个字符" />
           </div>
         )}
+        <div>
+          <Typography.Text type="secondary">流式输出 TPS 上限（0 = 跟随全局，-1 = 此 Key 关闭，{'>'}0 = 覆盖）</Typography.Text>
+          <InputNumber style={{ width: '100%' }} min={-1} max={1000} step={0.5} value={tps} onChange={(v) => setTps(v ?? 0)} />
+        </div>
         <div>
           <Typography.Text type="secondary">允许的模型（每行一条，支持 * 通配；留空 = 不限）</Typography.Text>
           <Input.TextArea className="mono" rows={4} value={models} onChange={(e) => setModels(e.target.value)} placeholder={'glm-*\ndeepseek-v4.1-flash'} />
