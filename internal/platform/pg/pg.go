@@ -77,6 +77,12 @@ create table if not exists wb_state (
 	data jsonb not null,
 	updated_at timestamptz not null default now()
 );
+create table if not exists wb_jobs (
+	id text primary key,
+	data jsonb not null,
+	updated_at timestamptz not null default now()
+);
+create index if not exists wb_jobs_updated_idx on wb_jobs (updated_at desc);
 `
 
 func migrate(ctx context.Context, p *pgxpool.Pool) error {

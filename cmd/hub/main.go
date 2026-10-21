@@ -51,6 +51,7 @@ import (
 	"wb2api/internal/scheduler"
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/store/pgaccounts"
+	"wb2api/internal/store/pgjobs"
 	"wb2api/internal/store/pgpricing"
 	"wb2api/internal/store/pgquota"
 	"wb2api/internal/store/pgrealm"
@@ -457,7 +458,15 @@ func main() {
 	go refreshPricingLoop(pricingStore, log)
 	(&api.Usage{DB: udb, Est: limits, Pricing: pricingStore}).Register(mux, auth.Require)
 	bus := events.New(512)
-	jobMgr := &jobs.Manager{Workers: 4, OnProgress: func(j jobs.Job) { bus.Publish("job.progress", j) }}
+	var jobStore jobs.Store
+	if pgDB != nil {
+		jobStore = pgjobs.New(pgDB.Pool)
+	}
+	jobMgr := &jobs.Manager{Workers: 4, Store: jobStore, OnProgress: func(j jobs.Job) { bus.Publish("job.progress", j) }}
+	if jobStore != nil {
+		jobMgr.StartSync(bg)
+		log.Info("shared job history enabled")
+	}
 	opsGate := api.NewOpsGate(st.OpsConcurrency(), time.Duration(st.OpsIntervalMS())*time.Millisecond)
 	accountsAPI := &api.Accounts{
 		Pool: p, Today: today, Store: st, Gate: opsGate, Persist: persist, Refresher: refresher, Jobs: jobMgr, Bus: bus,

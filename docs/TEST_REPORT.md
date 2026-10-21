@@ -352,7 +352,7 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
 - 本机没有 Docker daemon，**没有实际启动 compose 栈**；这一步需要在有 Docker
   的机器上补做。无 DSN 的 standalone 模式已用浏览器 smoke 回归。
 
-## 20. PostgreSQL 用量、面板会话与调度可靠性（v2.1.4 至 v2.3.1）
+## 20. PostgreSQL 用量、面板会话与调度可靠性（v2.1.4 至 v2.3.3）
 
 - 请求用量支持 PostgreSQL，日/时预聚合在写入事务中同步维护；SQLite 仍是
   standalone 默认后端。
@@ -422,7 +422,13 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
   `TestWithLockSerializesReplicas` 覆盖两个副本同时启动时旧用量导入只执行一份；
   `compose.ha.yaml` 提供双副本 + Caddy 拓扑。standalone/无
   PostgreSQL 模式不选主，保持原有单进程行为。
+- 面板后台任务快照写入 `wb_jobs`，每个 job 记录所属副本；进度由单写协程合并，
+  每 2 秒镜像其他副本，`GET /api/v2/jobs` 也会即时同步。非属主副本取消时写入
+  `cancel_requested`，属主在下一次同步中取消本地 context。
+  `TestStoreMirrorsFinishedJobAcrossReplicas`、`TestRemoteCancelReachesOwner`
+  覆盖跨副本可见性与取消转发，CI 的 `TestPostgresJobsShareSnapshotsAndCancel`
+  覆盖 `wb_jobs` 快照、取消标记保留和已结束任务拒绝取消。
 
-尚未完成（后续阶段）：主动额度扫描计划、面板任务历史、跨副本 EWMA 反馈的
+尚未完成（后续阶段）：主动额度扫描计划、跨副本 EWMA 反馈的
 共享存储，以及真实 compose 双副本栈与多副本压测。详见
 `docs/ARCHITECTURE_MIGRATION.md`。

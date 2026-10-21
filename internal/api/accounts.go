@@ -721,6 +721,9 @@ func (a *Accounts) batch(w http.ResponseWriter, r *http.Request) {
 	if !readBody(w, r, &b) {
 		return
 	}
+	// Make a full credit sweep created on another replica visible before the
+	// duplicate check below.
+	a.Jobs.Sync(r.Context())
 	if msg, ok := notYet[b.Action]; ok {
 		writeErr(w, http.StatusNotImplemented, msg)
 		return
@@ -809,6 +812,7 @@ func (a *Accounts) filterBatchRealm(action string, uids []string) ([]string, str
 }
 
 func (a *Accounts) job(w http.ResponseWriter, r *http.Request) {
+	a.Jobs.Sync(r.Context())
 	j, ok := a.Jobs.Get(r.PathValue("id"))
 	if !ok {
 		writeErr(w, http.StatusNotFound, "no such job")
@@ -818,6 +822,7 @@ func (a *Accounts) job(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Accounts) jobCancel(w http.ResponseWriter, r *http.Request) {
+	a.Jobs.Sync(r.Context())
 	if !a.Jobs.Cancel(r.PathValue("id")) {
 		writeErr(w, http.StatusNotFound, "no such job")
 		return
@@ -826,6 +831,7 @@ func (a *Accounts) jobCancel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Accounts) jobList(w http.ResponseWriter, r *http.Request) {
+	a.Jobs.Sync(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{"jobs": a.Jobs.List()})
 }
 

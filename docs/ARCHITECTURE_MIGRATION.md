@@ -78,7 +78,7 @@ files + SQLite deployment to the Sub2API-style split:
   is empty.
 - A PostgreSQL-backed usage round-trip test runs in CI (`postgres` job, service
   container) in addition to the SQLite tests; the same job covers panel
-  sessions, active realm, quota windows and leader election.
+  sessions, active realm, quota windows, shared jobs and leader election.
 - `settings.OpenWith`: file-free settings store used by the PostgreSQL backend.
 - `cmd/hub`: `WB_POSTGRES_DSN`, `WB_REDIS_ADDR`, `WB_REDIS_INFLIGHT`,
   `WB_REDIS_WAIT_MS`, `WB_SCHED_TOP_K`, `WB_FIRST_OUTPUT_MS`,
@@ -107,6 +107,13 @@ files + SQLite deployment to the Sub2API-style split:
   probe and active quota scan run only on the lock holder; the lock disappears
   with its connection, so a crashed replica does not block takeover. Standalone
   mode has no elector and keeps running every background task.
+- Panel jobs are shared through `wb_jobs(id, data, updated_at)`. Each job stores
+  its owning replica; progress is coalesced by a single background writer so a
+  slow database never blocks batch workers. Every replica mirrors other owners'
+  snapshots every two seconds, and `GET /api/v2/jobs` refreshes on demand. A
+  cancel on a non-owner replica sets `cancel_requested`; the owner observes the
+  flag on its next sync and cancels its local context. The file/SQLite mode
+  keeps jobs in memory only.
 - `GET /api/v2/scheduler/summary`: aggregate in-flight/capacity, average
   TTFT/error rate, Top-K and the twenty highest-scoring accounts. It also
   reports affinity queue depth, dropped writes and store errors. The accounts
@@ -133,10 +140,9 @@ files + SQLite deployment to the Sub2API-style split:
 
 ## Next phases
 
-1. **Remaining shared state**: the active quota-scan schedule and panel job
-   history are still process-local. They do not affect routing, and only the
-   leader runs scans, but a panel job started on one replica is not visible on
-   the other. Shared EWMA feedback is also still open.
+1. **Remaining shared state**: the active quota-scan schedule is still
+   process-local. It does not affect routing and only the leader runs scans.
+   Shared EWMA feedback is also still open.
 2. **Load tests**: `compose.ha.yaml` provides the two-replica + Caddy topology,
    but it has not been launched end-to-end. Compare file/SQLite vs
    PostgreSQL/Redis at 200+ concurrent streams and verify the two replicas do
@@ -149,6 +155,5 @@ files + SQLite deployment to the Sub2API-style split:
   still unsupported; use the PostgreSQL/Redis mode for that.
 - The scheduler uses in-process EWMA feedback. Two replicas can make different
   TTFT/error decisions because that feedback is not yet shared through Redis.
-  Panel job history and the active quota-scan schedule also remain process-local;
-  quota windows, pricing overrides, active realm and background leadership are
-  shared.
+  The active quota-scan schedule also remains process-local; panel jobs, quota
+  windows, pricing overrides, active realm and background leadership are shared.

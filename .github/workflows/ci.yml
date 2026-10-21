@@ -77,3 +77,7 @@ jobs:
         env:
           WB_TEST_POSTGRES_DSN: postgres://wb2api:wb2api@127.0.0.1:5432/wb2api_test?sslmode=disable
         run: go test ./internal/store/pgquota ./internal/leader -count=1 -v
+      - name: PostgreSQL shared panel jobs
+        env:
+          WB_TEST_POSTGRES_DSN: postgres://wb2api:wb2api@127.0.0.1:5432/wb2api_test?sslmode=disable
+        run: go test ./internal/store/pgjobs -count=1 -v

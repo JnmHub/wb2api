@@ -23,7 +23,8 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
 - **运营**：国内签到/活跃上报/成长任务/猫猫旅行/连登管家，国际每日活跃
   （桌面 + 网页 ACP 会话），OAuth 登录，积分刷新，账号导入导出。
 - **可观测**：账号积分总览（剩余/可用/到期/零积分）、请求记录、用量趋势、模型用量、
-  价格估算、日志、活动历史、逐请求详情、CSV 导出、后台任务进度。
+  价格估算、日志、活动历史、逐请求详情、CSV 导出、后台任务进度；PostgreSQL 模式下
+  后台任务历史跨副本可见，取消请求会转交给任务所在副本。
 - **输出限速**：仅对流式响应生效的 TPS 上限，可设全局默认并让每个 API Key 覆盖（0 跟随、
   -1 关闭）；首 token 不受影响，上游计费不变。
 - **模型过滤**：可选让 `/v1/models` 只返回当前 API Key 允许的模型（默认关闭，保持全量）。
@@ -74,7 +75,8 @@ docker compose -f compose.ha.yaml up -d --build
 
 入口仍是 `http://127.0.0.1:8788/`，Caddy 按最少连接转发到两个应用副本。两份应用共享
 PostgreSQL/Redis；启动时的旧用量导入由 advisory lock 串行化，不会因两个副本同时启动
-而重复写入。`compose.yaml` 的单副本用法不变。
+而重复写入。面板任务历史写入 `wb_jobs`，在一个副本创建的任务可从另一个副本查看和取消。
+`compose.yaml` 的单副本用法不变。
 
 - **PostgreSQL**：账号、`settings.json`、**请求用量**、**面板登录会话**、**价格覆盖**和
   **模型额度窗口**的权威存储；首次启动会把现有 `./data/accounts/*.json`、`settings.json`、
@@ -86,9 +88,10 @@ PostgreSQL/Redis；启动时的旧用量导入由 advisory lock 串行化，不�
   默认 8）、API Key 并发槽位、会话亲和绑定和健康检查；所有账号都满槽时可排队
   `WB_REDIS_WAIT_MS`（默认 1500）再返回 429，减少冷账号溢出；不配 Redis
   时退回本地并发限制。
-- **`./data`**：仍保留 catalog、主动额度扫描计划和面板任务记录等文件；PostgreSQL
-  模式下 active realm 和模型额度窗口存在 `wb_state` 表，分别 1 秒、2 秒内同步。
-  旧版 standalone 模式不需要 PostgreSQL/Redis，继续使用文件 + `usage.db`。
+- **`./data`**：仍保留 catalog、主动额度扫描计划等文件；PostgreSQL
+  模式下 active realm 和模型额度窗口存在 `wb_state` 表，分别 1 秒、2 秒内同步；
+  后台任务快照存在 `wb_jobs` 表，其他副本 2 秒内可见。旧版 standalone 模式不需要
+  PostgreSQL/Redis，继续使用文件 + `usage.db`，后台任务仍只保存在当前进程。
 - 容器以非 root 用户运行，应用健康检查走 `/health`。
 
 资源清理：
