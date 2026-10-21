@@ -123,6 +123,10 @@ files + SQLite deployment to the Sub2API-style split:
 - In PostgreSQL mode the legacy `usage.db` is imported automatically on first
   boot; the old file stays untouched and the marker is stored in the `meta`
   table, so the import does not repeat on later restarts.
+- Startup imports hold `leader.KeyImport`, a session advisory lock, so two
+  replicas cannot read the same resume offset and insert the same rows twice.
+  The second replica waits for the first import and then sees the advanced
+  cursor.
 - In PostgreSQL mode `panel_sessions.json` is imported when
   `wb_panel_sessions` is empty. Existing browser cookies keep working, so the
   upgrade does not log users out.
@@ -133,9 +137,11 @@ files + SQLite deployment to the Sub2API-style split:
    history are still process-local. They do not affect routing, and only the
    leader runs scans, but a panel job started on one replica is not visible on
    the other. Shared EWMA feedback is also still open.
-2. **Load tests**: compare file/SQLite vs PostgreSQL/Redis at 200+ concurrent
-   streams, and verify a two-replica deployment does not double-schedule. This
-   requires a running Docker daemon, which was unavailable during development.
+2. **Load tests**: `compose.ha.yaml` provides the two-replica + Caddy topology,
+   but it has not been launched end-to-end. Compare file/SQLite vs
+   PostgreSQL/Redis at 200+ concurrent streams and verify the two replicas do
+   not double-schedule. This requires a running Docker daemon, which was
+   unavailable during development.
 
 ## Non-goals in this phase
 

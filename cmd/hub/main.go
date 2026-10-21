@@ -24,6 +24,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"wb2api/internal/activity"
 	"wb2api/internal/agents"
 	"wb2api/internal/api"
@@ -353,24 +355,35 @@ func main() {
 	}
 	// History written by the Python gateway is imported in the background; the
 	// gateway serves requests while it runs and the import resumes where it
-	// stopped if the process restarts.
+	// stopped if the process restarts. Replicas serialize the import: the resume
+	// cursor alone cannot stop two processes from inserting the same rows.
+	var importPool *pgxpool.Pool
+	if pgDB != nil {
+		importPool = pgDB.Pool
+	}
 	go func() {
-		legacy := filepath.Join(*usageDir, "usage.jsonl")
-		n, err := udb.ImportJSONL(context.Background(), legacy, nil)
-		switch {
-		case err != nil:
-			log.Warn("usage.jsonl import stopped", "err", err, "imported", n)
-		case n > 0:
-			log.Info("usage.jsonl imported", "rows", n)
-		}
-		if *postgresDSN != "" {
-			n, err := udb.ImportSQLite(context.Background(), filepath.Join(*usageDir, "usage.db"))
+		err := leader.WithLock(context.Background(), importPool, leader.KeyImport, func() error {
+			legacy := filepath.Join(*usageDir, "usage.jsonl")
+			n, err := udb.ImportJSONL(context.Background(), legacy, nil)
 			switch {
 			case err != nil:
-				log.Warn("usage.db import stopped", "err", err, "imported", n)
+				log.Warn("usage.jsonl import stopped", "err", err, "imported", n)
 			case n > 0:
-				log.Info("usage.db imported", "rows", n)
+				log.Info("usage.jsonl imported", "rows", n)
 			}
+			if *postgresDSN != "" {
+				n, err := udb.ImportSQLite(context.Background(), filepath.Join(*usageDir, "usage.db"))
+				switch {
+				case err != nil:
+					log.Warn("usage.db import stopped", "err", err, "imported", n)
+				case n > 0:
+					log.Info("usage.db imported", "rows", n)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			log.Warn("legacy usage import lock failed", "err", err)
 		}
 	}()
 

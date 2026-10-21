@@ -66,6 +66,16 @@ docker compose up -d --build
 
 面板：`http://127.0.0.1:8788/`。
 
+需要验证多副本时，用独立的 HA 编排（两个 wb2api + Caddy，独立数据卷）：
+
+```bash
+docker compose -f compose.ha.yaml up -d --build
+```
+
+入口仍是 `http://127.0.0.1:8788/`，Caddy 按最少连接转发到两个应用副本。两份应用共享
+PostgreSQL/Redis；启动时的旧用量导入由 advisory lock 串行化，不会因两个副本同时启动
+而重复写入。`compose.yaml` 的单副本用法不变。
+
 - **PostgreSQL**：账号、`settings.json`、**请求用量**、**面板登录会话**、**价格覆盖**和
   **模型额度窗口**的权威存储；首次启动会把现有 `./data/accounts/*.json`、`settings.json`、
   `usage.jsonl`、旧版 `usage.db`、`panel_sessions.json`、`pricing_policies.json` 和

@@ -1,0 +1,114 @@
+# Two-replica stack with a Caddy load balancer.
+#
+#   docker compose -f compose.ha.yaml up -d --build
+#
+# The single-node compose.yaml stays the simple default. This file exists to
+# exercise the shared PostgreSQL/Redis path: both replicas use the same
+# accounts, settings, realm, quota windows, pricing overrides and usage store;
+# Redis carries the per-account and per-key in-flight slots plus affinity.
+# Advisory locks serialize the startup history import and elect one background
+# leader, so neither is duplicated by the second replica.
+name: wb2api-ha
+
+x-app-env: &app-env
+  WB_PANEL_PASSWORD: ${WB_PANEL_PASSWORD:-}
+  WB_MAX_BODY_MB: ${WB_MAX_BODY_MB:-16}
+  WB_POSTGRES_DSN: postgres://${WB_POSTGRES_USER:-wb2api}:${WB_POSTGRES_PASSWORD:-wb2api}@postgres:5432/${WB_POSTGRES_DB:-wb2api}?sslmode=disable
+  WB_REDIS_ADDR: redis:6379
+  WB_REDIS_INFLIGHT: ${WB_REDIS_INFLIGHT:-8}
+  WB_REDIS_WAIT_MS: ${WB_REDIS_WAIT_MS:-1500}
+  WB_SCHED_TOP_K: ${WB_SCHED_TOP_K:-7}
+  WB_FIRST_OUTPUT_MS: ${WB_FIRST_OUTPUT_MS:-30000}
+  WB_USAGE_QUEUE: ${WB_USAGE_QUEUE:-16384}
+  WB_USAGE_WORKERS: ${WB_USAGE_WORKERS:-4}
+  WB_USAGE_OVERFLOW: ${WB_USAGE_OVERFLOW:-drop}
+  TZ: ${TZ:-Asia/Shanghai}
+
+x-app: &app
+  image: wb2api:local
+  build:
+    context: .
+    args:
+      VERSION: ${WB_VERSION:-dev}
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  environment: *app-env
+  volumes:
+    - ./data:/data
+  command:
+    - -lan
+    - -port
+    - "8788"
+    - -accounts-dir
+    - /data/accounts
+    - -usage-dir
+    - /data/usage
+    - -catalog-dir
+    - /data/catalog
+  healthcheck:
+    test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8788/health"]
+    interval: 10s
+    timeout: 3s
+    retries: 6
+    start_period: 20s
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${WB_POSTGRES_DB:-wb2api}
+      POSTGRES_USER: ${WB_POSTGRES_USER:-wb2api}
+      POSTGRES_PASSWORD: ${WB_POSTGRES_PASSWORD:-wb2api}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - hapgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - haredisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  wb2api-1:
+    <<: *app
+
+  wb2api-2:
+    <<: *app
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      wb2api-1:
+        condition: service_healthy
+      wb2api-2:
+        condition: service_healthy
+    ports:
+      - "${WB_PORT:-8788}:80"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - hacaddydata:/data
+      - hacaddyconfig:/config
+
+volumes:
+  hapgdata:
+  haredisdata:
+  hacaddydata:
+  hacaddyconfig:

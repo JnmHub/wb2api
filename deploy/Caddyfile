@@ -1,0 +1,11 @@
+:80 {
+	encode zstd gzip
+	reverse_proxy wb2api-1:8788 wb2api-2:8788 {
+		lb_policy least_conn
+		health_uri /health
+		health_interval 10s
+		health_timeout 3s
+		fail_duration 30s
+		max_fails 2
+	}
+}

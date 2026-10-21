@@ -418,7 +418,9 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
 - 后台任务使用 PostgreSQL 会话级 advisory lock 选主。巡检周期、余额刷新、
   额度窗口探针和主动额度扫描只在持锁副本运行；连接断开时锁随连接释放，
   备用副本在下一轮重试中接管。`TestOnlyOneReplicaLeads` 覆盖单主、故障释放和
-  接管，`TestTriggerRequiresLeader` 覆盖从节点拒绝手动触发。standalone/无
+  接管，`TestTriggerRequiresLeader` 覆盖从节点拒绝手动触发。
+  `TestWithLockSerializesReplicas` 覆盖两个副本同时启动时旧用量导入只执行一份；
+  `compose.ha.yaml` 提供双副本 + Caddy 拓扑。standalone/无
   PostgreSQL 模式不选主，保持原有单进程行为。
 
 尚未完成（后续阶段）：主动额度扫描计划、面板任务历史、跨副本 EWMA 反馈的

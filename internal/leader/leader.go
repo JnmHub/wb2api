@@ -16,6 +16,35 @@ import (
 // and other unattended jobs. The value is ASCII "wb2api-b".
 const KeyBackground int64 = 0x7762326170692d62
 
+// KeyImport serializes the one-time legacy history import across replicas.
+// The value is ASCII "wb2api-i". Without it two replicas can read the same
+// resume offset and insert the same JSONL/SQLite rows twice.
+const KeyImport int64 = 0x7762326170692d69
+
+// WithLock runs fn while holding a PostgreSQL session advisory lock. A nil pool
+// (standalone/file mode) runs fn directly. Callers block until the lock is
+// available, so a replica that starts while another is importing waits instead
+// of skipping the import forever.
+func WithLock(ctx context.Context, pool *pgxpool.Pool, key int64, fn func() error) error {
+	if pool == nil {
+		return fn()
+	}
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `select pg_advisory_lock($1)`, key); err != nil {
+		return err
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, _ = conn.Exec(unlockCtx, `select pg_advisory_unlock($1)`, key)
+	}()
+	return fn()
+}
+
 // Elector keeps a session advisory lock while it is the leader.
 type Elector struct {
 	pool *pgxpool.Pool
