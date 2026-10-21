@@ -352,7 +352,7 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
 - 本机没有 Docker daemon，**没有实际启动 compose 栈**；这一步需要在有 Docker
   的机器上补做。无 DSN 的 standalone 模式已用浏览器 smoke 回归。
 
-## 20. PostgreSQL 用量、面板会话与调度可靠性（v2.1.4 至 v2.3.4）
+## 20. PostgreSQL 用量、面板会话与调度可靠性（v2.1.4 至 v2.3.5）
 
 - 请求用量支持 PostgreSQL，日/时预聚合在写入事务中同步维护；SQLite 仍是
   standalone 默认后端。
@@ -420,6 +420,12 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
   数据库写入失败会回退本地文件。`TestSharedWindowStoreRefreshesAcrossReplicas`
   覆盖两个 `Windows` 句柄共享写入与刷新，CI 的 `TestPostgresQuotaWindows`
   覆盖文件种子、读取和保存。
+- 主动额度扫描计划经 `wb_state` 的 `quota_scan` 共享。leader 每次探测后写入结果，
+  接管副本 2 秒内重新读取计划，不会在故障切换后把每个已探测的账号立即重扫一遍；
+  本地 `quota_scan.json` 只在数据库行不存在时作为种子。
+  `TestScanStoreSharesScheduleAcrossReplicas` 覆盖两个 `Scanner` 句柄共享写入、
+  读取和“接管后仍遵守 6 小时间隔”，CI 的 `TestPostgresQuotaScan` 覆盖文件种子、
+  读取和保存。
 - 后台任务使用 PostgreSQL 会话级 advisory lock 选主。巡检周期、余额刷新、
   额度窗口探针和主动额度扫描只在持锁副本运行；连接断开时锁随连接释放，
   备用副本在下一轮重试中接管。`TestOnlyOneReplicaLeads` 覆盖单主、故障释放和
@@ -454,7 +460,7 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
 - 仅一个副本持有后台 leader（日志 `background leader acquired`），另一个副本
   没有启动巡检周期。
 
-尚未完成（后续阶段）：主动额度扫描计划、跨副本 EWMA 反馈的共享存储；以及
+尚未完成（后续阶段）：跨副本 EWMA 反馈的共享存储；以及
 `compose.ha.yaml` + Caddy 整套镜像栈的启动验证（本次是真实 PostgreSQL/Redis
 上的双进程验证，未走 Caddy 容器入口）。详见
 `docs/ARCHITECTURE_MIGRATION.md`。

@@ -11,6 +11,47 @@ import (
 	"wb2api/internal/quota"
 )
 
+func TestPostgresQuotaScan(t *testing.T) {
+	dsn := os.Getenv("WB_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("WB_TEST_POSTGRES_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool, err := pg.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(ctx, `delete from wb_state where key = 'quota_scan'`); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	seed := `{"scans":[{"uid":"u1","model":"hy3","next_at":4102444800}]}`
+	if err := os.WriteFile(filepath.Join(dir, "quota_scan.json"), []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := New(pool.Pool, dir)
+	got, err := src.LoadScans()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].UID != "u1" || got[0].Model != "hy3" {
+		t.Fatalf("seeded scans = %+v", got)
+	}
+	want := []quota.ScanRow{{UID: "u2", Model: "m2", NextAt: 4102444801, LastResult: "ok"}}
+	if err := src.SaveScans(want); err != nil {
+		t.Fatal(err)
+	}
+	got, err = src.LoadScans()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].UID != "u2" || got[0].LastResult != "ok" {
+		t.Fatalf("saved scans = %+v", got)
+	}
+}
+
 func TestPostgresQuotaWindows(t *testing.T) {
 	dsn := os.Getenv("WB_TEST_POSTGRES_DSN")
 	if dsn == "" {

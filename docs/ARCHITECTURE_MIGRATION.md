@@ -106,6 +106,10 @@ files + SQLite deployment to the Sub2API-style split:
   by any replica is visible to the others within two seconds; a local
   `model_windows.json` seeds the row on first boot, and a failed database write
   falls back to the local file. The probe itself still runs only on the leader.
+- The active quota-scan schedule is shared under `quota_scan` in the same
+  `wb_state` row. The leader writes each probe result; a replica taking over
+  after failover reloads the schedule within two seconds, so it does not probe
+  every watched line again. A local `quota_scan.json` seeds the row on upgrade.
 - Background leader election uses a PostgreSQL session advisory lock
   (`pg_try_advisory_lock`). The scheduler cycle, credit refresh, quota window
   probe and active quota scan run only on the lock holder; the lock disappears
@@ -147,9 +151,8 @@ files + SQLite deployment to the Sub2API-style split:
 
 ## Next phases
 
-1. **Remaining shared state**: the active quota-scan schedule is still
-   process-local. It does not affect routing and only the leader runs scans.
-   Shared EWMA feedback is also still open.
+1. **Remaining shared state**: shared EWMA feedback is still open. Scheduler
+   scores therefore remain a local view on each replica.
 2. **Load tests**: a manual two-process run against real PostgreSQL and Redis
    (fifty accounts, 500 concurrent streams split across both replicas) completed
    with 500/500 successful streams, shared realm propagation in about one
@@ -166,5 +169,5 @@ files + SQLite deployment to the Sub2API-style split:
   still unsupported; use the PostgreSQL/Redis mode for that.
 - The scheduler uses in-process EWMA feedback. Two replicas can make different
   TTFT/error decisions because that feedback is not yet shared through Redis.
-  The active quota-scan schedule also remains process-local; panel jobs, quota
-  windows, pricing overrides, active realm and background leadership are shared.
+  Panel jobs, quota windows, the active scan schedule, pricing overrides, active
+  realm and background leadership are shared.

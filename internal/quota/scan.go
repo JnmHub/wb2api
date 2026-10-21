@@ -40,6 +40,14 @@ type ScanRow struct {
 	LastDetail string  `json:"last_detail"`
 }
 
+// ScanStore persists the active-scan schedule outside the local file. A
+// PostgreSQL implementation lets a replica that takes over as leader resume
+// the same schedule instead of probing every watched line again.
+type ScanStore interface {
+	LoadScans() ([]ScanRow, error)
+	SaveScans([]ScanRow) error
+}
+
 // Scanner runs the active quota probes.
 type Scanner struct {
 	Dir     string
@@ -49,10 +57,12 @@ type Scanner struct {
 	// Models returns the watched model ids (settings.quota_scan_models).
 	Models func() []string
 	Log    *slog.Logger
+	Store  ScanStore
 
-	mu     sync.Mutex
-	rows   map[string]ScanRow
-	loaded bool
+	mu       sync.Mutex
+	rows     map[string]ScanRow
+	loaded   bool
+	lastSync time.Time
 }
 
 func (s *Scanner) now() time.Time {
@@ -77,6 +87,15 @@ func (s *Scanner) load() {
 	}
 	s.loaded = true
 	s.rows = map[string]ScanRow{}
+	if s.Store != nil {
+		if list, err := s.Store.LoadScans(); err == nil {
+			s.addPruned(list)
+			s.lastSync = s.now()
+			return
+		} else {
+			s.logger().Warn("quota scan: cannot load shared state; falling back to file", "err", err)
+		}
+	}
 	if s.Dir == "" {
 		return
 	}
@@ -84,25 +103,46 @@ func (s *Scanner) load() {
 		Scans []ScanRow `json:"scans"`
 	}
 	if readJSONFile(s.path(), &doc) {
-		cut := s.now().Add(-scanMaxAge).Unix()
-		for _, r := range doc.Scans {
-			if r.UID == "" || r.Model == "" {
-				continue
-			}
-			if int64(r.LastTry) < cut && int64(r.SeenAt) < cut {
-				continue
-			}
-			r.LastDetail = clamp(r.LastDetail, 200)
-			r.LastResult = clamp(r.LastResult, 40)
-			s.rows[key(r.UID, r.Model)] = r
-		}
+		s.addPruned(doc.Scans)
 	}
 }
 
-func (s *Scanner) saveLocked() {
-	if s.Dir == "" {
+func (s *Scanner) addPruned(list []ScanRow) {
+	cut := s.now().Add(-scanMaxAge).Unix()
+	for _, r := range list {
+		if r.UID == "" || r.Model == "" {
+			continue
+		}
+		if int64(r.LastTry) < cut && int64(r.SeenAt) < cut {
+			continue
+		}
+		r.LastDetail = clamp(r.LastDetail, 200)
+		r.LastResult = clamp(r.LastResult, 40)
+		s.rows[key(r.UID, r.Model)] = r
+	}
+}
+
+// refreshLocked re-reads the shared schedule at most every sharedRefresh. A
+// failed read keeps the rows already in memory so a transient database error
+// never loses the retry state.
+func (s *Scanner) refreshLocked(force bool) {
+	if s.Store == nil {
 		return
 	}
+	if !force && !s.lastSync.IsZero() && s.now().Sub(s.lastSync) < sharedRefresh {
+		return
+	}
+	list, err := s.Store.LoadScans()
+	if err != nil {
+		s.logger().Warn("quota scan: cannot refresh shared state", "err", err)
+		return
+	}
+	s.rows = map[string]ScanRow{}
+	s.addPruned(list)
+	s.lastSync = s.now()
+}
+
+func (s *Scanner) saveLocked() {
 	rows := make([]ScanRow, 0, len(s.rows))
 	for _, r := range s.rows {
 		rows = append(rows, r)
@@ -113,6 +153,17 @@ func (s *Scanner) saveLocked() {
 		}
 		return rows[i].Model < rows[j].Model
 	})
+	if s.Store != nil {
+		if err := s.Store.SaveScans(rows); err != nil {
+			s.logger().Warn("quota scan: cannot save shared state; falling back to file", "err", err)
+		} else {
+			s.lastSync = s.now()
+			return
+		}
+	}
+	if s.Dir == "" {
+		return
+	}
 	doc := map[string]any{"version": 1, "saved_at": stamp(s.now()), "interval_hours": 6, "scans": rows}
 	if err := writeJSONAtomic(s.path(), doc); err != nil {
 		s.logger().Warn("quota scan: cannot save state", "err", err)
@@ -124,6 +175,7 @@ func (s *Scanner) Snapshot() []ScanRow {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.load()
+	s.refreshLocked(false)
 	out := make([]ScanRow, 0, len(s.rows))
 	for _, r := range s.rows {
 		out = append(out, r)
@@ -192,6 +244,7 @@ func (s *Scanner) RunDue(ctx context.Context, p *pool.Pool, force bool) int {
 	var list []target
 	s.mu.Lock()
 	s.load()
+	s.refreshLocked(false)
 	s.seed(p)
 	nowF := float64(now.UnixNano()) / 1e9
 	for k, r := range s.rows {

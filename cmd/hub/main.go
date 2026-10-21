@@ -332,12 +332,15 @@ func main() {
 	}
 	isLeader := func() bool { return elector == nil || elector.IsLeader() }
 	var windowStore quota.WindowStore
+	var scanStore quota.ScanStore
 	if pgDB != nil {
-		windowStore = pgquota.New(pgDB.Pool, *accountsDir)
+		qstore := pgquota.New(pgDB.Pool, *accountsDir)
+		windowStore = qstore
+		scanStore = qstore
 	}
 	windows := &quota.Windows{Dir: *accountsDir, Gate: st.WindowProbe, Prober: h, Log: log, Store: windowStore}
 	h.Windows = windows
-	scanner := &quota.Scanner{Dir: *accountsDir, Models: st.QuotaScanModels, Prober: h, Windows: windows, Log: log}
+	scanner := &quota.Scanner{Dir: *accountsDir, Models: st.QuotaScanModels, Prober: h, Windows: windows, Log: log, Store: scanStore}
 	keyring := &atrest.Keyring{}
 	agentMgr := agents.New(*accountsDir)
 	h.OnUsage = func(ev openai.UsageEvent) {
