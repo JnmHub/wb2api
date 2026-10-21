@@ -2,6 +2,7 @@ package pool
 
 import (
 	"math"
+	"math/rand/v2"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -260,6 +261,9 @@ func (p *Pool) pick(realm, model string, exclude map[string]struct{}, page *Page
 		return nil
 	}
 	start := cur.Add(1) - 1
+	if k := p.TopK(); k > 1 {
+		return p.pickTopK(group, exclude, model, now, start, k)
+	}
 	// Among ready accounts prefer the least loaded one. Ties keep the cursor
 	// order, so an idle pool still rotates exactly as before.
 	var best *Account
@@ -278,6 +282,68 @@ func (p *Pool) pick(realm, model string, exclude map[string]struct{}, page *Page
 		}
 	}
 	return best
+}
+
+// pickTopK collects the K least-loaded ready accounts in cursor order and picks
+// one with a mild preference for the least loaded. The wider window avoids
+// herding every new session onto the same account when several accounts are
+// equally (or nearly) idle; the loaded tail is never considered.
+func (p *Pool) pickTopK(group []*Account, exclude map[string]struct{}, model string, now time.Time, start uint64, k int) *Account {
+	if k > len(group) {
+		k = len(group)
+	}
+	type candidate struct {
+		a    *Account
+		load int
+	}
+	top := make([]candidate, 0, k)
+	for i := 0; i < len(group); i++ {
+		a := group[int((start+uint64(i))%uint64(len(group)))]
+		if _, skip := exclude[a.UID]; skip {
+			continue
+		}
+		if !a.Ready(model, now) {
+			continue
+		}
+		c := candidate{a: a, load: a.Inflight()}
+		pos := len(top)
+		for j := range top {
+			if c.load < top[j].load {
+				pos = j
+				break
+			}
+		}
+		if pos >= k {
+			continue
+		}
+		top = append(top, candidate{})
+		copy(top[pos+1:], top[pos:])
+		top[pos] = c
+		if len(top) > k {
+			top = top[:k]
+		}
+	}
+	if len(top) == 0 {
+		return nil
+	}
+	if len(top) == 1 {
+		return top[0].a
+	}
+	total := 0
+	for _, c := range top {
+		total += 1_000_000 / (c.load + 1)
+	}
+	if total <= 0 {
+		return top[0].a
+	}
+	n := rand.IntN(total)
+	for _, c := range top {
+		n -= 1_000_000 / (c.load + 1)
+		if n < 0 {
+			return c.a
+		}
+	}
+	return top[len(top)-1].a
 }
 
 // PickForSession picks the account for one turn of a conversation: a bound

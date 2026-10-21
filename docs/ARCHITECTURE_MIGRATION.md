@@ -75,8 +75,9 @@ files + SQLite deployment to the Sub2API-style split:
 ## Next phases
 
 1. **Scheduler**: port the remaining Sub2API loop:
-   - top-K weighted selection using load, queue, TTFT and error;
-   - first-output timeout/failover before semantic output.
+   - first-output timeout/failover before semantic output;
+   - fold TTFT/error into the top-K score (the current top-K window ranks by
+     in-flight load only).
 2. **Shared state**: move active realm, quota windows, pricing overrides,
    jobs/leader election and affinity to PostgreSQL/Redis so more than one wb2api
    replica is safe. Panel sessions already use the shared backend.
@@ -87,7 +88,8 @@ files + SQLite deployment to the Sub2API-style split:
 ## Non-goals in this phase
 
 - The account scheduler is still the existing pool scheduler plus the TTFT/error
-  sticky escape, warm-account load preference and a short Redis wait queue;
-  global top-K load scoring and first-output failover are not complete yet.
+  sticky escape, warm-account load preference, a short Redis wait queue and an
+  optional load-only top-K window (`-sched-top-k`); TTFT/error scoring and
+  first-output failover are not complete yet.
 - Running multiple wb2api processes against the same **file** data directory is
   still unsupported; use the PostgreSQL/Redis mode for that.

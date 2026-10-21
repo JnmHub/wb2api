@@ -113,6 +113,7 @@ services:
 | `-per-account-inflight` | `0` | 单账号并发上限，0 = 不限（网关不额外限制） |
 | `-sticky-escape-ttft-ms` | `15000` | 会话亲和账号 TTFT EWMA 超过该值时临时逃逸 |
 | `-sticky-escape-error-rate` | `0.5` | 会话亲和账号错误率 EWMA 超过该值时临时逃逸 |
+| `-sched-top-k` / `WB_SCHED_TOP_K` | `1` | 从负载最低的 K 个可用账号中选择；1 = 严格最低负载 |
 | `-no-modelsdev` | 关 | 不访问 models.dev 的额度数据 |
 | `-debug` | 关 | 暴露 `/debug/runtime` |
 

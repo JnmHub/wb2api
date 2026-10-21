@@ -244,3 +244,40 @@ func TestPickPrefersLeastLoadedAccount(t *testing.T) {
 		}
 	}
 }
+
+func TestTopKSpreadsAcrossNearIdleAccounts(t *testing.T) {
+	p := New(mkRecs(4, time.Hour))
+	p.SetTopK(3)
+	if got := p.TopK(); got != 3 {
+		t.Fatalf("TopK = %d, want 3", got)
+	}
+	seen := map[string]int{}
+	for i := 0; i < 100; i++ {
+		a := p.Pick("intl", "m", nil)
+		if a == nil {
+			t.Fatal("pick returned nil")
+		}
+		seen[a.UID]++
+	}
+	if len(seen) < 2 {
+		t.Fatalf("top-K always chose the same account: %v", seen)
+	}
+
+	p.SetTopK(0)
+	if got := p.TopK(); got != 1 {
+		t.Fatalf("TopK after clamp = %d, want 1", got)
+	}
+}
+
+func TestTopKNeverPicksBusyAccount(t *testing.T) {
+	p := New(mkRecs(4, time.Hour))
+	p.SetTopK(3)
+	busy := p.All()[0]
+	busy.Acquire()
+	defer busy.Release()
+	for i := 0; i < 20; i++ {
+		if a := p.Pick("intl", "m", nil); a == nil || a.UID == busy.UID {
+			t.Fatalf("top-K chose the busy account: %v", a)
+		}
+	}
+}

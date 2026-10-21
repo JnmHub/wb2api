@@ -111,6 +111,7 @@ func main() {
 	perAccount := flag.Int("per-account-inflight", 0, "max concurrent requests per account (0 = unlimited)")
 	stickyTTFT := flag.Int("sticky-escape-ttft-ms", envInt("WB_STICKY_ESCAPE_TTFT_MS", 15000), "escape a sticky account when its TTFT EWMA exceeds this (ms)")
 	stickyErr := flag.Float64("sticky-escape-error-rate", envFloat("WB_STICKY_ESCAPE_ERROR_RATE", 0.5), "escape a sticky account when its error EWMA exceeds this")
+	topK := flag.Int("sched-top-k", envInt("WB_SCHED_TOP_K", 1), "choose among the K least-loaded ready accounts (1 = strict least-loaded)")
 	usageDir := flag.String("usage-dir", envOr("WB_PROXY_USAGE_DIR", "usage"), "directory for usage.db (and the legacy usage.jsonl to import)")
 	panelPassword := flag.String("panel-password", os.Getenv("WB_PANEL_PASSWORD"), "set the dashboard password at start-up")
 	catalogDir := flag.String("catalog-dir", envOr("WB_PROXY_CATALOG_DIR", "catalog"), "archive directory for the last /v3/config responses")
@@ -193,6 +194,7 @@ func main() {
 		log.Warn("skipping unreadable account", "err", e)
 	}
 	p := pool.New(recs)
+	p.SetTopK(*topK)
 	if *perAccount > 0 {
 		for _, a := range p.All() {
 			a.SetMaxInflight(*perAccount)

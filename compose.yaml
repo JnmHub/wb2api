@@ -54,11 +54,14 @@ services:
       # Queue briefly for a hot account instead of spilling the conversation to
       # a cold account and losing its prefix cache.
       WB_REDIS_WAIT_MS: ${WB_REDIS_WAIT_MS:-1500}
+      # Pick among this many least-loaded accounts instead of always the single
+      # least-loaded one; avoids herding all new sessions onto one account.
+      WB_SCHED_TOP_K: ${WB_SCHED_TOP_K:-7}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       # Existing accounts/settings.json and legacy usage.db/usage.jsonl are
-      # imported into PostgreSQL on the first boot. New usage is stored in
-      # PostgreSQL; catalog, jobs and panel sessions still live here.
+      # imported into PostgreSQL on the first boot. New usage is kept in
+      # PostgreSQL; catalog and jobs still live here.
       - ./data:/data
     command:
       - -lan

@@ -351,7 +351,7 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
 - 本机没有 Docker daemon，**没有实际启动 compose 栈**；这一步需要在有 Docker
   的机器上补做。无 DSN 的 standalone 模式已用浏览器 smoke 回归。
 
-## 20. PostgreSQL 用量迁移（v2.1.3 / v2.1.4）
+## 20. PostgreSQL 用量与面板会话（v2.1.4 / v2.1.5 / v2.1.6）
 
 - 请求用量支持 PostgreSQL，日/时预聚合在写入事务中同步维护；SQLite 仍是
   standalone 默认后端。
@@ -364,7 +364,11 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
   `TestSharedStoreLifecycle`、`TestSharedStoreRevokeAllAndShort`、
   `TestSharedStoreExpiresSession`、`TestOpenSharedMigratesFileSessions`，
   以及 CI 的 `TestPostgresPanelSessionStore`。
+- 账号调度新增可选的 top-K 负载窗口（`-sched-top-k`，默认 1 = 严格最低
+  负载）：`TestTopKSpreadsAcrossNearIdleAccounts` 和
+  `TestTopKNeverPicksBusyAccount` 覆盖随机分散和排除繁忙账号。
 - CI `postgres` job 已通过。
 
-尚未完成（后续阶段）：top-K 加权负载评分、首字节超时换号、面板会话/quota/
-affinity/jobs 的共享存储、多副本实测。详见 `docs/ARCHITECTURE_MIGRATION.md`。
+尚未完成（后续阶段）：top-K 的 TTFT/错误评分、首字节超时换号、active
+realm/quota/pricing/jobs/affinity 的共享存储、真实 compose 栈与多副本实测。
+详见 `docs/ARCHITECTURE_MIGRATION.md`。

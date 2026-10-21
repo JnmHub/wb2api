@@ -207,6 +207,7 @@ type Pool struct {
 	remainW   atomic.Pointer[map[string]map[string]int] // model -> uid -> weight
 	pageCur   sync.Map                                  // pageKey -> *atomic.Uint64
 	slots     atomic.Pointer[map[string]string]         // enabled proxy slot id -> URL
+	topK      atomic.Int32                              // select among the K least-loaded ready accounts (1 = strict least-loaded)
 }
 
 // New builds a pool from records.
@@ -246,6 +247,19 @@ func (p *Pool) replaceLocked(list []*Account) {
 
 // Len returns the number of accounts.
 func (p *Pool) Len() int { return len(p.snap.Load().all) }
+
+// SetTopK controls how many of the least-loaded ready accounts the fallback
+// picker chooses from. 1 keeps the strict least-loaded behavior; larger values
+// spread tied or near-tied accounts while still excluding the loaded tail.
+func (p *Pool) SetTopK(k int) {
+	if k < 1 {
+		k = 1
+	}
+	p.topK.Store(int32(k))
+}
+
+// TopK returns the configured top-K width.
+func (p *Pool) TopK() int { return int(p.topK.Load()) }
 
 // Get returns an account by uid.
 func (p *Pool) Get(uid string) *Account { return p.snap.Load().byUID[uid] }
