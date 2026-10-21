@@ -480,6 +480,7 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
   两个副本同时建表并同时变为 healthy，日志无 `pg_type` 重复键或迁移错误。
 - 通过 Caddy 入口 `18788` 发起 200 条请求、100 并发，全部 200/200 成功：
   p50 TTFT 2.46 s、p99 5.97 s、max 7.50 s，总耗时 9.37 s；两个副本均保持 healthy，
-  Caddy 使用 `least_conn` 分流。测试账号 52 个 × 每账号 8 槽，调度容量 416。
+  Caddy 使用 `least_conn` 分流。调度容量 400（50 个可用账号 × 每账号 8 槽），
+  调度汇总 `failed=0`、`dropped=0`、`depth=0`。
 - 以上验证均在真实 PostgreSQL 16、Redis 7 和 mock 流式上游上完成。500 请求的
   双进程验证结果见上一节；更早的 400 请求整套栈验证同样为 400/400。

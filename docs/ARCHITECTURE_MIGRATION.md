@@ -170,7 +170,7 @@ files + SQLite deployment to the Sub2API-style split:
 - A 200-request, 100-concurrent load through the Caddy entry point completed
   with 200/200 successful streams (p50 TTFT 2.46 s, p99 5.97 s, 9.37 s wall
   time), with both replicas healthy behind Caddy's `least_conn` policy.
-  Capacity is 416 slots for the 52 test accounts (8 slots per account).
+  Capacity is 400 slots (50 active accounts × 8 slots).
 - An earlier manual two-process run against real PostgreSQL and Redis (fifty
   accounts, 500 concurrent streams split across both replicas) completed with
   500/500 successful streams, shared realm propagation in about one second, a
