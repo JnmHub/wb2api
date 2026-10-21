@@ -98,7 +98,7 @@ export function AccountsPage() {
   const statusOptions: { value: Status | ''; label: string }[] = [
     { value: '', label: `全部 ${sum?.total ?? 0}` },
     { value: 'ready', label: `可用 ${count('ready')}` },
-    { value: 'cooling', label: `冷却 ${count('cooling')}` },
+    { value: 'cooling', label: `冷却 ${sum?.cooling_total ?? count('cooling')}` },
     { value: 'restricted', label: `风控 ${count('restricted')}` },
     { value: 'no_credit', label: `无积分 ${count('no_credit')}` },
     { value: 'need_login', label: `需登录 ${count('need_login')}` },
@@ -132,12 +132,15 @@ export function AccountsPage() {
     {
       title: '状态',
       dataIndex: 'status',
-      width: 120,
+      width: 180,
       render: (_: unknown, a: Account) => (
-        <Badge
-          status={a.status === 'ready' ? 'success' : a.status === 'cooling' || a.status === 'expiring' || a.status === 'no_credit' ? 'warning' : a.status === 'restricted' || a.status === 'need_login' ? 'error' : 'default'}
-          text={statusLabel[a.status] ?? a.status}
-        />
+        <Space size={4} wrap>
+          <Badge
+            status={a.status === 'ready' ? 'success' : a.status === 'cooling' || a.status === 'expiring' || a.status === 'no_credit' ? 'warning' : a.status === 'restricted' || a.status === 'need_login' ? 'error' : 'default'}
+            text={statusLabel[a.status] ?? a.status}
+          />
+          {(a.model_cooldowns?.length ?? 0) > 0 && <Tag color="warning">模型冷却 {a.model_cooldowns!.length}</Tag>}
+        </Space>
       ),
     },
     { title: '身份', dataIndex: 'product', width: 96 },
@@ -234,6 +237,7 @@ export function AccountsPage() {
         <StatTile label="可用" value={num(count('ready'))} dot="#10b981" />
         <StatTile label="无积分" value={num(count('no_credit'))} dot="#ef4444" />
         <StatTile label="冷却中" value={num(count('cooling'))} dot="#f59e0b" />
+        <StatTile label="模型冷却" value={num(sum?.model_cooling)} dot="#f59e0b" />
         <StatTile label="风控限制" value={num(count('restricted'))} dot="#ef4444" />
         <StatTile label="需重新登录" value={num(count('need_login'))} dot="#ef4444" />
       </Row>

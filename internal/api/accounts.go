@@ -149,14 +149,15 @@ func numberOf(v any) (float64, bool) {
 // -------------------------------------------------------------- list / filter
 
 type query struct {
-	realm   string
-	status  map[pool.Status]bool
-	q       string
-	enabled *bool
-	sortBy  string
-	desc    bool
-	offset  int
-	limit   int
+	realm        string
+	status       map[pool.Status]bool
+	modelCooling bool
+	q            string
+	enabled      *bool
+	sortBy       string
+	desc         bool
+	offset       int
+	limit        int
 }
 
 func parseQuery(r *http.Request) (query, error) {
@@ -172,8 +173,15 @@ func parseQuery(r *http.Request) (query, error) {
 			switch pool.Status(p) {
 			case pool.StatusDisabled, pool.StatusNeedLogin, pool.StatusRestricted, pool.StatusCooling, pool.StatusExpiring, pool.StatusNoCredit, pool.StatusReady:
 				q.status[pool.Status(p)] = true
+			case "model_cooling":
+				q.modelCooling = true
 			default:
 				return q, fmt.Errorf("unknown status %q", p)
+			}
+			// The console's "冷却" chip means "cannot serve right now": account-wide
+			// cooldown or one or more models in their per-model cooldown window.
+			if pool.Status(p) == pool.StatusCooling {
+				q.modelCooling = true
 			}
 		}
 	}
@@ -227,8 +235,13 @@ func (a *Accounts) matching(q query, now time.Time) []row {
 			continue
 		}
 		st := acc.State(now)
-		if q.status != nil && !q.status[st] {
-			continue
+		modelCooling := len(acc.ModelCooldowns(now)) > 0
+		statusOK := q.status == nil || q.status[st]
+		modelOK := q.modelCooling && modelCooling
+		if q.status != nil || q.modelCooling {
+			if !statusOK && !modelOK {
+				continue
+			}
 		}
 		if q.enabled != nil && acc.Enabled() != *q.enabled {
 			continue
@@ -353,6 +366,8 @@ func (a *Accounts) summary(w http.ResponseWriter, r *http.Request) {
 	byRealm := map[string]map[string]int{}
 	var tokens, requests int64
 	var todayCredit float64
+	modelCooling := 0
+	coolingTotal := 0
 	credits := map[string]any{"remain": 0.0, "available": 0.0, "expiring_7d": 0.0, "today_used": 0.0, "known": 0, "zero": 0}
 	realmCredits := map[string]map[string]any{}
 	creditOf := func(realm string) map[string]any {
@@ -372,6 +387,12 @@ func (a *Accounts) summary(w http.ResponseWriter, r *http.Request) {
 		tokens += d.Tokens
 		requests += d.Requests
 		todayCredit += d.Credit
+		if len(acc.ModelCooldowns(now)) > 0 {
+			modelCooling++
+		}
+		if st == string(pool.StatusCooling) || len(acc.ModelCooldowns(now)) > 0 {
+			coolingTotal++
+		}
 
 		rc := creditOf(acc.Realm)
 		rc["total"] = rc["total"].(int) + 1
@@ -410,6 +431,7 @@ func (a *Accounts) summary(w http.ResponseWriter, r *http.Request) {
 		"total": a.Pool.Len(), "by_status": byStatus, "by_realm": byRealm,
 		"today":   map[string]any{"tokens": tokens, "requests": requests, "credit": todayCredit},
 		"credits": credits, "by_realm_credits": realmCredits, "keys": keys,
+		"model_cooling": modelCooling, "cooling_total": coolingTotal,
 	})
 }
 

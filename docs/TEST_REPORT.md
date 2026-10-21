@@ -151,7 +151,7 @@ npm run uitest -- --url http://127.0.0.1:18888 --password real-test
   handler，已改为按请求量扩容；不是网关长上下文传输 bug。
 - Docker：`docker compose config` 校验通过；本机只有 Docker CLI，Docker daemon 未安装，
   因此镜像构建未在本机执行。GitHub Actions `release` 工作流已真实跑通，
-  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 至 v2.0.11。
+  产出 `wb2api-linux-amd64` / `arm64` 及 sha256，发布在 v2.0.0 至 v2.0.12。
 - **CI 真跑出了两个真实问题**：GitHub 的 `-race` 发现 `wireBody` 的 `eof/done` 与 ACP
   扫描协程并发读写（已加锁，并且只有 Close 前已观察到 EOF 才归还连接）；Windows runner
   上的 `wsarecv: ... was aborted` 未被识别为陈旧连接（已加入重试判断并补测试）。
@@ -292,6 +292,9 @@ Docker Compose 也会透传 `WB_MAX_BODY_MB`。`TestBodyTooLarge` 覆盖自定�
 - **模型级 5xx**：上游 `11102/11129/11134/11150/11158` 这类明确表示模型/服务不可用的
   5xx 不再计入账号熔断，直接返回上游错误，不轮转账号；
   `TestModelScoped5xxDoesNotChargeAccount` 覆盖。
+- **冷却筛选**：账号级冷却和任意模型的模型冷却都归入“冷却”筛选；账号页新增
+  “模型冷却”计数与行内标签，避免模型级 429 被误认为账号正常。
+  `TestCoolingFilterIncludesModelCooldowns` 覆盖。
 
 ## 17. 复现
 

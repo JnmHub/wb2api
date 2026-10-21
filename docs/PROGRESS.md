@@ -170,11 +170,11 @@ CLI 身份：gzip、`cache_retention`、丢弃 `metadata`/`conversation_id`/`pre
 - 已知偏差：视觉是按参考的 token/组件语言复刻，不是逐像素克隆（品牌字标、页面文案、功能菜单按本项目实际能力调整）；`uitest` 覆盖主要路径，未逐字段提交每个表单。
 - **积分与调度**：账号页新增积分概览（总剩余、可用积分、今日消耗、7 天到期、0 积分账号、每个区域的剩余/可用/账号数/Key 数），`GET /api/v2/accounts/summary` 返回 `credits`、`by_realm_credits` 与 `keys`。**已知余额为 0 的账号状态变为“无积分”，`Ready` 直接返回 false，不再参与任何模型的调度**（免费模型也不调度）；余额未知的账号仍可参与，等待刷新。批量操作条保留批量启用/停用，并有“更多操作 → 签到（仅国内版）/每日活跃（仅国际版）”等任务；smoke 会打开该菜单确认签到入口存在。
 - **DSH 11-128**：system/developer 里的自我介绍句整句中性化为 `You are a helpful AI assistant.`，user/assistant/tool 原样；真实 CN 账号验证 11-128 消失（hy3 200，deepseek-v4.1-flash 429 为当日额度）。
-- **v2.0.11 新增**：流式输出 TPS 上限（全局 + 每 Key 覆盖，默认关闭，仅流式，首 token 不变）；`/v1/models` 可选按 Key 模型限制过滤；Anthropic `input_tokens` 扣除缓存命中/写入；模型级 5xx（11102/11129/11134/11150/11158）不再计入账号熔断。50 路并发 TPS 测试全部通过。
+- **v2.0.11 新增**：流式输出 TPS 上限（全局 + 每 Key 覆盖，默认关闭，仅流式，首 token 不变）；`/v1/models` 可选按 Key 模型限制过滤；Anthropic `input_tokens` 扣除缓存命中/写入；模型级 5xx（11102/11129/11134/11150/11158）不再计入账号熔断。50 路并发 TPS 测试全部通过。账号页“冷却”筛选现在同时覆盖账号级冷却和模型级冷却，并新增“模型冷却”计数/标签。
 - **v1.7.18 对照**：DSH 身份句改为仅 system/developer 的整句中性化（user/assistant/tool 原样）；
   新增 WorkBuddy_Valorant 固定专家任务；全池刷新积分加单飞（重复点击复用运行中的 job）。
   不适用/待补项见 TEST_REPORT 第 15 节。
-- **并发与发布**：按 Key 的并发限制已移除（字段保留但忽略），网关转发所有请求；新增 100 并发非流式 + 48 并发流式的 200 KB 长上下文测试，逐字节校验无截断。账号支持勾选后导出（含批量条“导出选中”），导入支持一次选多个 JSON 文件并按顺序合并报告。公开仓库 <https://github.com/JnmHub/wb2api>（作者 JnmHub），更新检查指向该仓库；`release.yml` 已产出 v2.0.0 至 v2.0.11 的 Linux amd64/arm64 二进制与 sha256。批量账号操作全局最多 4 个上游请求，可在“设置 → 批量账号任务”里配置并发（1–16）和账号间间隔（0–60000ms），保存立即生效；450 账号实测批量刷积分时网关 TTFT 基本不变，吞吐约 -2%。提供多阶段 `Dockerfile`、`compose.yaml`、`.dockerignore`；本机无 Docker daemon，只校验了 compose 配置，镜像未本机构建。CI 的 `-race` 抓到并修复了 `wireBody` 的并发读写，Windows runner 抓到并修复了 `wsarecv ... was aborted` 未重试问题。
+- **并发与发布**：按 Key 的并发限制已移除（字段保留但忽略），网关转发所有请求；新增 100 并发非流式 + 48 并发流式的 200 KB 长上下文测试，逐字节校验无截断。账号支持勾选后导出（含批量条“导出选中”），导入支持一次选多个 JSON 文件并按顺序合并报告。公开仓库 <https://github.com/JnmHub/wb2api>（作者 JnmHub），更新检查指向该仓库；`release.yml` 已产出 v2.0.0 至 v2.0.12 的 Linux amd64/arm64 二进制与 sha256。批量账号操作全局最多 4 个上游请求，可在“设置 → 批量账号任务”里配置并发（1–16）和账号间间隔（0–60000ms），保存立即生效；450 账号实测批量刷积分时网关 TTFT 基本不变，吞吐约 -2%。提供多阶段 `Dockerfile`、`compose.yaml`、`.dockerignore`；本机无 Docker daemon，只校验了 compose 配置，镜像未本机构建。CI 的 `-race` 抓到并修复了 `wireBody` 的并发读写，Windows runner 抓到并修复了 `wsarecv ... was aborted` 未重试问题。
 
 ## 还没做
 

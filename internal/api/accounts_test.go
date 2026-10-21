@@ -482,3 +482,20 @@ func TestFullCreditSweepDetection(t *testing.T) {
 		}
 	}
 }
+
+func TestCoolingFilterIncludesModelCooldowns(t *testing.T) {
+	f := newFixture(t, 2)
+	f.acc.Pool.All()[0].CoolDownModel("m", time.Now().Add(time.Hour))
+	code, out := f.do(t, "GET", "/api/v2/accounts?status=cooling", "")
+	if code != http.StatusOK || out["total"].(float64) != 1 {
+		t.Fatalf("cooling filter: %d %v", code, out)
+	}
+	id := out["items"].([]any)[0].(map[string]any)["uid"].(string)
+	if id != "acct-0000" {
+		t.Fatalf("wrong account: %s", id)
+	}
+	_, sum := f.do(t, "GET", "/api/v2/accounts/summary", "")
+	if sum["model_cooling"].(float64) != 1 || sum["cooling_total"].(float64) != 1 {
+		t.Fatalf("summary: model_cooling=%v cooling_total=%v", sum["model_cooling"], sum["cooling_total"])
+	}
+}

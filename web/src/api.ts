@@ -120,6 +120,8 @@ export interface AccountSummary {
   total: number
   by_status: Partial<Record<Status, number>>
   by_realm: Record<string, Partial<Record<Status, number>>>
+  model_cooling?: number
+  cooling_total?: number
   today: { tokens: number; requests: number; credit?: number }
   credits?: {
     remain: number
