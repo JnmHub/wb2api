@@ -57,6 +57,21 @@ create table if not exists wb_settings (
 	data jsonb not null,
 	updated_at timestamptz not null default now()
 );
+create table if not exists wb_panel_sessions (
+	id text primary key,
+	csrf text not null,
+	created timestamptz not null,
+	last_seen timestamptz not null,
+	expires timestamptz not null,
+	remember boolean not null default false,
+	user_agent text not null default '',
+	ip text not null default ''
+);
+create index if not exists wb_panel_sessions_expires_idx on wb_panel_sessions (expires);
+create table if not exists wb_panel_meta (
+	key text primary key,
+	value text not null
+);
 `
 
 func migrate(ctx context.Context, p *pgxpool.Pool) error {

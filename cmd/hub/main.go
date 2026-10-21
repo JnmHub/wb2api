@@ -48,6 +48,7 @@ import (
 	"wb2api/internal/scheduler"
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/store/pgaccounts"
+	"wb2api/internal/store/pgsessions"
 	"wb2api/internal/store/pgsettings"
 	"wb2api/internal/store/settings"
 	"wb2api/internal/updates"
@@ -66,6 +67,19 @@ func envOr(name, def string) string {
 		return v
 	}
 	return def
+}
+
+// openPanelSessions keeps panel logins shared across replicas when PostgreSQL
+// is configured; standalone mode continues to use panel_sessions.json.
+func openPanelSessions(db *pg.Pool, dir string) (*panelauth.Store, error) {
+	if db == nil {
+		return panelauth.OpenStore(dir)
+	}
+	b := pgsessions.New(db)
+	if _, err := b.MigrateFile(dir); err != nil {
+		return nil, err
+	}
+	return panelauth.OpenShared(b)
 }
 
 func envInt(name string, def int) int {
@@ -314,7 +328,7 @@ func main() {
 			log.Error("cannot set the panel password", "err", err)
 		}
 	}
-	sessions, err := panelauth.OpenStore(*accountsDir)
+	sessions, err := openPanelSessions(pgDB, *accountsDir)
 	if err != nil {
 		log.Error("cannot open the panel session store", "err", err)
 		os.Exit(1)

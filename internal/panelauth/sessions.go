@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -55,12 +56,25 @@ type fileDoc struct {
 	Sessions []Session `json:"sessions"`
 }
 
+// Backend stores panel sessions outside the gateway process. A shared backend
+// (PostgreSQL) keeps every replica's device list and revocations consistent.
+// Implementations must be safe for concurrent use.
+type Backend interface {
+	Get(id string) (Session, bool, error)
+	List() ([]Session, error)
+	Put(Session) error
+	Delete(id string) error
+	DeleteAllExcept(keep string) (int, error)
+}
+
 // Store keeps sessions in memory and mirrors them to disk. Creating and
 // revoking sessions is written through immediately; sliding-expiry touches are
-// batched.
+// batched. With a Backend, the backend is the source of truth and no file or
+// in-memory cache is used.
 type Store struct {
-	path string
-	Now  func() time.Time
+	path    string
+	backend Backend
+	Now     func() time.Time
 
 	mu       sync.Mutex
 	sessions map[string]*Session
@@ -87,6 +101,36 @@ func OpenStore(dir string) (*Store, error) {
 	}
 	s.pruneLocked()
 	return s, nil
+}
+
+// OpenShared opens a session store backed by a shared Backend. The backend is
+// the source of truth; the caller is responsible for any one-time file import.
+func OpenShared(b Backend) (*Store, error) {
+	if b == nil {
+		return nil, errors.New("nil panel session backend")
+	}
+	s := &Store{backend: b, Now: time.Now}
+	if _, err := b.List(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// ReadFileSessions reads the legacy panel_sessions.json without pruning it.
+// A missing file is not an error.
+func ReadFileSessions(dir string) ([]Session, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, SessionFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var doc fileDoc
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	return doc.Sessions, nil
 }
 
 func (s *Store) now() time.Time {
@@ -153,6 +197,12 @@ func (s *Store) Create(remember bool, ua, ip string) (token string, sess Session
 		ID: hashToken(token), CSRF: randToken(24), Created: now, LastSeen: now,
 		Expires: now.Add(ttl(remember)), Remember: remember, UserAgent: clip(ua, 200), IP: ip,
 	}
+	if s.backend != nil {
+		if err := s.backend.Put(*ss); err != nil {
+			return "", Session{}, err
+		}
+		return token, *ss, nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked()
@@ -181,6 +231,9 @@ func (s *Store) LookupTouch(token string) (Session, bool, bool) {
 		return Session{}, false, false
 	}
 	id := hashToken(token)
+	if s.backend != nil {
+		return s.lookupShared(id)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ss, ok := s.sessions[id]
@@ -203,8 +256,35 @@ func (s *Store) LookupTouch(token string) (Session, bool, bool) {
 	return *ss, touched, true
 }
 
+func (s *Store) lookupShared(id string) (Session, bool, bool) {
+	ss, ok, err := s.backend.Get(id)
+	if err != nil || !ok {
+		return Session{}, false, false
+	}
+	now := s.now()
+	if !ss.Expires.After(now) {
+		_ = s.backend.Delete(id)
+		return Session{}, false, false
+	}
+	if now.Sub(ss.LastSeen) < touchEvery {
+		return ss, false, true
+	}
+	ss.LastSeen = now
+	ss.Expires = now.Add(ttl(ss.Remember))
+	if err := s.backend.Put(ss); err != nil {
+		// The session is still valid; a failed touch only means the cookie's
+		// sliding expiry is retried on the next request.
+		return ss, false, true
+	}
+	return ss, true, true
+}
+
 // Revoke ends the session for token.
 func (s *Store) Revoke(token string) {
+	if s.backend != nil {
+		_ = s.backend.Delete(hashToken(token))
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.sessions[hashToken(token)]; ok {
@@ -216,6 +296,17 @@ func (s *Store) Revoke(token string) {
 // RevokeByShort ends the session with the given short handle; reports whether
 // one existed.
 func (s *Store) RevokeByShort(short string) bool {
+	if len(short) < 8 {
+		return false
+	}
+	if s.backend != nil {
+		for _, ss := range s.List() {
+			if strings.HasPrefix(ss.ID, short) {
+				return s.backend.Delete(ss.ID) == nil
+			}
+		}
+		return false
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id := range s.sessions {
@@ -234,6 +325,13 @@ func (s *Store) RevokeAllExcept(keepToken string) int {
 	if keepToken != "" {
 		keep = hashToken(keepToken)
 	}
+	if s.backend != nil {
+		n, err := s.backend.DeleteAllExcept(keep)
+		if err != nil {
+			return 0
+		}
+		return n
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
@@ -251,6 +349,21 @@ func (s *Store) RevokeAllExcept(keepToken string) int {
 
 // List returns all live sessions, newest activity first.
 func (s *Store) List() []Session {
+	if s.backend != nil {
+		list, err := s.backend.List()
+		if err != nil {
+			return nil
+		}
+		now := s.now()
+		out := make([]Session, 0, len(list))
+		for _, ss := range list {
+			if ss.Expires.After(now) {
+				out = append(out, ss)
+			}
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].LastSeen.After(out[j].LastSeen) })
+		return out
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked()
@@ -264,6 +377,9 @@ func (s *Store) List() []Session {
 
 // Flush writes pending sliding-expiry updates.
 func (s *Store) Flush() error {
+	if s.backend != nil {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.dirty {
@@ -274,6 +390,9 @@ func (s *Store) Flush() error {
 
 // StartFlusher batches touch updates to disk every interval until Close.
 func (s *Store) StartFlusher(interval time.Duration) {
+	if s.backend != nil {
+		return
+	}
 	s.mu.Lock()
 	if s.stopCh != nil {
 		s.mu.Unlock()
@@ -300,6 +419,9 @@ func (s *Store) StartFlusher(interval time.Duration) {
 
 // Close stops the flusher and writes pending state.
 func (s *Store) Close() error {
+	if s.backend != nil {
+		return nil
+	}
 	s.mu.Lock()
 	stop, done := s.stopCh, s.doneCh
 	s.stopCh = nil

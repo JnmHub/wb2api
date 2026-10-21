@@ -346,9 +346,25 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
   `TestPickPrefersLeastLoadedAccount`：通过；
 - `TestLimiterAcquireWaitQueuesForSlot`、`TestLimiterAcquireWaitTimesOut`、
   `TestLimiterAcquireWaitCancels`：通过；
+- `TestPostgresRoundTrip`、`TestImportSQLiteIntoPostgres`：CI 的 `postgres` job 通过；
 - `docker compose config`：通过；
 - 本机没有 Docker daemon，**没有实际启动 compose 栈**；这一步需要在有 Docker
   的机器上补做。无 DSN 的 standalone 模式已用浏览器 smoke 回归。
 
-尚未完成（后续阶段）：SQLite usage 迁 PostgreSQL、top-K 负载评分、Redis 等待队列、
-面板会话/quota/affinity/jobs 的共享存储。详见 `docs/ARCHITECTURE_MIGRATION.md`。
+## 20. PostgreSQL 用量迁移（v2.1.3 / v2.1.4）
+
+- 请求用量支持 PostgreSQL，日/时预聚合在写入事务中同步维护；SQLite 仍是
+  standalone 默认后端。
+- 旧 `usage.db` 在 PostgreSQL 模式首次启动时后台只读导入。每批 2000 行与
+  `meta` 游标在同一事务提交，重启后从最大 request id 继续，不重复导入。
+- 列按名称读取，兼容旧 schema 缺少 `held_ms`/`effort`/`extra` 等列。
+- `TestSQLiteRowToEvent` 覆盖列映射、`key` 回退、TTFT/credit/区域推断；
+  `TestImportSQLiteIntoPostgres` 覆盖导入、幂等重跑、流水与合计。
+- 面板会话支持 PostgreSQL（`wb_panel_sessions`，一行一个会话）：
+  `TestSharedStoreLifecycle`、`TestSharedStoreRevokeAllAndShort`、
+  `TestSharedStoreExpiresSession`、`TestOpenSharedMigratesFileSessions`，
+  以及 CI 的 `TestPostgresPanelSessionStore`。
+- CI `postgres` job 已通过。
+
+尚未完成（后续阶段）：top-K 加权负载评分、首字节超时换号、面板会话/quota/
+affinity/jobs 的共享存储、多副本实测。详见 `docs/ARCHITECTURE_MIGRATION.md`。

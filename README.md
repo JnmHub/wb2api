@@ -60,13 +60,14 @@ docker compose up -d --build
 
 面板：`http://127.0.0.1:8788/`。
 
-- **PostgreSQL**：账号、`settings.json` 和**请求用量**的权威存储；首次启动会把现有
-  `./data/accounts/*.json`、`settings.json`、`usage.jsonl` 和旧版 `usage.db` 导入数据库，
-  之后读写走数据库。`usage.db` 只读导入，原文件保留，导入进度记录在 `meta` 表。
+- **PostgreSQL**：账号、`settings.json`、**请求用量**和**面板登录会话**的权威存储；首次启动会把现有
+  `./data/accounts/*.json`、`settings.json`、`usage.jsonl`、旧版 `usage.db` 和
+  `panel_sessions.json` 导入数据库，之后读写走数据库。`usage.db` 只读导入，原文件保留，
+  导入进度记录在 `meta` 表。
 - **Redis**：跨进程的账号并发槽位（`WB_REDIS_INFLIGHT`，默认 8）和健康检查；
   账号满槽时可排队 `WB_REDIS_WAIT_MS`（默认 1500）再切换，减少冷账号溢出；
   不配 Redis 时退回本地并发限制。
-- **`./data`**：仍保留 catalog、panel 会话、jobs 等文件；旧版 standalone 模式不需要
+- **`./data`**：仍保留 catalog、active realm、quota、jobs 等文件；旧版 standalone 模式不需要
   PostgreSQL/Redis，继续使用文件 + `usage.db`。
 - 容器以非 root 用户运行，应用健康检查走 `/health`。
 

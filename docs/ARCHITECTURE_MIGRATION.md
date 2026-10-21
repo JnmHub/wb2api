@@ -45,6 +45,10 @@ files + SQLite deployment to the Sub2API-style split:
   `usage/usage.db` exists, its request rows are copied in the background. The
   importer reads the old file read-only, commits each batch and its highest
   request id in one transaction, and resumes safely after a restart.
+- `internal/store/pgsessions`: panel login sessions stored one row per session
+  (`wb_panel_sessions`). Every replica reads the same device list and sees a
+  revocation immediately; `panel_sessions.json` is imported only when the table
+  is empty.
 - A PostgreSQL-backed usage round-trip test runs in CI (`postgres` job, service
   container) in addition to the SQLite tests.
 - `settings.OpenWith`: file-free settings store used by the PostgreSQL backend.
@@ -64,15 +68,18 @@ files + SQLite deployment to the Sub2API-style split:
 - In PostgreSQL mode the legacy `usage.db` is imported automatically on first
   boot; the old file stays untouched and the marker is stored in the `meta`
   table, so the import does not repeat on later restarts.
+- In PostgreSQL mode `panel_sessions.json` is imported when
+  `wb_panel_sessions` is empty. Existing browser cookies keep working, so the
+  upgrade does not log users out.
 
 ## Next phases
 
 1. **Scheduler**: port the remaining Sub2API loop:
    - top-K weighted selection using load, queue, TTFT and error;
    - first-output timeout/failover before semantic output.
-2. **Shared state**: move panel sessions, active realm, quota windows, pricing
-   overrides, jobs/leader election and affinity to PostgreSQL/Redis so more than
-   one wb2api replica is safe.
+2. **Shared state**: move active realm, quota windows, pricing overrides,
+   jobs/leader election and affinity to PostgreSQL/Redis so more than one wb2api
+   replica is safe. Panel sessions already use the shared backend.
 3. **Observability**: add backend status and scheduler metrics to the panel.
 4. **Load tests**: compare file/SQLite vs PostgreSQL/Redis at 200+ concurrent
    streams, and verify a two-replica deployment does not double-schedule.
