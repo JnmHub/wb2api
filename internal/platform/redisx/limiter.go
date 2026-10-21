@@ -34,6 +34,41 @@ redis.call('PEXPIRE', key, ttl)
 return 1
 `)
 
+// AcquireWait retries Acquire until a slot frees, maxWait expires, or ctx is
+// canceled. It is a short client-side queue: the request keeps its sticky
+// account and waits for a slot instead of immediately spilling to a cold
+// account. A zero maxWait is exactly Acquire.
+func (l *Limiter) AcquireWait(ctx context.Context, accountID string, max int, member string, maxWait time.Duration) (func(), bool, error) {
+	if maxWait <= 0 {
+		return l.Acquire(ctx, accountID, max, member)
+	}
+	deadline := time.Now().Add(maxWait)
+	delay := 40 * time.Millisecond
+	for {
+		rel, ok, err := l.Acquire(ctx, accountID, max, member)
+		if err != nil || ok {
+			return rel, ok, err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, false, nil
+		}
+		if delay > remaining {
+			delay = remaining
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, false, ctx.Err()
+		case <-timer.C:
+		}
+		if delay < 500*time.Millisecond {
+			delay = delay * 3 / 2
+		}
+	}
+}
+
 // Acquire reserves one slot. max <= 0 is unlimited. The returned release
 // function is safe to call once.
 func (l *Limiter) Acquire(ctx context.Context, accountID string, max int, member string) (func(), bool, error) {

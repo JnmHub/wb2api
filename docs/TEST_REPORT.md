@@ -344,6 +344,8 @@ pwsh tools/livetest/account-ops.ps1 -BaseUrl http://127.0.0.1:18888 -PanelPasswo
 - `TestStickySessionEscapesSlowAccount`、`TestStatsEscapesSlowAndRecovers`、
   `TestStickyPicksLeastLoadedWarmAccount`、`TestBusyAccountDoesNotConsumeFailoverAttempts`、
   `TestPickPrefersLeastLoadedAccount`：通过；
+- `TestLimiterAcquireWaitQueuesForSlot`、`TestLimiterAcquireWaitTimesOut`、
+  `TestLimiterAcquireWaitCancels`：通过；
 - `docker compose config`：通过；
 - 本机没有 Docker daemon，**没有实际启动 compose 栈**；这一步需要在有 Docker
   的机器上补做。无 DSN 的 standalone 模式已用浏览器 smoke 回归。

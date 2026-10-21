@@ -245,8 +245,18 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 			q.at.lastUID = acc.UID
 			release := func() {}
 			if h.Limiter != nil && h.AccountInflight > 0 {
-				rel, ok, lerr := h.Limiter.Acquire(r.Context(), acc.UID, h.AccountInflight, q.turnID)
+				var rel func()
+				var ok bool
+				var lerr error
+				if waiter, canWait := h.Limiter.(WaitingInflightLimiter); canWait && h.AccountWait > 0 {
+					rel, ok, lerr = waiter.AcquireWait(r.Context(), acc.UID, h.AccountInflight, q.turnID, h.AccountWait)
+				} else {
+					rel, ok, lerr = h.Limiter.Acquire(r.Context(), acc.UID, h.AccountInflight, q.turnID)
+				}
 				if lerr != nil {
+					if r.Context().Err() != nil {
+						return
+					}
 					h.logger().Warn("account limiter unavailable; falling back to local limits", "account", short(acc.UID), "err", lerr)
 				} else if !ok {
 					// The account is full in another process. Do not spend a

@@ -51,6 +51,12 @@ type InflightLimiter interface {
 	Acquire(ctx context.Context, accountID string, max int, member string) (func(), bool, error)
 }
 
+// WaitingInflightLimiter is implemented by limiters that can queue briefly for
+// a slot instead of failing over as soon as an account is full.
+type WaitingInflightLimiter interface {
+	AcquireWait(ctx context.Context, accountID string, max int, member string, maxWait time.Duration) (func(), bool, error)
+}
+
 // SchedulerFeedback reports whether a warm account should be escaped because
 // its recent TTFT/error feedback is poor.
 type SchedulerFeedback interface {
@@ -91,6 +97,9 @@ type Handler struct {
 	Limiter InflightLimiter
 	// AccountInflight is the per-account limit used with Limiter (0 = off).
 	AccountInflight int
+	// AccountWait bounds how long a request queues for a full account before
+	// failing over (0 = fail over immediately).
+	AccountWait time.Duration
 	// Sched optionally lets sticky routing escape a slow/error-prone account.
 	Sched SchedulerFeedback
 	// DefaultRealm is the fallback when CurrentRealm gives none (intl).

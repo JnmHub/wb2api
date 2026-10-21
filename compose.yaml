@@ -51,6 +51,9 @@ services:
       WB_POSTGRES_DSN: postgres://${WB_POSTGRES_USER:-wb2api}:${WB_POSTGRES_PASSWORD:-wb2api}@postgres:5432/${WB_POSTGRES_DB:-wb2api}?sslmode=disable
       WB_REDIS_ADDR: redis:6379
       WB_REDIS_INFLIGHT: ${WB_REDIS_INFLIGHT:-8}
+      # Queue briefly for a hot account instead of spilling the conversation to
+      # a cold account and losing its prefix cache.
+      WB_REDIS_WAIT_MS: ${WB_REDIS_WAIT_MS:-1500}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       # Existing accounts/settings.json are imported into PostgreSQL on the

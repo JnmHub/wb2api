@@ -25,6 +25,12 @@ files + SQLite deployment to the Sub2API-style split:
   existing cursor order as the tie-breaker (an idle pool still rotates exactly as
   before). This spreads new sessions across the pool without sacrificing the
   warm-session path.
+- Redis limiter now has `AcquireWait`: when an account is full, the request
+  keeps its sticky account and polls for a slot for `WB_REDIS_WAIT_MS` (compose
+  default 1500 ms) before giving up and failing over. Polling backs off from
+  40 ms to 500 ms, respects request cancellation, and uses the same Redis ZSET
+  slots/TTL as `Acquire`. This mirrors Sub2API's per-account queue and avoids
+  cold-account spills caused by a momentary burst.
 - `internal/store/pgaccounts`: account records stored as JSONB, with a one-time
   import from `accounts/*.json` when the table is empty.
 - `internal/store/pgsettings`: singleton settings document stored as JSONB, with
