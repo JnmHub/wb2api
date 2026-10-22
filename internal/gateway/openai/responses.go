@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"wb2api/internal/gateway/responses"
@@ -285,6 +286,26 @@ func disableWebTools(chat *jsonx.Obj) *jsonx.Obj {
 	return next
 }
 
+// responseRound owns a single upstream body. Each idle timer must cancel its
+// current round, not the initial attempt that may already have finished.
+// Stop the round's timer before moving on; its callback captures this value.
+type responseRound struct {
+	io.Reader
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (r *responseRound) close() {
+	r.once.Do(func() {
+		if closer, ok := r.Reader.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		if r.cancel != nil {
+			r.cancel()
+		}
+	})
+}
+
 // openFollowUp sends another chat request for a web-tool round on the same
 // account, returning the upstream stream.
 func (h *Handler) openFollowUp(q *request, acc *pool.Account, chat *jsonx.Obj) (io.ReadCloser, error) {
@@ -296,19 +317,22 @@ func (h *Handler) openFollowUp(q *request, acc *pool.Account, chat *jsonx.Obj) (
 	enc, gz := q2.bodyFor(product)
 	hdrs := h.chatHeaders(&q2, rec, product, gz)
 	cfg := h.Settings.UpstreamConfig()
-	resp, err := h.Up.Wire(acc.UID, acc.Proxy()).Do(q.r.Context(), upstream.Request{
+	ctx, cancel := context.WithCancel(q.r.Context())
+	resp, err := h.Up.Wire(acc.UID, acc.Proxy()).Do(ctx, upstream.Request{
 		Method: http.MethodPost, URL: h.chatURL(acc, product), Headers: hdrs, Body: enc.wire(gz),
 		HeaderTimeout: cfg.HeaderTimeout,
 	})
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		b := readUpstreamErrorBody(resp.Body, cancel, 2*time.Second)
 		resp.Body.Close()
+		cancel()
 		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
-	return resp.Body, nil
+	return &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}, nil
 }
 
 func (h *Handler) runWebCalls(ctx context.Context, calls []webCall) []string {
@@ -389,20 +413,22 @@ func (h *Handler) responsesWhole(q *request, acc *pool.Account, cancel context.C
 	body io.Reader, model string, info responses.Info) {
 
 	chat := q.payload.Clone()
-	reader := body
+	current := &responseRound{Reader: body, cancel: cancel}
+	defer func() { current.close() }()
 	rounds := 0
 	if info.WebTools {
 		rounds = maxWebRounds()
 	}
 	var res *collected
 	for round := 0; ; round++ {
-		res = h.collect(q.r, cancel, idle, reader, model, true)
+		res = h.collect(q.r, current.close, idle, current.Reader, model, true)
+		current.close()
 		if res.err != nil {
 			ev := res.usageEvent(acc, model, q.keyID, q.effort(h), q.start)
-			ev.Outcome, ev.Status = "upstream_aborted", http.StatusBadGateway
+			markCollectedError(&ev, q.r)
 			h.emit(ev)
 			if q.r.Context().Err() == nil {
-				writeError(q.w, http.StatusBadGateway, "upstream stream error: "+res.err.Error(), "server_error")
+				writeError(q.w, http.StatusBadGateway, "upstream stream aborted", "server_error")
 			}
 			return
 		}
@@ -417,13 +443,16 @@ func (h *Handler) responsesWhole(q *request, acc *pool.Account, cancel context.C
 				if ferr != nil {
 					ev := res.usageEvent(acc, model, q.keyID, q.effort(h), q.start)
 					ev.Outcome, ev.Status = "failed", http.StatusBadGateway
+					if q.r.Context().Err() != nil {
+						ev.Outcome, ev.Status = "client_aborted", http.StatusOK
+					}
 					h.emit(ev)
 					if q.r.Context().Err() == nil {
-						writeError(q.w, http.StatusBadGateway, "web tool follow-up failed: "+ferr.Error(), "server_error")
+						writeError(q.w, http.StatusBadGateway, "web tool follow-up failed", "server_error")
 					}
 					return
 				}
-				chat, reader = next, nr
+				chat, current = next, &responseRound{Reader: nr}
 				continue
 			}
 		}
@@ -507,9 +536,6 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 	if idleD <= 0 {
 		idleD = 5 * time.Minute
 	}
-	idle := time.AfterFunc(idleD, cancelUp)
-	defer idle.Stop()
-
 	s := responses.NewStream(model, info, responses.Env{})
 	pacer := newStreamPacer(q.maxTPS)
 	var (
@@ -528,11 +554,16 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 	if info.WebTools {
 		rounds = maxWebRounds()
 	}
-	reader := body
+	current := &responseRound{Reader: body, cancel: cancelUp}
+	defer func() { current.close() }()
 	for round := 0; !clientClosed; round++ {
-		br := bufio.NewReaderSize(reader, sseReadBlock)
+		// A method value captures this round; a late timer cannot close the
+		// next follow-up. Close also aborts bodies on early SSE error exits.
+		idle := time.AfterFunc(idleD, current.close)
+		br := bufio.NewReaderSize(current.Reader, sseReadBlock)
 		var acc2 []byte
 		pending := map[int]*webCall{}
+	readRound:
 		for !clientClosed {
 			if br.Buffered() == 0 {
 				if flush() != nil {
@@ -544,6 +575,10 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 			if len(line) > 0 {
 				idle.Reset(idleD)
 				data := sseData(line)
+				if upstreamErr, isErr := upstreamSSEError(data); isErr {
+					streamErr = upstreamErr
+					break readRound
+				}
 				switch {
 				case data == nil:
 					if write(s.Line(line)) != nil {
@@ -597,6 +632,11 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 				break
 			}
 		}
+		idle.Stop()
+		current.close()
+		if q.r.Context().Err() != nil {
+			clientClosed = true
+		}
 		if clientClosed || streamErr != nil {
 			break
 		}
@@ -628,19 +668,21 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 			break
 		}
 		chat = next
-		reader = nr
+		current = &responseRound{Reader: nr}
 	}
 	if !clientClosed && streamErr == nil {
 		if write(s.Finish()) != nil {
 			clientClosed = true
 		}
-	} else if !clientClosed {
-		// a broken upstream gets no response.completed: the client must see an
-		// incomplete stream, not a fabricated success
-		_, _ = bw.WriteString("data: [DONE]\n\n")
+	} else if !clientClosed && q.r.Context().Err() == nil {
+		// A broken upstream gets an explicit, sanitized error rather than
+		// response.completed or a success terminator.
+		if write([]responses.Frame{s.Error("upstream stream aborted")}) != nil {
+			clientClosed = true
+		}
 	}
-	if !clientClosed {
-		_ = flush()
+	if !clientClosed && flush() != nil {
+		clientClosed = true
 	}
 
 	outcome, status := "completed", http.StatusOK

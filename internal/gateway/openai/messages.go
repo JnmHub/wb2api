@@ -137,10 +137,10 @@ func (h *Handler) messagesWhole(q *request, acc *pool.Account, cancel context.Ca
 	res := h.collect(q.r, cancel, idle, body, model, true)
 	ev := res.usageEvent(acc, model, q.keyID, q.effort(h), q.start)
 	if res.err != nil {
-		ev.Outcome, ev.Status = "upstream_aborted", http.StatusBadGateway
+		markCollectedError(&ev, q.r)
 		h.emit(ev)
 		if q.r.Context().Err() == nil {
-			writeAnthropicError(q.w, http.StatusBadGateway, "upstream stream error: "+res.err.Error())
+			writeAnthropicError(q.w, http.StatusBadGateway, "upstream stream aborted")
 		}
 		return
 	}
@@ -261,6 +261,12 @@ func (h *Handler) messagesStream(q *request, acc *pool.Account, cancelUp context
 					clientClosed = true
 				}
 			}
+			if s.Failed() {
+				// An error is terminal even when upstream leaves its socket open.
+				// Preserve the converter's failed outcome and buffered error frame.
+				cancelUp()
+				break
+			}
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
@@ -272,7 +278,7 @@ func (h *Handler) messagesStream(q *request, acc *pool.Account, cancelUp context
 	switch {
 	case clientClosed:
 	case streamErr != nil:
-		_, _ = bw.Write(anthropic.ErrorFrame("api_error", streamErr.Error()))
+		_, _ = bw.Write(anthropic.ErrorFrame("api_error", "upstream stream aborted"))
 	default:
 		for _, f := range s.Finish() {
 			_, _ = bw.Write(f)

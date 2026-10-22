@@ -51,6 +51,7 @@ type Store struct {
 	path      string
 	loadFn    func() (Doc, error)
 	saveFn    func(Doc) error
+	updateFn  func(func(Doc) error) (Doc, error)
 	lastCheck atomic.Int64 // unix nanos of the last stat
 	revSeq    atomic.Uint64
 	mu        sync.Mutex // serialises writers
@@ -67,6 +68,13 @@ func Open(accountsDir string) *Store {
 // whole document atomically. path is empty in this mode.
 func OpenWith(load func() (Doc, error), save func(Doc) error) *Store {
 	return &Store{loadFn: load, saveFn: save}
+}
+
+// OpenWithUpdater uses a backend transaction for read/modify/write. update must
+// load fresh state, call fn exactly once, and return the committed document. It
+// must not retry fn: callbacks may generate secrets or have other side effects.
+func OpenWithUpdater(load func() (Doc, error), save func(Doc) error, update func(func(Doc) error) (Doc, error)) *Store {
+	return &Store{loadFn: load, saveFn: save, updateFn: update}
 }
 
 // Path returns the settings file path.
@@ -105,15 +113,21 @@ func (s *Store) refresh() *snapshot {
 				return cur
 			}
 			n := &snapshot{rev: s.revSeq.Add(1), doc: Doc{}}
-			s.snap.Store(n)
-			return n
+			if s.snap.CompareAndSwap(cur, n) {
+				return n
+			}
+			return s.latestSnapshot(n)
 		}
 		if cur != nil && cur.exists && reflect.DeepEqual(cur.doc, doc) {
-			return cur
+			return s.latestSnapshot(cur)
 		}
 		n := &snapshot{rev: s.revSeq.Add(1), doc: doc, exists: true}
-		s.snap.Store(n)
-		return n
+		// A read started before a successful mutation must not publish its older
+		// document over the committed snapshot installed by that mutation.
+		if s.snap.CompareAndSwap(cur, n) {
+			return n
+		}
+		return s.latestSnapshot(n)
 	}
 	info, err := os.Stat(s.path)
 	if err != nil {
@@ -139,6 +153,14 @@ func (s *Store) refresh() *snapshot {
 	}
 	s.snap.Store(n)
 	return n
+}
+
+// latestSnapshot tolerates legacy Update invalidating the cache between loads.
+func (s *Store) latestSnapshot(fallback *snapshot) *snapshot {
+	if current := s.snap.Load(); current != nil {
+		return current
+	}
+	return fallback
 }
 
 // Save replaces the whole document atomically.
@@ -180,6 +202,15 @@ func (s *Store) saveLocked(doc Doc) error {
 func (s *Store) Update(fn func(Doc) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.updateFn != nil {
+		doc, err := s.updateFn(fn)
+		if err != nil {
+			return err
+		}
+		s.snap.Store(&snapshot{rev: s.revSeq.Add(1), doc: doc, exists: true})
+		s.lastCheck.Store(time.Now().UnixNano())
+		return nil
+	}
 	s.snap.Store(nil)
 	doc := s.Get()
 	if err := fn(doc); err != nil {

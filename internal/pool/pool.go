@@ -10,6 +10,9 @@
 package pool
 
 import (
+	"bytes"
+	"encoding/json"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -95,14 +98,37 @@ func (a *Account) Weight() int { return int(a.weight.Load()) }
 func (a *Account) Inflight() int { return int(a.inflight.Load()) }
 
 // SetMaxInflight caps concurrent requests per account (0 = unlimited).
-func (a *Account) SetMaxInflight(n int) { a.maxInflight.Store(int32(n)) }
+func (a *Account) SetMaxInflight(n int) {
+	if n < 0 {
+		n = 0
+	}
+	a.maxInflight.Store(int32(n))
+}
 
 // MaxInflight returns the configured per-account cap (0 = unlimited).
 func (a *Account) MaxInflight() int { return int(a.maxInflight.Load()) }
 
+// AtCapacity reports whether this process has filled the effective account cap.
+func (a *Account) AtCapacity(limit int) bool {
+	local := int(a.maxInflight.Load())
+	if local > 0 && (limit <= 0 || local < limit) {
+		limit = local
+	}
+	return limit > 0 && a.Inflight() >= limit
+}
+
 // Ready reports whether the account may serve model right now. It reads only
 // in-memory state. now is passed in so a scan can reuse one clock reading.
 func (a *Account) Ready(model string, now time.Time) bool {
+	return a.ready(model, now, true)
+}
+
+// HealthReady reports readiness without considering local slot capacity.
+func (a *Account) HealthReady(model string, now time.Time) bool {
+	return a.ready(model, now, false)
+}
+
+func (a *Account) ready(model string, now time.Time, checkCapacity bool) bool {
 	if !a.enabled.Load() || a.tokenBad.Load() {
 		return false
 	}
@@ -114,13 +140,13 @@ func (a *Account) Ready(model string, now time.Time) bool {
 	if a.guard.reserve.Load() || a.guard.dailyToken.Load() {
 		return false
 	}
+	if checkCapacity && a.AtCapacity(0) {
+		return false
+	}
 	// A known, exhausted balance must not serve any model (including free ones):
 	// the account would only produce upstream 402s until the balance is topped
 	// up or the daily reset restores it.
 	if remain, ok := a.CreditRemain(); ok && remain <= 0 {
-		return false
-	}
-	if max := a.maxInflight.Load(); max > 0 && a.inflight.Load() >= max {
 		return false
 	}
 	if model != "" {
@@ -140,7 +166,29 @@ func (a *Account) Ready(model string, now time.Time) bool {
 	return true
 }
 
-// Acquire marks one request in flight; the caller must call Release.
+// TryAcquire atomically reserves a local slot. limit is the effective shared
+// account cap (0 = unlimited); a lower account-specific cap also applies.
+// Ready is only a scheduling hint: callers must reserve before starting work
+// because other requests may select the same account between checking and dispatch.
+func (a *Account) TryAcquire(limit int) (func(), bool) {
+	local := int(a.maxInflight.Load())
+	if local > 0 && (limit <= 0 || local < limit) {
+		limit = local
+	}
+	for {
+		n := a.inflight.Load()
+		if limit > 0 && n >= int32(limit) {
+			return nil, false
+		}
+		if a.inflight.CompareAndSwap(n, n+1) {
+			var once sync.Once
+			return func() { once.Do(a.Release) }, true
+		}
+	}
+}
+
+// Acquire marks one request in flight without checking capacity. Retained for
+// callers recording already-reserved work; request dispatch must use TryAcquire.
 func (a *Account) Acquire() { a.inflight.Add(1) }
 
 // Release ends an Acquire.
@@ -252,6 +300,93 @@ func (p *Pool) replaceLocked(list []*Account) {
 	}
 	p.snap.Store(s)
 	p.prefDirty.Store(true)
+}
+
+// SyncRecords applies an authoritative shared-store snapshot without replacing
+// live Account pointers (and their in-flight/cooldown/statistics state).
+func (p *Pool) SyncRecords(recs []*accounts.Record) {
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
+	old := p.snap.Load()
+	list := make([]*Account, 0, len(recs))
+	seen := make(map[string]bool, len(recs))
+	for _, rec := range recs {
+		seen[rec.UID] = true
+		a := old.byUID[rec.UID]
+		if a == nil || a.Realm != rec.Realm {
+			if a != nil {
+				a.enabled.Store(false)
+			}
+			a = NewAccount(rec)
+		} else {
+			a.updMu.Lock()
+			prev := a.Record()
+			// ConsumeCredit keeps a local estimate in the record. An unchanged
+			// authoritative credits snapshot must not replenish that estimate at
+			// every poll; a genuine refresh (including updated_at) replaces it.
+			if sameSharedCredits(prev.SharedBaseline, rec.SharedBaseline) {
+				next := *rec
+				next.Credits = prev.Credits
+				rec = &next
+			}
+			// Apply only persisted changes; polling must not reset locally learned
+			// token health, restriction holds or quota observations.
+			a.rec.Store(rec)
+			a.enabled.Store(rec.IsEnabled())
+			a.expiresAt.Store(rec.ExpiresAt)
+			a.weight.Store(int32(rec.Weight))
+			if prev.AccessToken != rec.AccessToken {
+				a.tokenBad.Store(rec.AccessToken == "")
+			}
+			if prev.RestrictedUntil != rec.RestrictedUntil {
+				a.restrictedTo.Store(int64(rec.RestrictedUntil * 1e9))
+			}
+			if !reflect.DeepEqual(prev.DisabledModels, rec.DisabledModels) {
+				dm := make(map[string]bool, len(rec.DisabledModels))
+				for _, model := range rec.DisabledModels {
+					dm[model] = true
+				}
+				a.mu.Lock()
+				a.disabledMd = dm
+				a.mu.Unlock()
+			}
+			if !reflect.DeepEqual(prev.ModelCaps, rec.ModelCaps) {
+				a.restoreCaps(rec, time.Now())
+			}
+			a.touch()
+			a.updMu.Unlock()
+		}
+		list = append(list, a)
+	}
+	for uid, a := range old.byUID {
+		if !seen[uid] {
+			a.enabled.Store(false)
+		}
+	}
+	p.replaceLocked(list)
+}
+
+// sameSharedCredits compares persisted values, not the locally consumed estimate.
+// Decode numbers consistently: PostgreSQL jsonb may reorder keys and whitespace.
+func sameSharedCredits(before, next []byte) bool {
+	if before == nil || next == nil {
+		return false
+	}
+	if bytes.Equal(before, next) {
+		return true
+	}
+	credits := func(raw []byte) (any, bool) {
+		var doc map[string]any
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		if err := dec.Decode(&doc); err != nil || doc == nil {
+			return nil, false
+		}
+		return doc["credits"], true
+	}
+	a, okA := credits(before)
+	b, okB := credits(next)
+	return okA && okB && reflect.DeepEqual(a, b)
 }
 
 // Len returns the number of accounts.

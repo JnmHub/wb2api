@@ -353,6 +353,41 @@ func TestWireConnectTunnelForHTTPS(t *testing.T) {
 	}
 }
 
+func TestWireBodyCloseDoesNotDrainUnterminatedResponse(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		br := bufio.NewReader(c)
+		_, _ = readRawRequest(br)
+		_, _ = io.WriteString(c, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 100\r\nConnection: close\r\n\r\npartial")
+		_, _ = io.Copy(io.Discard, c)
+	}()
+	w := NewWire(testTimeouts(), nil)
+	defer w.CloseIdle()
+	resp, err := w.Do(context.Background(), Request{URL: "http://" + ln.Addr().String() + "/error"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := make(chan struct{})
+	go func() {
+		_ = resp.Body.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("response body Close blocked on unterminated upstream body")
+	}
+}
+
 func TestManagerGivesEachAccountItsOwnWire(t *testing.T) {
 	m := NewManager(testTimeouts())
 	a1, a2 := m.Wire("a", ""), m.Wire("b", "")

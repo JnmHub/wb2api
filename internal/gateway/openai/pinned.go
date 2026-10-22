@@ -115,13 +115,6 @@ func crossRealmMessage(model, reqRealm string, key *settings.APIKey) string {
 		"出口。请改用对应出口的 Key，或把该 Key 的出口改为「跟随面板切换」。"
 }
 
-// ----------------------------------------------------- per-key concurrency
-//
-// The gateway deliberately does not enforce a client-side concurrency cap:
-// every request is forwarded and upstream limits are handled by the normal
-// 429/cooldown machinery. The stored `concurrency_limit` field is kept for
-// compatibility with older settings but ignored.
-
 func pinnedRef(r *http.Request) string {
 	if a := PinnedFrom(r.Context()); a != nil {
 		return a.UID

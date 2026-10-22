@@ -161,6 +161,17 @@ func readyOf(list []*Account, exclude map[string]struct{}, model string, now tim
 	return out
 }
 
+func (p *Pool) Full(realm, model string, limit int) []*Account {
+	var out []*Account
+	now := time.Now()
+	for _, a := range p.snap.Load().byRealm[realm] {
+		if a.AtCapacity(limit) && a.HealthReady(model, now) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 func expiryWeight(a *Account, window int) int {
 	days, ok := a.SoonestExpiringDays()
 	if !ok {

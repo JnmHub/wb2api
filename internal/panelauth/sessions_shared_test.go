@@ -60,6 +60,62 @@ func (m *memBackend) DeleteAllExcept(keep string) (int, error) {
 	return n, nil
 }
 
+type revokeDuringTouchBackend struct {
+	*memBackend
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *revokeDuringTouchBackend) Touch(id string, lastSeen, expires time.Time) (Session, bool, error) {
+	close(b.entered)
+	<-b.release
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	ss, ok := b.data[id]
+	if !ok {
+		return Session{}, false, nil
+	}
+	ss.LastSeen, ss.Expires = lastSeen, expires
+	b.data[id] = ss
+	return ss, true, nil
+}
+
+func TestSharedTouchCannotResurrectRevokedSession(t *testing.T) {
+	now := time.Now()
+	be := &revokeDuringTouchBackend{memBackend: newMemBackend(), entered: make(chan struct{}), release: make(chan struct{})}
+	s, err := OpenShared(be)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Now = func() time.Time { return now }
+	token, _, err := s.Create(true, "ua", "ip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Minute)
+	result := make(chan struct {
+		s           Session
+		touched, ok bool
+	}, 1)
+	go func() {
+		ss, touched, ok := s.LookupTouch(token)
+		result <- struct {
+			s           Session
+			touched, ok bool
+		}{ss, touched, ok}
+	}()
+	<-be.entered
+	s.Revoke(token)
+	close(be.release)
+	got := <-result
+	if got.ok || got.touched {
+		t.Fatalf("revoked session returned after blocked touch: %+v touched=%v ok=%v", got.s, got.touched, got.ok)
+	}
+	if _, ok, err := be.Get(hashToken(token)); err != nil || ok {
+		t.Fatalf("revoked session resurrected: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestSharedStoreLifecycle(t *testing.T) {
 	now := time.Now()
 	be := newMemBackend()

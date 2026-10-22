@@ -251,6 +251,32 @@ func replacePath(raw, path string) string {
 	return raw[:i+3] + rest[:j] + path
 }
 
+// chatSemanticDelta ignores role-only and empty deltas. The first token must
+// carry content, reasoning, or a tool call rather than just a matching JSON key.
+func chatSemanticDelta(data []byte) bool {
+	var chunk struct {
+		Choices []struct {
+			Delta struct {
+				Content      string            `json:"content"`
+				Reasoning    string            `json:"reasoning_content"`
+				ToolCalls    []json.RawMessage `json:"tool_calls"`
+				FunctionCall json.RawMessage   `json:"function_call"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal(data, &chunk) != nil {
+		return false
+	}
+	for _, choice := range chunk.Choices {
+		d := choice.Delta
+		if d.Content != "" || d.Reasoning != "" || len(d.ToolCalls) > 0 ||
+			(len(d.FunctionCall) > 0 && string(d.FunctionCall) != "null" && string(d.FunctionCall) != "{}") {
+			return true
+		}
+	}
+	return false
+}
+
 func oneStream(c *http.Client, url, key string, body []byte, tokens, tps int, mode string) sample {
 	var s sample
 	start := time.Now()
@@ -291,9 +317,8 @@ func oneStream(c *http.Client, url, key string, body []byte, tokens, tps int, mo
 				case "chat":
 					if bytes.HasPrefix(line, []byte("data: [DONE]")) {
 						s.finished = true
-					} else if bytes.Contains(line, []byte(`"delta"`)) &&
-						(bytes.Contains(line, []byte(`"content"`)) || bytes.Contains(line, []byte(`"reasoning_content"`))) {
-						delta = true
+					} else {
+						delta = chatSemanticDelta(bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data: "))))
 					}
 				case "responses":
 					if bytes.Contains(line, []byte(`"response.completed"`)) {

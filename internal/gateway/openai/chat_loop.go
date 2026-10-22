@@ -222,7 +222,7 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 			q.httpErr(http.StatusConflict, fmt.Sprintf("pinned account '%s' belongs to realm %s, request targets %s", ref, pinned.Realm, q.realm), "invalid_request_error")
 			return
 		}
-		if !pinned.Ready(q.model, time.Now()) {
+		if !pinned.HealthReady(q.model, time.Now()) {
 			q.httpErr(http.StatusServiceUnavailable, fmt.Sprintf("pinned account '%s' is not usable right now: %s", ref, pinned.UnavailableReason(q.model, time.Now())), "invalid_request_error")
 			return
 		}
@@ -246,14 +246,39 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 				}
 				if pinned != nil {
 					acc = pinned
-				} else {
-					exclude := q.at.tried
-					if len(q.at.avoid) > 0 {
-						exclude = unionExclude(q.at.tried, q.at.avoid)
+					if acc.AtCapacity(h.AccountInflight) {
+						q.at.allFull = true
+						q.at.full = map[string]*pool.Account{acc.UID: acc}
+						if !q.at.waited && h.AccountWait > 0 {
+							wa, rel, ok := h.waitForFullAccount(q)
+							if ok {
+								acc, release, slotHeld = wa, rel, true
+							}
+						}
+						if !slotHeld {
+							break
+						}
 					}
-					acc = h.Pool.PickForSessionBest(q.realm, q.sessionKey, exclude, q.model, q.page, h.betterAccount)
+				} else {
+					acc = h.pickAccount(q)
 				}
 				if acc == nil {
+					// Local capacity is checked atomically after selection, so a
+					// concurrently saturated account may not have been recorded.
+					if pinned == nil {
+						for _, full := range h.Pool.Full(q.realm, q.model, h.AccountInflight) {
+							if _, tried := q.at.tried[full.UID]; tried {
+								continue
+							}
+							if q.at.full == nil {
+								q.at.full = map[string]*pool.Account{}
+							}
+							q.at.full[full.UID] = full
+						}
+						if len(q.at.full) > 0 {
+							q.at.allFull = true
+						}
+					}
 					// Every ready account has now been probed once. Only now
 					// is it safe to queue: a free account must win before we
 					// wait on a full one.
@@ -334,7 +359,31 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 					release = rel
 				}
 			}
+			localRelease, localOK := func() {}, true
+			if !slotHeld { // the bounded wait already reserved both slots
+				localRelease, localOK = acc.TryAcquire(h.AccountInflight)
+			}
+			if !localOK {
+				release()
+				delete(q.at.tried, acc.UID)
+				if q.at.avoid == nil {
+					q.at.avoid = map[string]struct{}{}
+				}
+				q.at.avoid[acc.UID] = struct{}{}
+				if q.at.full == nil {
+					q.at.full = map[string]*pool.Account{}
+				}
+				q.at.full[acc.UID] = acc
+				q.at.skipped++
+				if q.at.skipped > h.Pool.Len()+max {
+					q.at.allFull = true
+					break
+				}
+				attempt--
+				continue
+			}
 			res := h.try(q, acc)
+			localRelease()
 			release()
 			switch res.kind {
 			case done:
@@ -480,9 +529,6 @@ func egressKey(rawURL, proxy string) string {
 
 // try performs one upstream attempt with acc.
 func (h *Handler) try(q *request, acc *pool.Account) result {
-	acc.Acquire()
-	defer acc.Release()
-
 	rec := acc.Record()
 	product := identity.NormalizeProduct(rec.Product)
 	enc, gz := q.bodyFor(product)
@@ -510,7 +556,7 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		eb, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		eb := readUpstreamErrorBody(resp.Body, cancel, 2*time.Second)
 		return h.classify(q, acc, resp.StatusCode, eb, egressKey(target, acc.Proxy()))
 	}
 	acc.NoteResult(true)

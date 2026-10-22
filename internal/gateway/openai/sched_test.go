@@ -40,6 +40,21 @@ func (b busyLimiter) Acquire(_ context.Context, uid string, _ int, _ string) (fu
 	return func() {}, true, nil
 }
 
+func TestStickySessionUsesSoleSlowAccountWhenNoAlternativeExists(t *testing.T) {
+	up := newRawUpstream(t, func(n int, r rawReq, c net.Conn) { sseOK(c) })
+	f := newFixture(t, up, accSpec{})
+	f.h.Sched = fakeEscape{uid: "acct-0"}
+	f.pool.Affinity().Bind("sess", "acct-0")
+
+	code, body, _ := f.post(t, conv(1), map[string]string{"X-Session-Id": "sess"})
+	if code != 200 {
+		t.Fatalf("a slow but otherwise healthy sole account must remain usable: %d %s", code, body)
+	}
+	if got := f.pool.Affinity().Get("sess"); got != "acct-0" {
+		t.Fatalf("sole usable account affinity changed to %q", got)
+	}
+}
+
 func TestStickySessionEscapesSlowAccount(t *testing.T) {
 	up := newRawUpstream(t, func(n int, r rawReq, c net.Conn) { sseOK(c) })
 	f := newFixture(t, up, accSpec{}, accSpec{})

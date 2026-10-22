@@ -358,33 +358,34 @@ func (s *Store) SetUpstream(patch map[string]any) (UpstreamConfig, error) {
 
 // SetPrompt validates and stores the prompt mode.
 func (s *Store) SetPrompt(patch map[string]any) (PromptConfig, error) {
-	cur := s.PromptConfig()
-	mode, file := cur.Mode, cur.File
+	clean := map[string]any{}
 	for k, v := range patch {
 		str, ok := v.(string)
 		switch k {
 		case "mode":
 			if !ok {
-				return cur, errors.New("prompt mode must be a string")
+				return s.PromptConfig(), errors.New("prompt mode must be a string")
 			}
-			mode = strings.ToLower(strings.TrimSpace(str))
+			mode := strings.ToLower(strings.TrimSpace(str))
 			if mode != "passthrough" && mode != "custom" && mode != "append" {
-				return cur, errors.New("prompt mode must be passthrough, custom or append")
+				return s.PromptConfig(), errors.New("prompt mode must be passthrough, custom or append")
 			}
+			clean[k] = mode
 		case "file":
 			if !ok {
-				return cur, errors.New("prompt file must be a string")
+				return s.PromptConfig(), errors.New("prompt file must be a string")
 			}
-			file = strings.TrimSpace(str)
+			clean[k] = strings.TrimSpace(str)
 		default:
-			return cur, fmt.Errorf("unknown prompt setting %q", k)
+			return s.PromptConfig(), fmt.Errorf("unknown prompt setting %q", k)
 		}
 	}
 	err := s.Update(func(d Doc) error {
-		d["prompt"] = map[string]any{"mode": mode, "file": file}
+		cur, _ := d["prompt"].(map[string]any)
+		d["prompt"] = DeepMerge(cur, clean)
 		return nil
 	})
-	return PromptConfig{Mode: mode, File: file}, err
+	return s.PromptConfig(), err
 }
 
 // Switches are the boolean toggles of the settings page.

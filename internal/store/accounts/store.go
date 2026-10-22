@@ -51,9 +51,31 @@ func decodeObject(raw []byte) (map[string]any, error) {
 // are reported in the second return value but never abort the load. Accounts
 // without a uid are skipped, as in the legacy loader.
 func Load(dir string, now time.Time) ([]*Record, []LoadError) {
-	entries, err := os.ReadDir(dir)
+	recs, bad, _ := LoadStrict(dir, now)
+	return recs, bad
+}
+
+// LoadStrict also reports directory read errors. One-time migrations must not
+// mistake an unavailable seed directory for an empty, successfully read one.
+func LoadStrict(dir string, now time.Time) ([]*Record, []LoadError, error) {
+	f, err := os.Open(dir)
 	if err != nil {
-		return nil, nil
+		return nil, nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	// On Windows ReadDir on a regular file can report ErrNotExist. Check the
+	// opened handle, not a separate path lookup, so that case cannot consume
+	// the fresh-install missing-directory exception in the seed importer.
+	if !info.IsDir() {
+		return nil, nil, fmt.Errorf("account directory %q is not a directory", dir)
+	}
+	entries, err := f.ReadDir(-1)
+	if err != nil {
+		return nil, nil, err
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
@@ -84,7 +106,7 @@ func Load(dir string, now time.Time) ([]*Record, []LoadError) {
 		}
 		out = append(out, rec)
 	}
-	return out, errs
+	return out, errs, nil
 }
 
 // ordered builds the persisted document in the legacy key order.

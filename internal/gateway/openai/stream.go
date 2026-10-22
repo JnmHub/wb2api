@@ -270,6 +270,10 @@ loop:
 			idle.Reset(idleD)
 			now := time.Now()
 			if data := sseData(line); data != nil && !bytes.Equal(data, []byte("[DONE]")) {
+				if upstreamErr, isErr := upstreamSSEError(data); isErr {
+					streamErr = upstreamErr
+					break loop
+				}
 				nChunks++
 				c, ok := parseChunk(data)
 				if ok && pacer != nil {
@@ -354,7 +358,7 @@ loop:
 			clientClosed = true
 		}
 		noteHeld(now)
-		if !clientClosed && (synthesized || pendingFin != "") {
+		if !clientClosed && streamErr == nil && (synthesized || pendingFin != "") {
 			reason := pendingFin
 			if synthesized {
 				reason = "tool_calls"
@@ -367,9 +371,20 @@ loop:
 			errObj, _ := json.Marshal(map[string]apiError{"error": {Message: "empty upstream stream", Type: "server_error"}})
 			_ = writeData(errObj)
 		}
-		if !clientClosed {
-			_, _ = bw.WriteString("data: [DONE]\n\n")
-			_ = flush()
+		if !clientClosed && r.Context().Err() == nil {
+			if streamErr != nil {
+				// Preserve buffered output, but never expose arbitrary upstream
+				// error details (which may contain credentials or request data).
+				errObj, _ := json.Marshal(map[string]apiError{"error": {Message: "upstream stream aborted", Type: "server_error"}})
+				if writeData(errObj) != nil {
+					clientClosed = true
+				}
+			} else {
+				_, _ = bw.WriteString("data: [DONE]\n\n")
+			}
+			if !clientClosed && flush() != nil {
+				clientClosed = true
+			}
 		}
 	}
 
@@ -448,6 +463,10 @@ func (h *Handler) collect(r *http.Request, cancelUp func(), idleD time.Duration,
 			if data := sseData(line); data != nil && bytes.Equal(data, []byte("[DONE]")) {
 				sawDone = true
 			} else if data != nil {
+				if upstreamErr, isErr := upstreamSSEError(data); isErr {
+					res.err = upstreamErr
+					break
+				}
 				now := time.Now()
 				if res.firstAt.IsZero() {
 					res.firstAt = now
@@ -586,10 +605,10 @@ func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp fun
 	res := h.collect(r, cancelUp, idleD, body, model, true)
 	ev := res.usageEvent(acc, model, keyID, effort, start)
 	if res.err != nil {
-		ev.Outcome, ev.Status = "upstream_aborted", http.StatusBadGateway
+		markCollectedError(&ev, r)
 		h.emit(ev)
 		if r.Context().Err() == nil {
-			writeError(w, http.StatusBadGateway, "upstream stream aborted: "+res.err.Error(), "server_error")
+			writeError(w, http.StatusBadGateway, "upstream stream aborted", "server_error")
 		}
 		return
 	}

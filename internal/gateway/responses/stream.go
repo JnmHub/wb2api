@@ -60,6 +60,12 @@ func (s *Stream) Usage() *jsonx.Obj { return s.usage }
 // Estimated reports whether Usage was estimated locally.
 func (s *Stream) Estimated() bool { return s.estimatedUsage }
 
+// Error reports an interrupted stream without fabricating a completed response.
+// Callers pass a sanitized message, never arbitrary upstream error details.
+func (s *Stream) Error(message string) Frame {
+	return s.ev("error", obj("code", "server_error", "message", message, "param", nil))
+}
+
 func (s *Stream) respObj(status string) *jsonx.Obj {
 	out := []any{}
 	for _, o := range s.outputs {

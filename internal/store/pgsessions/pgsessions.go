@@ -39,6 +39,10 @@ const putSQL = `
 		user_agent = excluded.user_agent,
 		ip = excluded.ip`
 
+// Separate from schema, settings and account-seed locks: only panel-session
+// importers must serialize the marker read with the import and marker commit.
+const fileImportLock int64 = 864235710257
+
 // MigrateFile imports panel_sessions.json once. A marker in wb_panel_meta makes
 // the import idempotent even after every session has been revoked, so a restart
 // cannot resurrect a logged-out browser.
@@ -53,6 +57,9 @@ func (s *Store) MigrateFile(dir string) (int, error) {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, fileImportLock); err != nil {
+		return 0, err
+	}
 	var done bool
 	if err := tx.QueryRow(ctx, `select exists(select 1 from wb_panel_meta where key = $1)`,
 		"panel_file_sessions_imported").Scan(&done); err != nil {
@@ -140,6 +147,28 @@ func (s *Store) List() ([]panelauth.Session, error) {
 		out = append(out, ss)
 	}
 	return out, rows.Err()
+}
+
+// Touch extends an existing session without recreating a revoked row.
+func (s *Store) Touch(id string, lastSeen, expires time.Time) (panelauth.Session, bool, error) {
+	if s == nil || s.pool == nil {
+		return panelauth.Session{}, false, errors.New("postgres session store not configured")
+	}
+	ctx, cancel := s.queryContext()
+	defer cancel()
+	var ss panelauth.Session
+	err := s.pool.QueryRow(ctx, `
+		update wb_panel_sessions set last_seen = $2, expires = $3
+		where id = $1 and expires > now()
+		returning id, csrf, created, last_seen, expires, remember, user_agent, ip`, id, lastSeen, expires).
+		Scan(&ss.ID, &ss.CSRF, &ss.Created, &ss.LastSeen, &ss.Expires, &ss.Remember, &ss.UserAgent, &ss.IP)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return panelauth.Session{}, false, nil
+	}
+	if err != nil {
+		return panelauth.Session{}, false, err
+	}
+	return ss, true, nil
 }
 
 // Put creates or updates one session.

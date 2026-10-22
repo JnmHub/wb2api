@@ -58,6 +58,10 @@ type Record struct {
 
 	// Path is where the record was loaded from / last saved to.
 	Path string
+
+	// SharedBaseline is an immutable persisted snapshot used by shared-store
+	// optimistic merges. It is runtime metadata and is never marshaled.
+	SharedBaseline []byte
 }
 
 // IsEnabled applies Python truthiness to the stored `enabled` value.

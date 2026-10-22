@@ -58,7 +58,7 @@ func NewStream(model string, env Env, cached Cached) *Stream {
 // Usage is the raw upstream usage block (nil when none was seen).
 func (s *Stream) Usage() *jsonx.Obj { return s.usage }
 
-// Failed reports whether an upstream error object ended the stream.
+// Failed reports whether an upstream error envelope ended the stream.
 func (s *Stream) Failed() bool { return s.failed }
 
 func (s *Stream) ensureStart(chunk *jsonx.Obj) []Frame {
@@ -130,10 +130,12 @@ func (s *Stream) Line(line []byte) []Frame {
 // Chunk consumes one parsed upstream chunk.
 func (s *Stream) Chunk(chunk *jsonx.Obj) []Frame {
 	var out []Frame
-	if e, ok := asObj(chunk.Get("error")); ok {
+	e := chunk.Get("error")
+	_, objectError := asObj(e)
+	if objectError || tr(e) {
 		s.failed = true
-		return append(out, frame("error", obj("error", obj("type", ErrorType(502),
-			"message", firstStr(text(e.Get("message")), "upstream error")))))
+		// Upstream details may contain credentials or internal endpoints.
+		return []Frame{ErrorFrame(ErrorType(502), "upstream stream aborted")}
 	}
 	out = append(out, s.ensureStart(chunk)...)
 	// usage is read before the choices guard: the final frame carries both usage
@@ -217,13 +219,6 @@ func (s *Stream) Chunk(chunk *jsonx.Obj) []Frame {
 		s.stop = stopReason(choice.Get("finish_reason"))
 	}
 	return out
-}
-
-func firstStr(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
 }
 
 func itoa(n int) string { return jsonx.PyStr(num(int64(n))) }

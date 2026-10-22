@@ -398,10 +398,15 @@ func (b *wireBody) Close() error {
 	b.done = true
 	eof := b.eof
 	b.mu.Unlock()
-	_ = b.ReadCloser.Close()
 	// stop() reports false when the cancel hook already ran, i.e. the socket
-	// was closed under us and must not be pooled.
+	// was closed under us and must not be pooled. Close the socket before the
+	// wrapped response body for an incomplete response: net/http may otherwise
+	// try to drain the body and block waiting for the peer.
 	alive := b.stop()
+	if !eof {
+		_ = b.c.Close()
+	}
+	_ = b.ReadCloser.Close()
 	// Only pool when the reader observed EOF before Close: a reader that is
 	// still in flight may otherwise have unread bytes in the connection.
 	if eof && b.reusable && alive && b.c.br.Buffered() == 0 {

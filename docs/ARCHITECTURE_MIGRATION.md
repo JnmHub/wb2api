@@ -85,8 +85,10 @@ files + SQLite deployment to the Sub2API-style split:
   request id in one transaction, and resumes safely after a restart.
 - `internal/store/pgsessions`: panel login sessions stored one row per session
   (`wb_panel_sessions`). Every replica reads the same device list and sees a
-  revocation immediately; `panel_sessions.json` is imported only when the table
-  is empty.
+  revocation on its next shared-store validation. File import is guarded by a
+  transaction lock and persistent marker, not by the number of remaining sessions;
+  revoking every session does not re-enable import. Touch only updates live rows
+  and cannot recreate a revoked session.
 - A PostgreSQL-backed usage round-trip test runs in CI (`postgres` job, service
   container) in addition to the SQLite tests; the same job covers panel
   sessions, active realm, quota windows, shared jobs and leader election.
@@ -94,7 +96,10 @@ files + SQLite deployment to the Sub2API-style split:
   the daily/hourly rollups, so concurrent writers and replicas cannot deadlock
   on the same aggregate rows; a regression test records 400 events through four
   workers and requires zero failed batches.
-- `settings.OpenWith`: file-free settings store used by the PostgreSQL backend.
+- `settings.OpenWithUpdater`: PostgreSQL-backed settings use transactional
+  read/modify/write, with a shared advisory lock and current-row read before each
+  mutation. A process-local lock or lock around only the final save is insufficient.
+  Peers refresh cached snapshots; all replicas must use the fixed writer protocol.
 - `cmd/hub`: `WB_POSTGRES_DSN`, `WB_REDIS_ADDR`, `WB_REDIS_INFLIGHT`,
   `WB_REDIS_WAIT_MS`, `WB_SCHED_TOP_K`, `WB_FIRST_OUTPUT_MS`,
   `WB_USAGE_QUEUE`, `WB_USAGE_WORKERS`, `WB_USAGE_OVERFLOW` and
@@ -148,7 +153,12 @@ files + SQLite deployment to the Sub2API-style split:
   local `-per-account-inflight` still works. Compose sets
   `WB_REDIS_INFLIGHT=8`; the standalone default is 0.
 - Existing account files/settings are imported only when the corresponding
-  PostgreSQL table is empty, so an upgrade does not require manual migration.
+  PostgreSQL table is empty. Verify the actual bind-mounted source path before
+  migration; an existing settings row is authoritative, even if partial. Panel
+  settings mutations use a locked read/modify/write transaction across replicas,
+  not an unlocked read followed by whole-document replacement. See
+  [settings incident triage](SETTINGS_RECOVERY.md) for backups, deployment
+  identity checks and the limitations of mixed-version rolling upgrades.
 - In PostgreSQL mode the legacy `usage.db` is imported automatically on first
   boot; the old file stays untouched and the marker is stored in the `meta`
   table, so the import does not repeat on later restarts.

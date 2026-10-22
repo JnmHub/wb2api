@@ -68,7 +68,11 @@ jobs:
       - name: PostgreSQL panel sessions
         env:
           WB_TEST_POSTGRES_DSN: postgres://wb2api:wb2api@127.0.0.1:5432/wb2api_test?sslmode=disable
-        run: go test ./internal/store/pgsessions -run TestPostgresPanelSessionStore -count=1 -v
+        run: go test ./internal/store/pgsessions -count=1 -v
+      - name: PostgreSQL settings atomic mutations and account reconciliation
+        env:
+          WB_TEST_POSTGRES_DSN: postgres://wb2api:wb2api@127.0.0.1:5432/wb2api_test?sslmode=disable
+        run: go test ./internal/store/pgsettings ./internal/store/pgaccounts -count=1 -v
       - name: PostgreSQL shared active realm
         env:
           WB_TEST_POSTGRES_DSN: postgres://wb2api:wb2api@127.0.0.1:5432/wb2api_test?sslmode=disable

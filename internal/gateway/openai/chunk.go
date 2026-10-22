@@ -3,6 +3,7 @@ package openai
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 )
 
 // rawObj is a JSON object whose values stay as raw bytes until inspected.
@@ -25,6 +26,35 @@ type chunk struct {
 	top     rawObj
 	choices []rawObj // each element decoded one level
 	deltas  []rawObj // delta object per choice (nil when absent)
+}
+
+var errUpstreamSSE = errors.New("upstream SSE error")
+
+func upstreamSSEError(data []byte) (error, bool) {
+	var top rawObj
+	if err := json.Unmarshal(data, &top); err != nil || top == nil {
+		return nil, false
+	}
+	raw, ok := top["error"]
+	if !ok || isFalsyRaw(raw) {
+		return nil, false
+	}
+	var detail struct {
+		Message string          `json:"message"`
+		Type    string          `json:"type"`
+		Code    json.RawMessage `json:"code"`
+	}
+	if json.Unmarshal(raw, &detail) != nil {
+		return errUpstreamSSE, true
+	}
+	msg := detail.Message
+	if msg == "" {
+		msg = detail.Type
+	}
+	if msg == "" {
+		msg = "upstream SSE error"
+	}
+	return errors.New(msg), true
 }
 
 func parseChunk(data []byte) (*chunk, bool) {

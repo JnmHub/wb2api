@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -181,6 +182,8 @@ func main() {
 
 	var recs []*accounts.Record
 	var errs []accounts.LoadError
+	var accountMu sync.Mutex
+	var accountPool *pool.Pool
 	persist := func(rec *accounts.Record) error {
 		_, err := accounts.Save(*accountsDir, rec)
 		return err
@@ -194,10 +197,29 @@ func main() {
 			os.Exit(1)
 		}
 		persist = func(rec *accounts.Record) error {
-			return pgaccounts.Save(context.Background(), pgDB.Pool, rec)
+			accountMu.Lock()
+			defer accountMu.Unlock()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			err := pgaccounts.Save(ctx, pgDB.Pool, rec)
+			reloadCtx, reloadCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer reloadCancel()
+			if latest, bad, loadErr := pgaccounts.Load(reloadCtx, pgDB.Pool, ""); loadErr == nil && len(bad) == 0 && accountPool != nil {
+				accountPool.SyncRecords(latest)
+				for _, a := range accountPool.All() {
+					a.SetMaxInflight(*perAccount)
+				}
+			} else if loadErr != nil || len(bad) != 0 {
+				log.Warn("account reconciliation failed", "err", loadErr, "invalid", len(bad))
+			}
+			return err
 		}
 		deleteFn = func(rec *accounts.Record) error {
-			return pgaccounts.Delete(context.Background(), pgDB.Pool, rec)
+			accountMu.Lock()
+			defer accountMu.Unlock()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return pgaccounts.Delete(ctx, pgDB.Pool, rec)
 		}
 	} else {
 		recs, errs = accounts.Load(*accountsDir, time.Now())
@@ -206,6 +228,7 @@ func main() {
 		log.Warn("skipping unreadable account", "err", e)
 	}
 	p := pool.New(recs)
+	accountPool = p
 	p.SetTopK(*topK)
 	if *perAccount > 0 {
 		for _, a := range p.All() {
@@ -218,12 +241,21 @@ func main() {
 			log.Error("cannot seed settings from PostgreSQL", "err", err)
 			os.Exit(1)
 		}
-		st = settings.OpenWith(
+		st = settings.OpenWithUpdater(
 			func() (settings.Doc, error) {
-				return pgsettings.Load(context.Background(), pgDB.Pool, "")
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				return pgsettings.Load(ctx, pgDB.Pool, "")
 			},
 			func(doc settings.Doc) error {
-				return pgsettings.Save(context.Background(), pgDB.Pool, doc)
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				return pgsettings.Save(ctx, pgDB.Pool, doc)
+			},
+			func(fn func(settings.Doc) error) (settings.Doc, error) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				return pgsettings.Update(ctx, pgDB.Pool, fn)
 			},
 		)
 	} else {
@@ -303,6 +335,32 @@ func main() {
 		os.Exit(1)
 	}
 	bg, stopBG := context.WithCancel(context.Background())
+	if pgDB != nil {
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-bg.Done():
+					return
+				case <-ticker.C:
+					accountMu.Lock()
+					ctx, cancel := context.WithTimeout(bg, 5*time.Second)
+					latest, bad, err := pgaccounts.Load(ctx, pgDB.Pool, "")
+					cancel()
+					if err == nil && len(bad) == 0 {
+						p.SyncRecords(latest)
+						for _, a := range p.All() {
+							a.SetMaxInflight(*perAccount)
+						}
+					} else {
+						log.Warn("shared account synchronization failed", "err", err, "invalid", len(bad))
+					}
+					accountMu.Unlock()
+				}
+			}
+		}()
+	}
 	defer stopBG()
 	var (
 		udb *usagedb.DB

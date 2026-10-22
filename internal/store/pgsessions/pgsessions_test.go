@@ -12,6 +12,38 @@ import (
 	"wb2api/internal/platform/pg"
 )
 
+func TestPostgresTouchDoesNotRecreateDeletedSession(t *testing.T) {
+	dsn := os.Getenv("WB_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("WB_TEST_POSTGRES_DSN not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pool, err := pg.Open(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(ctx, `truncate wb_panel_sessions`); err != nil {
+		t.Fatal(err)
+	}
+	be := New(pool)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	ss := panelauth.Session{ID: "touch-only-session", CSRF: "csrf", Created: now, LastSeen: now, Expires: now.Add(time.Hour), Remember: true}
+	if err := be.Put(ss); err != nil {
+		t.Fatal(err)
+	}
+	if err := be.Delete(ss.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, touched, err := be.Touch(ss.ID, now.Add(time.Minute), now.Add(2*time.Hour)); err != nil || touched || got.ID != "" {
+		t.Fatalf("touch deleted row = %+v touched=%v err=%v", got, touched, err)
+	}
+	if _, ok, err := be.Get(ss.ID); err != nil || ok {
+		t.Fatalf("deleted row resurrected: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestPostgresPanelSessionStore(t *testing.T) {
 	dsn := os.Getenv("WB_TEST_POSTGRES_DSN")
 	if dsn == "" {

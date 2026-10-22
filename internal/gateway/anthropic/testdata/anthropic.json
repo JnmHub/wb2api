@@ -1296,7 +1296,7 @@
     }
    ],
    "raw": [],
-   "want": "event: error\ndata: {\"error\":{\"type\":\"api_error\",\"message\":\"boom\"},\"type\":\"error\"}\n\n",
+   "want": "event: error\ndata: {\"error\":{\"type\":\"api_error\",\"message\":\"upstream stream aborted\"},\"type\":\"error\"}\n\n",
    "usage": null
   },
   {
@@ -1317,7 +1317,7 @@
     }
    ],
    "raw": [],
-   "want": "event: message_start\ndata: {\"message\":{\"id\":\"msg_c1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"glm-5.3\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}},\"type\":\"message_start\"}\n\nevent: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"},\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"},\"type\":\"content_block_delta\"}\n\nevent: error\ndata: {\"error\":{\"type\":\"api_error\",\"message\":\"upstream error\"},\"type\":\"error\"}\n\n",
+   "want": "event: message_start\ndata: {\"message\":{\"id\":\"msg_c1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"glm-5.3\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}},\"type\":\"message_start\"}\n\nevent: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"},\"type\":\"content_block_start\"}\n\nevent: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"},\"type\":\"content_block_delta\"}\n\nevent: error\ndata: {\"error\":{\"type\":\"api_error\",\"message\":\"upstream stream aborted\"},\"type\":\"error\"}\n\n",
    "usage": null
   },
   {

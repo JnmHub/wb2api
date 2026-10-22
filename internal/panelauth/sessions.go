@@ -67,6 +67,12 @@ type Backend interface {
 	DeleteAllExcept(keep string) (int, error)
 }
 
+// TouchBackend atomically extends an existing session. Implementations must
+// update no other fields and return false when the row was revoked meanwhile.
+type TouchBackend interface {
+	Touch(id string, lastSeen, expires time.Time) (Session, bool, error)
+}
+
 // Store keeps sessions in memory and mirrors them to disk. Creating and
 // revoking sessions is written through immediately; sliding-expiry touches are
 // batched. With a Backend, the backend is the source of truth and no file or
@@ -271,6 +277,16 @@ func (s *Store) lookupShared(id string) (Session, bool, bool) {
 	}
 	ss.LastSeen = now
 	ss.Expires = now.Add(ttl(ss.Remember))
+	if toucher, ok := s.backend.(TouchBackend); ok {
+		updated, touched, err := toucher.Touch(id, ss.LastSeen, ss.Expires)
+		if err != nil {
+			return ss, false, true
+		}
+		if !touched {
+			return Session{}, false, false
+		}
+		return updated, true, true
+	}
 	if err := s.backend.Put(ss); err != nil {
 		// The session is still valid; a failed touch only means the cookie's
 		// sliding expiry is retried on the next request.

@@ -31,6 +31,9 @@ func Open(ctx context.Context, addr, password string, db int) (*Client, error) {
 		WriteTimeout: 3 * time.Second,
 		PoolSize:     256,
 		MinIdleConns: 8,
+		// Renewal and cleanup deadlines must bound socket I/O, not just
+		// connection-pool waits and retries.
+		ContextTimeoutEnabled: true,
 	})
 	if err := c.Ping(ctx).Err(); err != nil {
 		_ = c.Close()

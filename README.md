@@ -69,6 +69,11 @@ docker compose up -d --build
 
 需要验证多副本时，用独立的 HA 编排（两个 wb2api + Caddy，独立数据卷）：
 
+> **已有数据时不要直接切换编排来“升级”。** 单副本默认用 `pgdata`，HA 默认用
+> `hapgdata`，Compose 项目名还会改变卷名前缀。切换后看到空设置/空 Key 列表，
+> 可能是连接了另一份数据库，而不是原数据被删除。先备份并核对实际 DSN、项目名和挂载。
+> 详见[数据保全与排查指南](<docs/SETTINGS_RECOVERY.md>)。
+
 ```bash
 docker compose -f compose.ha.yaml up -d --build
 ```
@@ -95,12 +100,15 @@ PostgreSQL/Redis；启动时的 schema 迁移和旧用量导入都由 advisory l
   继续使用文件 + `usage.db`，后台任务仍只保存在当前进程。
 - 容器以非 root 用户运行，应用健康检查走 `/health`。
 
-资源清理：
+停止服务（保留数据卷）：
 
 ```bash
-docker compose down          # 保留数据卷
-docker compose down -v       # 删除 PostgreSQL/Redis 数据
+docker compose down
 ```
+
+**升级、排障、恢复数据时不要使用 `down -v`；它会删除 PostgreSQL/Redis 数据卷。**
+多副本升级前先备份，替换全部旧副本后再开放写入；新旧设置写入协议混用仍可能覆盖数据。
+本轮缺陷修复、实测数据与未证实事项见[审查报告](<docs/REVIEW_2026-10-22.md>)。
 
 如果只想拉镜像（自行构建并推送后）：
 
