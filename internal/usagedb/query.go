@@ -1,6 +1,7 @@
 package usagedb
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -153,7 +154,9 @@ func (f Filter) pick() source {
 	if f.aligned() {
 		return f.pickDaily()
 	}
-	return f.pickRequests()
+	s := f.pickRequests()
+	s.from = "usage_facts"
+	return s
 }
 
 // localInterval renders the current fixed UTC offset as a PostgreSQL interval.
@@ -270,10 +273,14 @@ type PairPoint struct {
 // PairPoints returns the per-request token rows in [since, until), oldest
 // first. The remaining-usage estimate folds these into a 24h window.
 func (d *DB) PairPoints(since, until time.Time) ([]PairPoint, error) {
-	rows, err := d.query(`SELECT account, model, at, total FROM requests
+	return d.PairPointsContext(context.Background(), since, until)
+}
+
+func (d *DB) PairPointsContext(ctx context.Context, since, until time.Time) ([]PairPoint, error) {
+	rows, err := d.sql.QueryContext(ctx, d.bind(`SELECT account, model, at, total FROM usage_facts
 		WHERE at >= ? AND at < ? AND account <> '' AND model <> ''
 		  AND outcome NOT IN ('client_aborted', 'error')
-		ORDER BY at`,
+		ORDER BY at`),
 		epoch(since), epoch(until))
 	if err != nil {
 		return nil, err
@@ -298,21 +305,26 @@ type SeriesPoint struct {
 	Agg
 }
 
+func hourAligned(t time.Time) bool {
+	return t.IsZero() || t.Equal(t.Truncate(time.Hour))
+}
+
 // Series buckets by local hour or day, oldest first.
 func (d *DB) Series(bucket string, f Filter) ([]SeriesPoint, error) {
 	var s source
 	switch bucket {
 	case "day":
 		s = f.pick()
-		if s.from == "requests" {
-			s.timeEx = d.requestDayExpr()
+		if s.from == "usage_facts" {
+			s.timeEx = "day"
 		}
 	case "hour":
-		if f.Account == "" && f.KeyID == "" {
+		if f.Account == "" && f.KeyID == "" && hourAligned(f.Since) && hourAligned(f.Until) {
 			s = f.pickHourly()
 			s.timeEx = d.hourlyBucketExpr()
 		} else {
 			s = f.pickRequests()
+			s.from = "usage_facts"
 			s.timeEx = d.requestHourExpr()
 		}
 	default:
@@ -420,7 +432,7 @@ func (d *DB) Day(start time.Time) (DayCounters, error) {
 		rows, err = d.query(`SELECT account, model, SUM(total), SUM(credit), SUM(requests) FROM daily WHERE day >= ? AND account <> ''
 		  GROUP BY account, model`, localDay(start))
 	} else {
-		rows, err = d.query(`SELECT account, model, SUM(total), SUM(credit), COUNT(*) FROM requests WHERE at >= ? AND account <> ''
+		rows, err = d.query(`SELECT account, model, SUM(total), SUM(credit), COUNT(*) FROM usage_facts WHERE at >= ? AND account <> ''
 		  GROUP BY account, model`, epoch(start))
 	}
 	if err != nil {

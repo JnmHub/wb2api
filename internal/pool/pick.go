@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"context"
 	"math"
 	"math/rand/v2"
 	"sort"
@@ -44,15 +45,18 @@ func (p *Pool) MarkPrefsDirty() { p.prefDirty.Store(true) }
 func (p *Pool) ApplyRemainingWeights(w map[string]map[string]int) {
 	if len(w) == 0 {
 		if cur := p.remainW.Load(); cur == nil || len(*cur) == 0 {
+			p.ApplyRemainingSnapshot(nil)
 			return // already clear: the off path must stay allocation-free
 		}
 	}
 	cp := make(map[string]map[string]int, len(w))
+	var weights []RemainingWeight
 	for model, byUID := range w {
 		inner := make(map[string]int, len(byUID))
 		for uid, weight := range byUID {
 			if weight > 1 {
 				inner[uid] = weight
+				weights = append(weights, RemainingWeight{Model: model, UID: uid, Weight: weight})
 			}
 		}
 		if len(inner) > 0 {
@@ -60,6 +64,7 @@ func (p *Pool) ApplyRemainingWeights(w map[string]map[string]int) {
 		}
 	}
 	p.remainW.Store(&cp)
+	p.ApplyRemainingSnapshot(NewRemainingSnapshot(0, weights))
 }
 
 func (p *Pool) remaining(model string) map[string]int {
@@ -250,16 +255,8 @@ func (p *Pool) pick(realm, model string, exclude map[string]struct{}, page *Page
 	// Remaining-usage priority (opt-in): accounts close to their estimated
 	// window limit take the traffic first, so the quota is spent before it
 	// resets. It is a preference like the others: nobody ready falls through.
-	if w := p.remaining(model); len(w) > 0 {
-		var cand []*Account
-		for _, a := range filter(list) {
-			if w[a.UID] > 1 {
-				cand = append(cand, a)
-			}
-		}
-		if ready := readyOf(cand, exclude, model, now); len(ready) > 0 {
-			return smoothPick(&p.wrrMu, p.wrrRemain, ready, func(a *Account) int { return w[a.UID] })
-		}
+	if a := p.pickRemaining(realm, model, exclude, page, prefs, now); a != nil {
+		return a
 	}
 	group := list
 	cur := p.cursor(realm)
@@ -381,10 +378,34 @@ func (p *Pool) PickForSession(realm, sessionKey string, exclude map[string]struc
 // accounts of one conversation. better reports whether a is a better choice
 // than b; nil keeps the most-recent-first order.
 func (p *Pool) PickForSessionBest(realm, sessionKey string, exclude map[string]struct{}, model string, page *Page, better func(a, b *Account) bool) *Account {
+	return p.PickForSessionBestContext(context.Background(), realm, sessionKey, exclude, model, page, better)
+}
+
+// PickForSessionBestContext propagates cancellation through a shared-affinity
+// cache miss. The compatibility entry points retain their bounded store timeout.
+func (p *Pool) PickForSessionBestContext(ctx context.Context, realm, sessionKey string, exclude map[string]struct{}, model string, page *Page, better func(a, b *Account) bool) *Account {
+	return p.selectForSession(ctx, realm, sessionKey, exclude, model, page, better, true)
+}
+
+// SelectForSessionBestContext selects without publishing an affinity binding.
+// Gateways bind only after actual admission and upstream acceptance; a capacity
+// hint or rejected candidate must never be advertised as a served warm account.
+func (p *Pool) SelectForSessionBestContext(ctx context.Context, realm, sessionKey string, exclude map[string]struct{}, model string, page *Page, better func(a, b *Account) bool) *Account {
+	return p.selectForSession(ctx, realm, sessionKey, exclude, model, page, better, false)
+}
+
+func (p *Pool) selectForSession(ctx context.Context, realm, sessionKey string, exclude map[string]struct{}, model string, page *Page, better func(a, b *Account) bool, bind bool) *Account {
+	if ctx.Err() != nil {
+		return nil
+	}
 	if sessionKey != "" && page == nil {
 		now := time.Now()
 		var best *Account
-		for _, uid := range p.affinity.Recent(sessionKey) {
+		recent := p.affinity.RecentContext(ctx, sessionKey)
+		if ctx.Err() != nil {
+			return nil
+		}
+		for _, uid := range recent {
 			if _, skip := exclude[uid]; skip {
 				continue
 			}
@@ -397,7 +418,9 @@ func (p *Pool) PickForSessionBest(realm, sessionKey string, exclude map[string]s
 			}
 		}
 		if best != nil {
-			p.affinity.Bind(sessionKey, best.UID)
+			if bind {
+				p.affinity.Bind(sessionKey, best.UID)
+			}
 			return best
 		}
 	}
@@ -406,7 +429,7 @@ func (p *Pool) PickForSessionBest(realm, sessionKey string, exclude map[string]s
 		// nobody usable on the page: serving from outside beats not serving
 		a = p.pick(realm, model, exclude, nil)
 	}
-	if a != nil && sessionKey != "" && page == nil {
+	if bind && a != nil && sessionKey != "" && page == nil {
 		p.affinity.Bind(sessionKey, a.UID)
 	}
 	return a

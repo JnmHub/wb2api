@@ -2,11 +2,9 @@ package openai
 
 import "strings"
 
-// gatewayHint is a gateway-side note that sits beside the raw upstream message.
-// It never replaces the upstream wording (clients keep parsing the same
-// envelope); it only explains what the gateway could classify, so a user
-// staring at "400 Bad Request" learns whether the fix is a smaller context, a
-// different model, a re-login or simply waiting. "" = nothing to add.
+// gatewayHint adds guidance beside the public error message. Upstream errors
+// are classified into safe phrases before reaching this function; arbitrary
+// upstream text must not be echoed into a client envelope. "" = nothing to add.
 func gatewayHint(status int, message string) string {
 	lower := strings.ToLower(message)
 	has := func(subs ...string) bool {

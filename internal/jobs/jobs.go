@@ -92,6 +92,15 @@ type Manager struct {
 	saveWake chan struct{}
 	syncOnce sync.Once
 
+	lifeMu     sync.Mutex // admission gate: no tasks.Add after stopped
+	lifeCtx    context.Context
+	lifeCancel context.CancelFunc
+	stopped    bool
+	tasks      sync.WaitGroup
+	stopOnce   sync.Once
+	stopDone   chan struct{}
+	saveDone   chan struct{}
+
 	mu    sync.Mutex
 	jobs  map[string]*entry
 	order []string
@@ -116,7 +125,10 @@ func (m *Manager) ensure() {
 		if m.Owner == "" {
 			m.Owner = defaultOwner()
 		}
+		m.lifeCtx, m.lifeCancel = context.WithCancel(context.Background())
+		m.stopDone = make(chan struct{})
 		if m.Store != nil {
+			m.saveDone = make(chan struct{})
 			m.saveJob = make(map[string]Job)
 			m.saveWake = make(chan struct{}, 1)
 			go m.saveLoop()
@@ -134,11 +146,18 @@ func (m *Manager) owner() string {
 // Start launches a job over items and returns its initial snapshot.
 func (m *Manager) Start(kind string, items []string, fn Func) Job {
 	m.ensure()
+	m.lifeMu.Lock()
+	if m.stopped {
+		m.lifeMu.Unlock()
+		return Job{ID: newID(), Kind: kind, State: Cancelled, Total: len(items), Started: time.Now().Unix(), Finished: time.Now().Unix(), Owner: m.owner()}
+	}
+	m.tasks.Add(1)
+	m.lifeMu.Unlock()
 	workers := m.Workers
 	if workers <= 0 {
 		workers = 4
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(m.lifeCtx)
 	e := &entry{cancel: cancel, job: Job{ID: newID(), Kind: kind, State: Running, Total: len(items), Started: time.Now().Unix(), Owner: m.owner()}}
 	m.mu.Lock()
 	if m.jobs == nil {
@@ -150,7 +169,11 @@ func (m *Manager) Start(kind string, items []string, fn Func) Job {
 	m.mu.Unlock()
 	snap := e.snapshot()
 	m.persist(snap)
-	go m.run(ctx, e, items, fn, workers)
+	go func() {
+		defer m.tasks.Done()
+		defer cancel()
+		m.run(ctx, e, items, fn, workers)
+	}()
 	return snap
 }
 
@@ -241,6 +264,7 @@ func (m *Manager) persist(j Job) {
 }
 
 func (m *Manager) saveLoop() {
+	defer close(m.saveDone)
 	for range m.saveWake {
 		m.saveMu.Lock()
 		batch := m.saveJob
@@ -262,7 +286,19 @@ func (m *Manager) StartSync(ctx context.Context) {
 	}
 	m.ensure()
 	m.syncOnce.Do(func() {
+		m.lifeMu.Lock()
+		if m.stopped {
+			m.lifeMu.Unlock()
+			return
+		}
+		m.tasks.Add(1)
+		m.lifeMu.Unlock()
+		ctx, cancel := context.WithCancel(ctx)
+		stopCancel := context.AfterFunc(m.lifeCtx, cancel)
 		go func() {
+			defer m.tasks.Done()
+			defer cancel()
+			defer stopCancel()
 			m.Sync(ctx)
 			t := time.NewTicker(2 * time.Second)
 			defer t.Stop()
@@ -276,6 +312,34 @@ func (m *Manager) StartSync(ctx context.Context) {
 			}
 		}()
 	})
+}
+
+// Stop closes job admission, cancels active jobs/sync reads, joins them, then
+// drains their final persisted snapshots before the shared store can close.
+// Call after HTTP admission stops. A deadline does not make closing the store
+// safe: the caller must keep it alive and wait again until Stop succeeds.
+func (m *Manager) Stop(ctx context.Context) error {
+	m.ensure()
+	m.stopOnce.Do(func() {
+		m.lifeMu.Lock()
+		m.stopped = true
+		m.lifeCancel()
+		m.lifeMu.Unlock()
+		go func() {
+			m.tasks.Wait()
+			if m.Store != nil {
+				close(m.saveWake)
+				<-m.saveDone
+			}
+			close(m.stopDone)
+		}()
+	})
+	select {
+	case <-m.stopDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Sync loads recent snapshots from the shared store. Jobs owned by this

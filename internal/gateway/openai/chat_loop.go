@@ -56,9 +56,11 @@ type attemptState struct {
 	// full holds accounts that were skipped because the cross-process slot
 	// gate was full. They are only considered for the bounded wait phase after
 	// every ready account has been probed once.
-	full    map[string]*pool.Account
-	waited  bool
-	allFull bool
+	full              map[string]*pool.Account
+	waited            bool
+	allFull           bool
+	capacity          *admissionState
+	admissionDeadline time.Time
 }
 
 // charge records a failure on an account at most once per request: a retry
@@ -103,7 +105,19 @@ func (q *request) rateErr(wait int, message, detail string) {
 
 // run serves one parsed request: payload is a chat-completions body.
 func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, key *settings.APIKey, payload *jsonx.Obj, opts runOpts) {
+	r, stopLatency := startLatency(r, start)
+	defer stopLatency()
+	ctx, cancel := context.WithCancelCause(r.Context())
+	defer cancel(nil)
+	if owner, ok := h.Limiter.(leaseLossAware); ok {
+		ctx = owner.WithLeaseLoss(ctx, cancel)
+	}
+	if owner, ok := h.KeyLimiter.(leaseLossAware); ok {
+		ctx = owner.WithLeaseLoss(ctx, cancel)
+	}
+	r = r.WithContext(ctx)
 	q := &request{r: r, w: w, start: start, payload: payload, refreshed: map[string]bool{}, anth: opts.anthropic}
+	defer h.recordAdmissionWait(q)
 	q.at.tried = map[string]struct{}{}
 	q.at.charged = map[string]bool{}
 	q.at.full = map[string]*pool.Account{}
@@ -146,9 +160,26 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 		q.httpErr(http.StatusBadRequest, msg, "invalid_request_error")
 		return
 	}
+	if h.UsageReady != nil {
+		if err := h.UsageReady(); err != nil {
+			h.logger().Error("durable usage admission unavailable", "err", err)
+			w.Header().Set("Retry-After", "1")
+			q.httpErr(http.StatusServiceUnavailable, "usage accounting temporarily unavailable; retry later", "server_error")
+			return
+		}
+	}
 	q.turnID = identity.NewTurnRequestID()
-	if key != nil && key.ConcurrencyLimit > 0 {
-		release, ok := h.acquireKey(r.Context(), key.ID, q.turnID, key.ConcurrencyLimit)
+	if key != nil {
+		// Count local unlimited requests too, so enabling a cap does not forget
+		// work that started while the key's limit was disabled.
+		keyWaitStart := time.Now()
+		release, ok, keyErr := h.acquireKeyResult(r.Context(), key.ID, q.turnID, key.ConcurrencyLimit)
+		addKeyWait(r.Context(), time.Since(keyWaitStart))
+		if keyErr != nil {
+			w.Header().Set("Retry-After", "1")
+			q.httpErr(http.StatusServiceUnavailable, "shared concurrency service temporarily unavailable", "server_error")
+			return
+		}
 		if !ok {
 			if r.Context().Err() != nil {
 				return
@@ -180,8 +211,12 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 			q.sessionKey, q.page = h.affinity().route(msgs)
 		}
 	}
+	var recent []string
+	if q.sessionKey != "" && q.page == nil {
+		recent, q.affinityObservation = h.Pool.Affinity().ObserveContext(r.Context(), q.sessionKey)
+	}
 	if h.Sched != nil && q.sessionKey != "" {
-		for _, uid := range h.Pool.Affinity().Recent(q.sessionKey) {
+		for _, uid := range recent {
 			if h.Sched.ShouldEscape(uid) {
 				if q.at.avoid == nil {
 					q.at.avoid = map[string]struct{}{}
@@ -197,15 +232,15 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	// pool before the first pick; when off, clear any weights left behind.
 	if h.Limits != nil {
 		if h.Settings.RemainingPriority() {
-			h.Pool.ApplyRemainingWeights(h.Limits.ScheduleWeights())
+			h.Pool.ApplyRemainingSnapshot(h.Limits.ScheduleSnapshot())
 		} else {
-			h.Pool.ApplyRemainingWeights(nil)
+			h.Pool.ApplyRemainingSnapshot(nil)
 		}
 	}
 
 	if rem := h.guard().HoldRemaining(q.realm); rem > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(int(rem.Seconds())+1))
-		h.emit(UsageEvent{At: start, Model: q.model, KeyID: q.keyID, Stream: q.stream, Outcome: "failed", Status: http.StatusTooManyRequests, Elapsed: time.Since(start)})
+		h.emitWithLatency(q.r.Context(), UsageEvent{At: start, Model: q.model, KeyID: q.keyID, Stream: q.stream, Outcome: "failed", Status: http.StatusTooManyRequests, Elapsed: time.Since(start)})
 		q.httpErr(http.StatusTooManyRequests, risk.HoldMessage(rem), "rate_limit_error")
 		return
 	}
@@ -236,6 +271,7 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 			if r.Context().Err() != nil {
 				return
 			}
+			h.startAdmission(q)
 			acc := forced
 			forced = nil
 			slotHeld := false
@@ -255,12 +291,18 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 								acc, release, slotHeld = wa, rel, true
 							}
 						}
+						if h.admissionFailed(q) {
+							return
+						}
 						if !slotHeld {
 							break
 						}
 					}
 				} else {
 					acc = h.pickAccount(q)
+				}
+				if h.admissionFailed(q) {
+					return
 				}
 				if acc == nil {
 					// Local capacity is checked atomically after selection, so a
@@ -290,6 +332,9 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 						}
 					}
 				}
+				if h.admissionFailed(q) {
+					return
+				}
 				if acc == nil {
 					// transient trouble: give the pool a moment and go round again
 					if !q.at.allFull && q.at.transient > 0 && attempt < max+1 {
@@ -308,44 +353,43 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 				var rel func()
 				var ok bool
 				var lerr error
-				rel, ok, lerr = h.Limiter.Acquire(r.Context(), acc.UID, h.AccountInflight, q.turnID)
+				rel, ok, lerr = h.acquireAccount(q, acc)
 				if lerr != nil {
+					if rel != nil {
+						rel()
+						rel = nil
+					}
 					if r.Context().Err() != nil {
 						return
 					}
-					h.logger().Warn("account limiter unavailable; falling back to local limits", "account", short(acc.UID), "err", lerr)
+					if !h.SharedLimitFailOpen {
+						q.at.capacity.err = lerr
+						h.admissionFailed(q)
+						return
+					}
+					h.logger().Warn("account limiter unavailable; explicit local fallback", "account", short(acc.UID), "err", lerr)
 				} else if !ok {
 					// Pinned routes cannot fail over, so they are the one case
 					// where waiting on the selected account is correct. For
 					// ordinary routing we first probe every other free account.
 					if pinned != nil && h.AccountWait > 0 && !q.at.waited {
-						if waiter, canWait := h.Limiter.(WaitingInflightLimiter); canWait {
-							rel, ok, lerr = waiter.AcquireWait(r.Context(), acc.UID, h.AccountInflight, q.turnID, h.AccountWait)
-							q.at.waited = true
-							if lerr != nil {
-								if r.Context().Err() != nil {
-									return
-								}
-								h.logger().Warn("account wait failed", "account", short(acc.UID), "err", lerr)
-							}
+						h.noteAccountFull(q, acc)
+						if wa, wr, acquired := h.waitForFullAccount(q); acquired {
+							acc, rel, ok, slotHeld = wa, wr, true, true
+						}
+						if h.admissionFailed(q) {
+							return
 						}
 					}
 					if !ok {
 						// The account is full in another process. Do not spend
 						// a failover attempt on it; remember it for the wait
 						// phase and let the picker try another ready account.
-						delete(q.at.tried, acc.UID)
-						if q.at.avoid == nil {
-							q.at.avoid = map[string]struct{}{}
-						}
-						q.at.avoid[acc.UID] = struct{}{}
-						if q.at.full == nil {
-							q.at.full = map[string]*pool.Account{}
-						}
-						q.at.full[acc.UID] = acc
+						h.noteAccountFull(q, acc)
 						q.at.skipped++
 						if pinned != nil {
 							q.at.allFull = true
+							break // owner already probed/waited; never loop over the realm
 						}
 						if q.at.skipped > h.Pool.Len()+max {
 							q.at.allFull = true
@@ -365,16 +409,12 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 			}
 			if !localOK {
 				release()
-				delete(q.at.tried, acc.UID)
-				if q.at.avoid == nil {
-					q.at.avoid = map[string]struct{}{}
-				}
-				q.at.avoid[acc.UID] = struct{}{}
-				if q.at.full == nil {
-					q.at.full = map[string]*pool.Account{}
-				}
-				q.at.full[acc.UID] = acc
+				h.noteAccountFull(q, acc)
 				q.at.skipped++
+				if pinned != nil {
+					q.at.allFull = true
+					break
+				}
 				if q.at.skipped > h.Pool.Len()+max {
 					q.at.allFull = true
 					break
@@ -382,6 +422,19 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 				attempt--
 				continue
 			}
+			if r.Context().Err() != nil {
+				localRelease()
+				release()
+				return
+			}
+			if !acc.HealthReady(q.model, time.Now()) {
+				// A guard/cooldown may change while shared admission is in I/O.
+				// Never dispatch on the stale selection; neither slot may leak.
+				localRelease()
+				release()
+				continue
+			}
+			h.endAdmission(q)
 			res := h.try(q, acc)
 			localRelease()
 			release()
@@ -404,7 +457,7 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 		}
 		// The free model was used up on every account: move to its paid sibling
 		// and run the whole selection again (legacy open_upstream recursion).
-		if !fallbackTried && h.fallbackToPaidModel(q) {
+		if !aborted && !fallbackTried && h.fallbackToPaidModel(q) {
 			fallbackTried = true
 			forced = nil
 			continue
@@ -475,15 +528,12 @@ func (h *Handler) AccountScore(a *pool.Account, _ string) int64 {
 
 // finishError relays an upstream error that must not be retried elsewhere.
 func (h *Handler) finishError(q *request, acc *pool.Account, res result) {
-	detail := truncate(string(res.body), 600)
+	detail := publicUpstreamDetail(res.status, res.body)
 	typ := "server_error"
 	if res.status == http.StatusForbidden {
 		typ = "invalid_request_error"
-		if strings.TrimSpace(detail) == "" {
-			detail = "content rejected"
-		}
 	}
-	h.emit(UsageEvent{At: q.start, Model: q.model, Account: acc.UID, KeyID: q.keyID, Stream: q.stream,
+	h.emitWithLatency(q.r.Context(), UsageEvent{At: q.start, Model: q.model, Account: acc.UID, KeyID: q.keyID, Stream: q.stream,
 		Outcome: "failed", Status: res.status, Elapsed: time.Since(q.start)})
 	q.httpErr(res.status, fmt.Sprintf("upstream %d: %s", res.status, detail), typ)
 }
@@ -538,7 +588,11 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 
 	ctx, cancel := context.WithCancel(q.r.Context())
 	defer cancel()
+	if q.sessionKey != "" && q.page == nil {
+		_, q.affinityObservation = h.Pool.Affinity().ObserveContext(q.r.Context(), q.sessionKey)
+	}
 	tDo := time.Now()
+	beginAttempt(q.r.Context())
 	target := h.chatURL(acc, product)
 	resp, err := h.Up.Wire(acc.UID, acc.Proxy()).Do(ctx, upstream.Request{
 		Method: http.MethodPost, URL: target, Headers: hdrs,
@@ -578,6 +632,9 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 			return h.firstOutputFailure(q, acc, serr)
 		}
 		body = staged
+	}
+	if q.sessionKey != "" && q.page == nil {
+		h.Pool.Affinity().BindObserved(q.sessionKey, acc.UID, q.affinityObservation)
 	}
 	if q.sink != nil {
 		q.sink(q, acc, cancel, idle, body)
@@ -645,6 +702,12 @@ func (h *Handler) transportError(q *request, acc *pool.Account, err error, egKey
 	q.demote(h, acc)
 	now := time.Now()
 	switch {
+	case upstream.IsAmbiguousRequest(err):
+		// The vendor may already have accepted/billed this POST. Neither a
+		// connection retry nor rotating accounts can make it safe to replay.
+		q.at.kind = failTransport
+		h.logger().Warn("upstream request outcome unknown; automatic replay suppressed", "account", short(acc.UID), "err", err)
+		return result{kind: abort}
 	case isTLSVerify(err):
 		// one attempt is enough: the chain is the same for every account
 		q.at.kind = failTLS
@@ -948,38 +1011,42 @@ func (h *Handler) unavailableDetail(realmName, model string) string {
 // precedence: TLS, local network, rate limit, content rejection, the last
 // upstream status, a transport failure, and finally the no-account cases.
 func (h *Handler) fail(q *request) {
+	h.recordAdmissionWait(q)
 	a := &q.at
 	emit := func(status int, acc string) {
-		h.emit(UsageEvent{At: q.start, Model: q.model, Account: acc, KeyID: q.keyID, Stream: q.stream,
+		h.emitWithLatency(q.r.Context(), UsageEvent{At: q.start, Model: q.model, Account: acc, KeyID: q.keyID, Stream: q.stream,
 			Outcome: "failed", Status: status, Elapsed: time.Since(q.start)})
 	}
 	if a.lastUID != "" || a.kind != failNone {
 		switch {
+		case upstream.IsAmbiguousRequest(a.lastErr):
+			emit(http.StatusBadGateway, a.lastUID)
+			q.httpErr(http.StatusBadGateway, "upstream request outcome unknown; it may already have been processed, so the gateway did not replay it", "server_error")
+			return
 		case a.kind == failTLS:
 			emit(http.StatusBadGateway, a.lastUID)
-			q.httpErr(http.StatusBadGateway, "upstream TLS verification failed: "+a.lastErr.Error()+
+			q.httpErr(http.StatusBadGateway, "upstream TLS verification failed"+
 				" (a TLS-inspecting proxy needs its CA in WB_CA_BUNDLE)", "invalid_request_error")
 			return
 		case a.kind == failLocalNet:
 			emit(http.StatusServiceUnavailable, a.lastUID)
-			q.httpErr(http.StatusServiceUnavailable, fmt.Sprintf("本机网络不可用：%s - 请检查本机网络/代理后重试（本次不计入账号熔断）",
-				truncate(a.lastErr.Error(), 180)), "invalid_request_error")
+			q.httpErr(http.StatusServiceUnavailable, "本机网络不可用 - 请检查本机网络/代理后重试（本次不计入账号熔断）", "invalid_request_error")
 			return
 		case a.last429:
 			emit(http.StatusTooManyRequests, a.lastUID)
-			q.rateErr(h.retryAfter(q.realm, q.model), "", a.last429Detail)
+			q.rateErr(h.retryAfter(q.realm, q.model), "", publicUpstreamDetail(http.StatusTooManyRequests, []byte(a.last429Detail)))
 			return
 		case a.last403Detail != "":
 			emit(http.StatusForbidden, a.lastUID)
-			q.httpErr(http.StatusForbidden, "upstream 403: "+a.last403Detail, "invalid_request_error")
+			q.httpErr(http.StatusForbidden, "upstream 403: "+publicUpstreamDetail(http.StatusForbidden, []byte(a.last403Detail)), "invalid_request_error")
 			return
 		case a.kind == failHTTP:
 			emit(a.lastStatus, a.lastUID)
-			q.httpErr(a.lastStatus, fmt.Sprintf("upstream %d: %s", a.lastStatus, truncate(string(a.lastBody), 600)), "server_error")
+			q.httpErr(a.lastStatus, fmt.Sprintf("upstream %d: %s", a.lastStatus, publicUpstreamDetail(a.lastStatus, a.lastBody)), "server_error")
 			return
 		case a.kind == failTransport:
 			emit(http.StatusBadGateway, a.lastUID)
-			q.httpErr(http.StatusBadGateway, fmt.Sprintf("upstream unreachable: %v", a.lastErr), "server_error")
+			q.httpErr(http.StatusBadGateway, "upstream unreachable; check the gateway network or retry later", "server_error")
 			return
 		}
 	}

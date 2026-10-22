@@ -248,8 +248,29 @@ func (w *Wire) roots() *x509.CertPool {
 	return rootPool()
 }
 
-// staleErr reports an error that can only mean "the pooled connection was
-// already dead", so retrying on a fresh connection cannot duplicate work.
+// AmbiguousRequestError means request bytes may have reached the upstream, but
+// the response failed. Retrying a non-idempotent request can
+// duplicate work. Unwrap preserves cancellation and underlying transport errors.
+// This does not assert that the server accepted or executed the request.
+type AmbiguousRequestError struct {
+	Err error
+}
+
+func (e *AmbiguousRequestError) Error() string {
+	return "upstream request may have been accepted: " + e.Err.Error()
+}
+
+func (e *AmbiguousRequestError) Unwrap() error { return e.Err }
+
+// IsAmbiguousRequest reports whether err carries a possibly-sent request. Higher
+// layers must not blindly retry/rotate non-idempotent calls on these failures.
+func IsAmbiguousRequest(err error) bool {
+	var ambiguous *AmbiguousRequestError
+	return errors.As(err, &ambiguous)
+}
+
+// staleErr classifies a possibly dead pooled connection. The error alone says
+// nothing about replay safety: retry also requires proof no request bytes left.
 func staleErr(err error) bool {
 	if err == nil {
 		return false
@@ -265,7 +286,9 @@ func staleErr(err error) bool {
 
 // Do sends r and returns the response with its headers read. The caller owns
 // resp.Body and must Close it; reading it to EOF returns the connection to the
-// pool. Cancelling ctx aborts the exchange (closing the connection).
+// pool. Cancelling ctx aborts the exchange (closing the connection). A stale
+// pooled connection is retried once only if no request bytes could have left;
+// otherwise IsAmbiguousRequest lets callers suppress unsafe higher-level replay.
 func (w *Wire) Do(ctx context.Context, r Request) (*http.Response, error) {
 	scheme, host, port, hostHeader, selector, err := splitTarget(r.URL)
 	if err != nil {
@@ -277,6 +300,9 @@ func (w *Wire) Do(ctx context.Context, r Request) (*http.Response, error) {
 	key := scheme + "://" + net.JoinHostPort(host, port)
 	retried := false
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		c := w.takeIdle(key)
 		reused := c != nil
 		if c == nil {
@@ -286,10 +312,10 @@ func (w *Wire) Do(ctx context.Context, r Request) (*http.Response, error) {
 			}
 			c = &wireConn{Conn: raw, br: bufio.NewReaderSize(raw, 32<<10), key: key}
 		}
-		resp, err := w.exchange(ctx, c, r, hostHeader, selector, reused)
+		resp, err := w.exchange(ctx, c, r, hostHeader, selector, scheme == "https" || w.Proxy != nil && w.Proxy.Scheme == "https")
 		if err != nil {
 			c.Close()
-			if reused && !retried && staleErr(err) && ctx.Err() == nil {
+			if reused && !retried && !IsAmbiguousRequest(err) && staleErr(err) && ctx.Err() == nil {
 				retried = true
 				continue
 			}
@@ -334,7 +360,10 @@ func (w *Wire) buildRequest(r Request, hostHeader, selector string) []byte {
 	return b.Bytes()
 }
 
-func (w *Wire) exchange(ctx context.Context, c *wireConn, r Request, hostHeader, selector string, reused bool) (*http.Response, error) {
+func (w *Wire) exchange(ctx context.Context, c *wireConn, r Request, hostHeader, selector string, encrypted bool) (*http.Response, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// Abort on cancellation by closing the socket; the read below then fails.
 	stop := context.AfterFunc(ctx, func() { c.Close() })
 	hdrTimeout := w.T.ResponseHeader
@@ -344,8 +373,21 @@ func (w *Wire) exchange(ctx context.Context, c *wireConn, r Request, hostHeader,
 	if hdrTimeout > 0 {
 		_ = c.SetDeadline(time.Now().Add(hdrTimeout))
 	}
-	if _, err := c.Write(w.buildRequest(r, hostHeader, selector)); err != nil {
+	request := w.buildRequest(r, hostHeader, selector)
+	n, err := c.Write(request)
+	if err == nil && n != len(request) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
 		stop()
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		// TLS can write part of an encrypted record and still report zero
+		// plaintext bytes. Without lower-level proof it is not safe to replay.
+		if n > 0 || encrypted {
+			err = &AmbiguousRequestError{Err: err}
+		}
 		return nil, err
 	}
 	method := r.Method
@@ -356,9 +398,9 @@ func (w *Wire) exchange(ctx context.Context, c *wireConn, r Request, hostHeader,
 	if err != nil {
 		stop()
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			err = ctx.Err()
 		}
-		return nil, err
+		return nil, &AmbiguousRequestError{Err: err}
 	}
 	_ = c.SetDeadline(time.Time{})
 	resp.Body = &wireBody{ReadCloser: resp.Body, w: w, c: c, stop: stop, reusable: !resp.Close}
@@ -385,6 +427,10 @@ func (b *wireBody) Read(p []byte) (int, error) {
 		b.mu.Lock()
 		b.eof = true
 		b.mu.Unlock()
+	} else if err != nil {
+		// Receiving headers already proves that replay is not transport-safe.
+		// Preserve the underlying read error for errors.Is/errors.As callers.
+		err = &AmbiguousRequestError{Err: err}
 	}
 	return n, err
 }

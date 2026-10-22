@@ -39,10 +39,60 @@ func EventFromGateway(ev openai.UsageEvent, realmOf func(uid string) string) usa
 	if t, ok := usage.Extract(ev.Usage); ok {
 		e.Prompt, e.Completion, e.Reasoning, e.Cached, e.Total, e.Credit = t.Prompt, t.Completion, t.Reasoning, t.Cached, t.Total, t.Credit
 	}
+	// Additive latency telemetry stays in Extra: legacy TTFT/Gen columns and
+	// aggregates retain their historical meaning, with no schema migration.
+	var latency gatewayLatencyExtra
+	latency.UpstreamTTFTMs = durationMillis(ev.UpstreamTTFT)
+	latency.ClientTTFTMs = durationMillis(ev.ClientTTFT)
+	latency.QueueWaitMs = durationMillis(ev.QueueWait)
+	latency.AdmissionWaitMs = durationMillis(ev.AdmissionWait)
+	latency.KeyWaitMs = durationMillis(ev.KeyWait)
+	latency.CancelLatencyMs = durationMillis(ev.CancelLatency)
+	if b, err := json.Marshal(latency); err == nil && string(b) != "{}" {
+		e.Extra = b
+	}
 	if ev.Outcome == "failed" && ev.Status >= 400 {
 		e.Error = http.StatusText(ev.Status)
 	}
 	return e
+}
+
+// gatewayLatencyExtra is an explicit allowlist, never arbitrary upstream or
+// imported Extra metadata. ClientTTFT means downstream Flush, not browser arrival.
+type gatewayLatencyExtra struct {
+	UpstreamTTFTMs  float64 `json:"upstream_ttft_ms,omitempty"`
+	ClientTTFTMs    float64 `json:"client_ttft_ms,omitempty"`
+	QueueWaitMs     float64 `json:"queue_wait_ms,omitempty"`
+	AdmissionWaitMs float64 `json:"admission_wait_ms,omitempty"`
+	KeyWaitMs       float64 `json:"key_wait_ms,omitempty"`
+	CancelLatencyMs float64 `json:"cancel_latency_ms,omitempty"`
+}
+
+func durationMillis(d time.Duration) float64 {
+	if d <= 0 {
+		return 0
+	}
+	// Preserve positive sub-millisecond measurements without rounding them up.
+	return float64(d) / float64(time.Millisecond)
+}
+
+func addLatencyExtra(dst map[string]any, extra json.RawMessage) {
+	var latency gatewayLatencyExtra
+	if json.Unmarshal(extra, &latency) != nil {
+		return
+	}
+	for key, value := range map[string]float64{
+		"upstream_ttft_ms":  latency.UpstreamTTFTMs,
+		"client_ttft_ms":    latency.ClientTTFTMs,
+		"queue_wait_ms":     latency.QueueWaitMs,
+		"admission_wait_ms": latency.AdmissionWaitMs,
+		"key_wait_ms":       latency.KeyWaitMs,
+		"cancel_latency_ms": latency.CancelLatencyMs,
+	} {
+		if value > 0 {
+			dst[key] = value
+		}
+	}
 }
 
 // RealmOf returns a lookup suitable for EventFromGateway.
@@ -221,6 +271,9 @@ func (u *Usage) summary(w http.ResponseWriter, r *http.Request) {
 		"depth": qs.QueueDepth, "capacity": qs.QueueCapacity, "workers": qs.Workers,
 		"batches": qs.Batches, "failed": qs.Failed, "overflow": qs.Overflow,
 	}
+	// Keep liveness independent: local durable admission readiness and remote
+	// sink delivery/pending state are separately visible to dashboard operators.
+	out["durability"] = u.DB.Health()
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -278,6 +331,7 @@ func (u *Usage) recent(w http.ResponseWriter, r *http.Request) {
 		if q.GenMs != nil {
 			m["gen_ms"] = *q.GenMs
 		}
+		addLatencyExtra(m, q.Extra)
 		list = append(list, m)
 		next = q.ID
 	}

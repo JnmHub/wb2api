@@ -199,26 +199,21 @@ func TestWireDoesNotPoolUnreadOrAbortedBodies(t *testing.T) {
 }
 
 func TestWireRetriesOnceWhenPooledConnectionDied(t *testing.T) {
-	var served atomic.Int32
-	srv := newRawServer(t, func(c net.Conn, br *bufio.Reader) {
-		ok200(c, br)
-		if served.Add(1) == 1 {
-			c.Close() // server drops the keep-alive connection after the first answer
-		}
-	})
+	srv := newRawServer(t, ok200)
 	w := NewWire(testTimeouts(), nil)
 	defer w.CloseIdle()
-	for i := 0; i < 2; i++ {
-		resp, err := w.Do(context.Background(), Request{URL: srv.url(), Body: []byte("x")})
-		if err != nil {
-			t.Fatalf("request %d: %v", i, err)
-		}
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-		time.Sleep(50 * time.Millisecond) // let the FIN arrive
-	}
+	warmWire(t, w, srv.url())
+	// A locally closed pooled socket deterministically fails before writing
+	// any bytes. Peer FIN timing cannot prove that property on all platforms.
+	changePooledConn(t, w, func(c net.Conn) net.Conn { c.Close(); return c })
+	warmWire(t, w, srv.url())
 	if srv.conns.Load() != 2 {
-		t.Fatalf("expected a second connection after the first died, got %d", srv.conns.Load())
+		t.Fatalf("expected one fresh connection after zero-byte stale write, got %d", srv.conns.Load())
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if len(srv.requests) != 2 {
+		t.Fatalf("expected exactly two requests, got %d", len(srv.requests))
 	}
 }
 
@@ -402,6 +397,6 @@ func TestManagerGivesEachAccountItsOwnWire(t *testing.T) {
 func TestStaleErrWindowsAbort(t *testing.T) {
 	err := errors.New("read tcp 127.0.0.1:1->127.0.0.1:2: wsarecv: An established connection was aborted by the software in your host machine.")
 	if !staleErr(err) {
-		t.Fatal("a Windows wsarecv abort of a pooled connection must be retried")
+		t.Fatal("a Windows wsarecv abort must classify as possibly stale (not proof of safe replay)")
 	}
 }

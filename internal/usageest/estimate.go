@@ -6,7 +6,7 @@
 package usageest
 
 import (
-	"bufio"
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"wb2api/internal/pool"
@@ -84,11 +85,31 @@ type Estimator struct {
 	TTL  time.Duration
 	Log  *slog.Logger
 
-	mu      sync.Mutex
-	cached  *Payload
-	builtAt time.Time
+	// Configuration is fixed before Start; mutable state below is synchronized.
+	RefreshTimeout               time.Duration
+	pointQuery                   func(context.Context, time.Time, time.Time) ([]usagedb.PairPoint, error) // test seam
+	mu                           sync.Mutex
+	cached                       *Payload
+	builtAt                      time.Time
+	epoch, cachedEpoch, revision uint64
+	flight                       *refreshFlight
+	schedule                     atomic.Pointer[pool.RemainingSnapshot]
+	startOnce                    sync.Once
+	wake                         chan struct{}
+	stopped                      bool
+	lifeCancel                   context.CancelFunc
+	flightCtx                    context.Context
+	flightCancel                 context.CancelFunc
+	loopDone                     chan struct{}
 
-	evMu sync.Mutex
+	evMu              sync.Mutex
+	evInit            sync.Once
+	events            []limitEvent
+	evDirty, evWorker bool
+	evVersion         uint64
+	evDone            chan struct{}
+	evErr             error
+	evLoadErr         error
 }
 
 func (e *Estimator) now() time.Time {
@@ -128,71 +149,6 @@ type limitEvent struct {
 }
 
 func (e *Estimator) eventsPath() string { return filepath.Join(e.Dir, eventsName) }
-
-// NoteLimit records a model-scoped 429 that carried a reset clock. It is a
-// best-effort append: an unwritable file must never affect the request.
-func (e *Estimator) NoteLimit(uid, model, realmName string, reset, at time.Time) {
-	if uid == "" || model == "" || reset.IsZero() {
-		return
-	}
-	ev := limitEvent{At: float64(at.UnixNano()) / 1e9, Account: uid, Model: model, Realm: realmName,
-		Reset: float64(reset.UnixNano()) / 1e9}
-	b, err := json.Marshal(ev)
-	if err != nil {
-		return
-	}
-	e.evMu.Lock()
-	defer e.evMu.Unlock()
-	if e.Dir == "" {
-		return
-	}
-	if err := os.MkdirAll(e.Dir, 0o755); err != nil {
-		return
-	}
-	f, err := os.OpenFile(e.eventsPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		e.logger().Warn("remaining estimate: cannot append a limit event", "err", err)
-		return
-	}
-	_, _ = f.Write(append(b, '\n'))
-	_ = f.Close()
-	e.mu.Lock()
-	e.cached = nil
-	e.mu.Unlock()
-}
-
-// loadEvents returns the events, newest last, trimmed to maxEvents.
-func (e *Estimator) loadEvents() []limitEvent {
-	if e.Dir == "" {
-		return nil
-	}
-	f, err := os.Open(e.eventsPath())
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	var out []limitEvent
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64*1024), 1<<20)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		var ev limitEvent
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			continue
-		}
-		if ev.Account == "" || ev.Model == "" || ev.At <= 0 {
-			continue
-		}
-		out = append(out, ev)
-	}
-	if len(out) > maxEvents {
-		out = out[len(out)-maxEvents:]
-	}
-	return out
-}
 
 // ------------------------------------------------------------------ estimate
 
@@ -256,21 +212,7 @@ type builder struct {
 }
 
 func (e *Estimator) snapshot() *Payload {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	now := e.now()
-	if e.cached != nil && now.Sub(e.builtAt) < e.ttl() {
-		return e.cached
-	}
-	b := &builder{est: e, now: now, series: map[string]*series{}, resets: map[string][]float64{}, budgets: map[string]budget{}}
-	b.loadPoints()
-	b.loadEvents()
-	b.estimateBudgets()
-	p := b.rows()
-	p.WindowSeconds = int(windowSeconds)
-	p.GeneratedAt = now.Unix()
-	p.ETag = sum(p)
-	e.cached, e.builtAt = p, now
+	p, _ := e.PayloadContext(context.Background())
 	return p
 }
 
@@ -282,15 +224,18 @@ func sum(p *Payload) string {
 	return hex.EncodeToString(h[:8])
 }
 
-func (b *builder) loadPoints() {
-	if b.est.DB == nil {
-		return
+func (b *builder) loadPoints(ctx context.Context) error {
+	if b.est.DB == nil && b.est.pointQuery == nil {
+		return nil
 	}
 	from := b.now.Add(-time.Duration(keepSeconds) * time.Second)
-	points, err := b.est.DB.PairPoints(from, b.now)
+	query := b.est.pointQuery
+	if query == nil {
+		query = b.est.DB.PairPointsContext
+	}
+	points, err := query(ctx, from, b.now)
 	if err != nil {
-		b.est.logger().Warn("remaining estimate: cannot read usage", "err", err)
-		return
+		return err
 	}
 	for _, p := range points {
 		k := pairKey(p.Account, p.Model)
@@ -301,6 +246,7 @@ func (b *builder) loadPoints() {
 		}
 		s.add(p.At, p.Total)
 	}
+	return ctx.Err()
 }
 
 func (b *builder) loadEvents() {
@@ -564,23 +510,13 @@ func (e *Estimator) Payload() *Payload { return e.snapshot() }
 // ScheduleWeights turns the estimate into the dispatch preference: a pair with
 // little of its budget left gets more traffic, so the quota is spent before it
 // resets. Pairs without a budget, zero remaining or cooling are left out.
+// Compatibility API: returns caller-owned maps and may refresh synchronously.
+// Dispatch must use ScheduleSnapshot instead.
 func (e *Estimator) ScheduleWeights() map[string]map[string]int {
 	p := e.snapshot()
 	out := map[string]map[string]int{}
 	for _, r := range p.Rows {
-		if r.Cooling || r.Budget == nil || r.Remaining == nil || *r.Budget <= 0 || *r.Remaining <= 0 {
-			continue
-		}
-		ratio := float64(*r.Remaining) / float64(*r.Budget)
-		w := 1
-		switch {
-		case ratio <= bandVeryLow:
-			w = 4
-		case ratio <= bandLow:
-			w = 3
-		case ratio <= bandMedium:
-			w = 2
-		}
+		w := rowWeight(r)
 		if w <= 1 {
 			continue
 		}

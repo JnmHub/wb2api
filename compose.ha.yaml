@@ -20,8 +20,12 @@ x-app-env: &app-env
   WB_SCHED_TOP_K: ${WB_SCHED_TOP_K:-7}
   WB_FIRST_OUTPUT_MS: ${WB_FIRST_OUTPUT_MS:-30000}
   WB_USAGE_QUEUE: ${WB_USAGE_QUEUE:-16384}
-  WB_USAGE_WORKERS: ${WB_USAGE_WORKERS:-4}
+  WB_USAGE_WORKERS: ${WB_USAGE_WORKERS:-1}
   WB_USAGE_OVERFLOW: ${WB_USAGE_OVERFLOW:-drop}
+  WB_USAGE_OUTBOX: /outbox/usage-outbox.db
+  WB_USAGE_OUTBOX_MB: ${WB_USAGE_OUTBOX_MB:-256}
+  WB_SHARED_LIMIT_FAIL_OPEN: ${WB_SHARED_LIMIT_FAIL_OPEN:-0}
+  WB_DOWNSTREAM_WRITE_MS: ${WB_DOWNSTREAM_WRITE_MS:-30000}
   TZ: ${TZ:-Asia/Shanghai}
 
 x-app: &app
@@ -88,9 +92,16 @@ services:
 
   wb2api-1:
     <<: *app
+    volumes:
+      - ./data:/data
+      # Stable and exclusive: never share a durable outbox between replicas.
+      - haoutbox1:/outbox
 
   wb2api-2:
     <<: *app
+    volumes:
+      - ./data:/data
+      - haoutbox2:/outbox
 
   caddy:
     image: caddy:2-alpine
@@ -108,6 +119,8 @@ services:
       - hacaddyconfig:/config
 
 volumes:
+  haoutbox1:
+  haoutbox2:
   hapgdata:
   haredisdata:
   hacaddydata:

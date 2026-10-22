@@ -9,7 +9,41 @@ files + SQLite deployment to the Sub2API-style split:
   concurrency slots and a short scheduler wait queue).
 - The standalone file/SQLite mode remains available when no DSN is set.
 
-## Implemented in this phase
+## Current reliability/performance update (2026-10-22)
+
+The phase notes below are historical. The following supersede their earlier
+queue, admission and affinity descriptions:
+
+- Completed usage is accepted into a per-replica persistent SQLite outbox before
+  acknowledgment. Ordered replay writes unsampled accounting facts, aggregates
+  and optional diagnostics with an atomic source high-water receipt. Drop/sample
+  now affects diagnostics only. Each replica needs its own persistent outbox;
+  sink outages do not instantly disable local recording, and quotas still read
+  delivered totals rather than pending events. See [durability contract](../internal/usagedb/DURABILITY.md).
+- Saturated admission uses coalesced 20 ms occupancy hints in 512-key pipelines,
+  followed by the unchanged atomic reservation. One account-admission budget
+  includes initial probes and later waits; pinned requests remain pinned. Hints
+  are advisory, never permission to exceed the limit.
+- Configured Redis gates fail closed by default. Explicit
+  `WB_SHARED_LIMIT_FAIL_OPEN=1` retains availability-first local fallback, which
+  cannot preserve a cluster cap. Lease scores use Redis server time; loss of
+  ownership or expiration of the last confirmed safety window cancels the owner.
+- Shared affinity uses an observed random epoch and generation to fence stale
+  writes. Gateway selection does not publish a binding; successful admitted
+  usage commits its original observation. Local cached reads remain advisory,
+  and failed/unreachable demotions cannot guarantee cross-replica visibility.
+- Remaining-quota scheduling reads an immutable background-built snapshot.
+  PostgreSQL account synchronization uses transactional change versions and
+  tombstones, preserving live account objects and revocation behavior.
+- Account feedback uses attempt-level upstream semantic TTFT. New client-flush,
+  admission/key-wait and cancellation metrics are additive; legacy TTFT fields
+  remain intact. Actual downstream writes/flushes have independent deadlines,
+  excluding intentional pacing/idle intervals.
+
+See [implementation and validation record](PERFORMANCE_REMAINING_2026-10-22.md)
+for current evidence and deployment boundaries. No production speedup is implied.
+
+## Historical phase implementation
 
 - `internal/platform/pg`: pgx pool, schema migration and health ping.
 - `internal/platform/redisx`: Redis client, health ping, an account

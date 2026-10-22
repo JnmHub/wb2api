@@ -11,9 +11,10 @@ import (
 // Limiter is a Redis-backed per-account in-flight gate. Entries carry a short
 // TTL so a crashed process cannot leave an account permanently full.
 type Limiter struct {
-	c      *Client
-	prefix string
-	ttl    time.Duration
+	c        *Client
+	prefix   string
+	ttl      time.Duration
+	capacity occupancyCache
 }
 
 // NewLimiter returns a limiter using c. A nil c is allowed; Acquire is then a
@@ -24,10 +25,15 @@ func NewLimiter(c *Client) *Limiter {
 
 var acquireScript = redis.NewScript(`
 local key = KEYS[1]
-local now = tonumber(ARGV[1])
+-- ARGV[1] is retained for wire compatibility, never a trusted client clock.
+local clock = redis.call('TIME')
+local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
 local ttl = tonumber(ARGV[2])
 redis.call('ZREMRANGEBYSCORE', key, '-inf', now - ttl)
-if redis.call('ZCARD', key) >= tonumber(ARGV[3]) then
+-- A committed command may be retried after its reply is lost. An existing
+-- live member already owns capacity, even if the limit has since decreased.
+-- Expired members were removed above and must compete for capacity again.
+if not redis.call('ZSCORE', key, ARGV[4]) and redis.call('ZCARD', key) >= tonumber(ARGV[3]) then
 	return 0
 end
 redis.call('ZADD', key, now, ARGV[4])
@@ -40,9 +46,11 @@ return 1
 var renewScript = redis.NewScript(`
 local key = KEYS[1]
 local score = tonumber(redis.call('ZSCORE', key, ARGV[1]))
-local now = tonumber(ARGV[2])
+-- Lease scores and expiry share the Redis clock across all replicas.
+local clock = redis.call('TIME')
+local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
 local ttl = tonumber(ARGV[3])
-if not score or score < now - ttl then
+if not score or score <= now - ttl then
 	return 0
 end
 redis.call('ZADD', key, 'XX', now, ARGV[1])
@@ -58,15 +66,17 @@ func (l *Limiter) AcquireWait(ctx context.Context, accountID string, max int, me
 	return l.acquireWait(ctx, l.prefix+accountID, max, member, maxWait)
 }
 
-// Acquire reserves one account slot. max <= 0 is unlimited. The returned
-// release function is safe to call once.
+// Acquire reserves one account slot. max <= 0 is unlimited. member identifies
+// one logical acquisition and must not be shared by distinct concurrent holders.
+// A retry with the same live member confirms and refreshes that lease. The
+// returned release function is safe to call more than once.
 func (l *Limiter) Acquire(ctx context.Context, accountID string, max int, member string) (func(), bool, error) {
 	return l.acquire(ctx, l.prefix+accountID, max, member)
 }
 
 // AcquireKey reserves one API-key slot in the same Redis-sorted-set form. It
 // keeps per-key concurrency shared across replicas instead of being a local
-// process counter.
+// process counter. member follows the same logical-acquisition contract as Acquire.
 func (l *Limiter) AcquireKey(ctx context.Context, keyID string, max int, member string) (func(), bool, error) {
 	return l.acquire(ctx, "wb:keyinflight:"+keyID, max, member)
 }
@@ -123,16 +133,30 @@ func (l *Limiter) acquireLease(opCtx, leaseCtx context.Context, key string, limi
 	if l == nil || l.c == nil || limit <= 0 {
 		return func() {}, true, nil
 	}
-	now := time.Now().UnixMilli()
+	acquiredAt := time.Now()
+	now := acquiredAt.UnixMilli()
 	n, err := acquireScript.Run(opCtx, l.c.Client,
 		[]string{key},
 		now, l.ttl.Milliseconds(), limit, member,
 	).Int()
 	if err != nil {
+		// The server may have committed even though no reply arrived. A
+		// same-member retry can recover that lease; otherwise its TTL bounds
+		// retention. Do not blindly ZREM here: a delayed command on another
+		// connection could commit after cleanup, or cleanup could remove a
+		// later successful recovery. Recovery I/O must not extend a wait budget.
 		return nil, false, err
 	}
 	if n != 1 {
 		return nil, false, nil
+	}
+	// The reply may arrive after the conservative local ownership window. Do
+	// not expose that reservation even briefly; its Redis TTL bounds retention.
+	// Avoid blind cleanup: a same-member recovery on another connection may
+	// already own it, and cleanup I/O must not extend the caller's budget.
+	if time.Since(acquiredAt) >= l.ttl-min(l.ttl/10, time.Second) {
+		loseLease(leaseCtx)
+		return nil, false, ErrLeaseLost
 	}
 	// Renew independently of request I/O while this attempt holds its slot.
 	// Explicit release cancels in-flight renewal and joins the goroutine before
@@ -143,8 +167,10 @@ func (l *Limiter) acquireLease(opCtx, leaseCtx context.Context, key string, limi
 	if interval < time.Millisecond {
 		interval = time.Millisecond
 	}
+	watch := newLeaseWatch(leaseCtx, acquiredAt, l.ttl)
 	go func() {
 		defer close(done)
+		defer watch.stop()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -155,11 +181,16 @@ func (l *Limiter) acquireLease(opCtx, leaseCtx context.Context, key string, limi
 				return
 			case <-ticker.C:
 				callCtx, cancel := context.WithTimeout(renewCtx, min(interval, 2*time.Second))
+				renewedAt := time.Now()
 				n, err := renewScript.Run(callCtx, l.c.Client, []string{key}, member,
-					time.Now().UnixMilli(), l.ttl.Milliseconds()).Int()
+					renewedAt.UnixMilli(), l.ttl.Milliseconds()).Int()
 				cancel()
 				if err == nil && n == 0 {
+					watch.lose()
 					return // ownership was lost; never recreate it
+				}
+				if err == nil && n == 1 {
+					watch.confirm(renewedAt, l.ttl)
 				}
 			}
 		}

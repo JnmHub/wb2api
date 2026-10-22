@@ -112,8 +112,18 @@ create index if not exists wb_jobs_updated_idx on wb_jobs (updated_at desc);
 `
 
 func migrate(ctx context.Context, conn *pgxpool.Conn) error {
-	_, err := conn.Exec(ctx, schema)
-	return err
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, schema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, accountSyncSchema); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // Ping is used by /health without blocking the request path for long.

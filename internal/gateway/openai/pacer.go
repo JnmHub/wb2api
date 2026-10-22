@@ -29,6 +29,12 @@ func newStreamPacer(rate float64) *streamPacer {
 // wait records n output tokens and sleeps until emitting them at the configured
 // average rate. The first call starts the clock without sleeping.
 func (p *streamPacer) wait(ctx context.Context, n int) error {
+	return p.waitBefore(ctx, n, nil)
+}
+
+// waitBefore flushes pending output only when pacing will actually sleep. Fast
+// catch-up chunks retain batching; time spent flushing counts toward the delay.
+func (p *streamPacer) waitBefore(ctx context.Context, n int, beforeSleep func() error) error {
 	if p == nil || n <= 0 {
 		return nil
 	}
@@ -43,6 +49,15 @@ func (p *streamPacer) wait(ctx context.Context, n int) error {
 	delay := target - time.Since(p.start)
 	if delay <= 0 {
 		return nil
+	}
+	if beforeSleep != nil {
+		if err := beforeSleep(); err != nil {
+			return err
+		}
+		delay = target - time.Since(p.start)
+		if delay <= 0 {
+			return nil
+		}
 	}
 	t := time.NewTimer(delay)
 	defer t.Stop()

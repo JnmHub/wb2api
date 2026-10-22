@@ -3,9 +3,8 @@
 // instead of re-scanning a growing log (the legacy design: seconds to tens of
 // seconds of CPU on every cold start).
 //
-// Writes are asynchronous: the request path only enqueues an Event; a single
-// goroutine inserts batches inside one transaction. When the queue is full the
-// event is dropped and counted rather than blocking a response.
+// Record durably commits to a local FULL-sync outbox before returning. Remote
+// writes are asynchronous and idempotent. Sampling drops request details only.
 package usagedb
 
 import (
@@ -14,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +28,7 @@ import (
 // Event is one finished request.
 type Event struct {
 	At         time.Time
+	localDay   string // persisted outbox day; replay must not depend on the host timezone
 	Model      string
 	Account    string
 	Realm      string
@@ -131,27 +132,33 @@ CREATE TABLE IF NOT EXISTS hourly (
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS usage_batches (id TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS usage_sources (id TEXT PRIMARY KEY, seq BIGINT NOT NULL);
 `
 
 // OverflowPolicy controls what happens when the write queue is saturated.
 type OverflowPolicy string
 
 const (
-	// OverflowDrop discards the event and counts it. This is the default: the
-	// request path must never block on usage accounting.
+	// OverflowDrop discards request DETAILS after QueueSize pending events.
+	// Never-sampled accounting contributions still commit to the durable outbox.
 	OverflowDrop OverflowPolicy = "drop"
-	// OverflowSample discards most events once the queue is 75% full, keeping
-	// one in SampleEvery. Useful when approximate accounting is acceptable and
-	// a database cannot keep up with a burst.
+	// OverflowSample keeps 1/N request DETAILS once 75% full. Accounting
+	// facts and quota sums are NEVER sampled, including when details are omitted.
 	OverflowSample OverflowPolicy = "sample"
 )
 
 // Options configures the asynchronous usage writer.
 type Options struct {
-	QueueSize   int            // buffered events; <=0 uses 8192
-	Workers     int            // parallel batch writers; <=0 picks a driver default
-	Overflow    OverflowPolicy // empty means OverflowDrop
-	SampleEvery int            // keep 1/N under pressure when OverflowSample; <=0 uses 20
+	QueueSize      int            // detail-shedding threshold, NOT an accounting limit; default 8192
+	Workers        int            // compatibility option; ordered durable replay currently uses 1
+	Overflow       OverflowPolicy // empty means OverflowDrop
+	SampleEvery    int            // keep 1/N under pressure when OverflowSample; <=0 uses 20
+	WriteTimeout   time.Duration  // per transaction incl. lock wait; <=0 uses 10s
+	OutboxPath     string         // stable local file, required for PG; SQLite defaults to <path>.outbox.db
+	OutboxMaxBytes int64          // pending payload budget; default 256 MiB, SQLite overhead additional
+	MaxEventBytes  int            // serialized event limit; default 256 KiB
+	CloseTimeout   time.Duration  // final drain budget; default WriteTimeout
 }
 
 // Stats is a point-in-time view of the write pipeline.
@@ -165,6 +172,7 @@ type Stats struct {
 	Failed        int64  `json:"failed"`
 	Overflow      string `json:"overflow"`
 	LastError     string `json:"last_error"`
+	PendingRetry  int64  `json:"pending_retry"`
 }
 
 // DB is an open usage database. It speaks SQLite by default and PostgreSQL
@@ -173,38 +181,63 @@ type DB struct {
 	sql    *sql.DB
 	driver string // "sqlite" or "pg"
 
-	queue       chan Event
-	flushCh     chan chan struct{}
-	stop        chan struct{}
-	done        chan struct{}
-	once        sync.Once
-	workers     int
-	queueCap    int
-	overflow    OverflowPolicy
-	sampleEvery uint64
-	sampleTick  atomic.Uint64
+	outbox                   *sql.DB
+	outboxLock               *os.File
+	source                   string
+	outboxBytes, outboxCount int64 // guarded by recordMu
+	outboxMax                int64
+	maxEventBytes            int
+	closeTimeout             time.Duration
+	durabilityErr            error                             // sticky until reopen; guarded by recordMu
+	readiness                atomic.Pointer[readinessSnapshot] // immutable preflight; never waits behind local fsync
+	writerCtx                context.Context
+	writerCancel             context.CancelFunc
+	flushCh                  chan chan error
+	stop                     chan struct{}
+	done                     chan struct{}
+	once                     sync.Once
+	closeErr                 error
+	admissionGate            chan struct{}
+	admissionQ               chan *localAdmission
+	admissionClosing         chan struct{}
+	admissionDone            chan struct{}
+	localCommits             atomic.Int64
+	closing                  atomic.Bool
+	recordMu                 sync.RWMutex // serializes durable local admission, counters and Close
+	closed                   bool
+	writeTimeout             time.Duration
+	pending                  atomic.Int64
+	workers                  int
+	queueCap                 int
+	overflow                 OverflowPolicy
+	sampleEvery              uint64
+	sampleTick               atomic.Uint64
 
 	dropped  atomic.Int64
 	written  atomic.Int64
 	batches  atomic.Int64
 	failures atomic.Int64
 	lastErr  atomic.Value // string
+	sinkErr  atomic.Value // string; current sink failure, cleared after recovery
 }
 
 func normalizeOptions(o Options, driver string) Options {
+	if o.WriteTimeout <= 0 {
+		o.WriteTimeout = 10 * time.Second
+	}
+	if o.OutboxMaxBytes <= 0 {
+		o.OutboxMaxBytes = 256 << 20
+	}
+	if o.MaxEventBytes <= 0 {
+		o.MaxEventBytes = 256 << 10
+	}
+	if o.CloseTimeout <= 0 {
+		o.CloseTimeout = o.WriteTimeout
+	}
 	if o.QueueSize <= 0 {
 		o.QueueSize = 8192
 	}
-	if o.Workers <= 0 {
-		if driver == "pg" {
-			o.Workers = 4
-		} else {
-			o.Workers = 1 // SQLite serialises writers; parallelism only adds lock waits
-		}
-	}
-	if o.Workers > 64 {
-		o.Workers = 64
-	}
+	o.Workers = 1 // high-water receipt requires strictly ordered source replay
 	if o.Overflow != OverflowSample {
 		o.Overflow = OverflowDrop
 	}
@@ -214,16 +247,25 @@ func normalizeOptions(o Options, driver string) Options {
 	return o
 }
 
-func newDB(h *sql.DB, driver string, opts Options) *DB {
+func newDB(h *sql.DB, driver string, opts Options, sink string) (*DB, error) {
 	opts = normalizeOptions(opts, driver)
-	d := &DB{
-		sql: h, driver: driver, workers: opts.Workers, queueCap: opts.QueueSize,
+	d := &DB{sql: h, driver: driver, workers: 1, queueCap: opts.QueueSize,
 		overflow: opts.Overflow, sampleEvery: uint64(opts.SampleEvery),
-		queue: make(chan Event, opts.QueueSize), flushCh: make(chan chan struct{}),
+		flushCh: make(chan chan error), writeTimeout: opts.WriteTimeout,
 		stop: make(chan struct{}), done: make(chan struct{}),
+		outboxMax: opts.OutboxMaxBytes, maxEventBytes: opts.MaxEventBytes, closeTimeout: opts.CloseTimeout}
+	if err := d.openOutbox(opts.OutboxPath, sink); err != nil {
+		h.Close()
+		return nil, err
 	}
+	d.admissionGate = make(chan struct{}, 1)
+	d.admissionQ = make(chan *localAdmission, localQueueCapacity)
+	d.admissionClosing = make(chan struct{})
+	d.admissionDone = make(chan struct{})
+	d.writerCtx, d.writerCancel = context.WithCancel(context.Background())
+	go d.localWriter()
 	go d.writer()
-	return d
+	return d, nil
 }
 
 // Open opens (creating if needed) the database at path and starts the writer.
@@ -234,7 +276,10 @@ func Open(path string, queueSize int) (*DB, error) {
 
 // OpenWithOptions opens SQLite with explicit writer options.
 func OpenWithOptions(path string, opts Options) (*DB, error) {
-	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(0)"
+	if opts.OutboxPath == "" {
+		opts.OutboxPath = path + ".outbox.db"
+	}
+	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=foreign_keys(0)"
 	h, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -244,7 +289,11 @@ func OpenWithOptions(path string, opts Options) (*DB, error) {
 		h.Close()
 		return nil, fmt.Errorf("usagedb schema: %w", err)
 	}
-	return newDB(h, "sqlite", opts), nil
+	if err := migrateFacts(h, "sqlite"); err != nil {
+		h.Close()
+		return nil, err
+	}
+	return newDB(h, "sqlite", opts, path)
 }
 
 // OpenPostgres opens the usage store in PostgreSQL. The tables are created on
@@ -256,6 +305,9 @@ func OpenPostgres(dsn string, queueSize int) (*DB, error) {
 
 // OpenPostgresWithOptions opens PostgreSQL with explicit writer options.
 func OpenPostgresWithOptions(dsn string, opts Options) (*DB, error) {
+	if opts.OutboxPath == "" {
+		return nil, errors.New("usagedb: PostgreSQL requires a stable local OutboxPath")
+	}
 	h, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, err
@@ -299,8 +351,11 @@ func OpenPostgresWithOptions(dsn string, opts Options) (*DB, error) {
 			return nil, fmt.Errorf("usagedb postgres schema: %w", err)
 		}
 	}
+	if err := migrateFacts(h, "pg"); err != nil {
+		return nil, err
+	}
 	keepDB = true
-	return newDB(h, "pg", opts), nil
+	return newDB(h, "pg", opts, dsn)
 }
 
 // postgresSchema reuses the SQLite schema with the minimal syntax changes:
@@ -308,6 +363,7 @@ func OpenPostgresWithOptions(dsn string, opts Options) (*DB, error) {
 func postgresSchema() string {
 	s := strings.ReplaceAll(schema, "id          INTEGER PRIMARY KEY", "id          BIGSERIAL PRIMARY KEY")
 	s = strings.ReplaceAll(s, "REAL", "DOUBLE PRECISION")
+	s = strings.ReplaceAll(s, "INTEGER", "BIGINT")
 	s = strings.ReplaceAll(s, ") WITHOUT ROWID", ")")
 	return s
 }
@@ -346,7 +402,8 @@ func (d *DB) prepare(tx *sql.Tx, q string) (*sql.Stmt, error) {
 // SQL exposes the handle for read-only queries by other packages and tests.
 func (d *DB) SQL() *sql.DB { return d.sql }
 
-// Dropped is the number of events discarded because the queue was full.
+// Dropped counts omitted request details (plus rejected calls after Close).
+// Detail shedding NEVER discards accepted accounting contributions.
 func (d *DB) Dropped() int64 { return d.dropped.Load() }
 
 // Written is the number of events stored so far.
@@ -361,49 +418,64 @@ func (d *DB) LastError() string {
 // Stats returns the writer queue depths and counters for health panels. The
 // depth is sampled without locking and may lag a concurrent enqueue by one.
 func (d *DB) Stats() Stats {
-	return Stats{
-		QueueDepth: len(d.queue), QueueCapacity: d.queueCap, Workers: d.workers,
+	d.recordMu.RLock()
+	defer d.recordMu.RUnlock()
+	return Stats{QueueDepth: int(d.outboxCount), QueueCapacity: d.queueCap, Workers: d.workers,
 		Written: d.written.Load(), Dropped: d.dropped.Load(), Batches: d.batches.Load(),
-		Failed: d.failures.Load(), Overflow: string(d.overflow), LastError: d.LastError(),
-	}
+		Failed: d.failures.Load(), Overflow: string(d.overflow), LastError: d.LastError(), PendingRetry: d.pending.Load()}
 }
 
-// Record enqueues an event without ever blocking the caller. Once the queue is
-// 75% full, sample mode keeps only one event per SampleEvery to shed load
-// before the hard drop point.
-func (d *DB) Record(e Event) {
-	if d.overflow == OverflowSample && d.sampleEvery > 1 && len(d.queue)*4 >= d.queueCap*3 {
-		if d.sampleTick.Add(1)%d.sampleEvery != 0 {
-			d.dropped.Add(1)
-			return
-		}
-	}
-	select {
-	case d.queue <- e:
-	default:
-		d.dropped.Add(1)
-	}
-}
+// Record durably accepts a completed event locally; it never waits for remote PG.
+// On error durability is not confirmed (a commit error can be ambiguous). Do not
+// blindly resubmit after an ambiguous error. Local I/O failures latch Ready closed
+// until reopen. Overflow/Sample affect detail only, never accounting facts.
+func (d *DB) Record(e Event) error { return d.recordDurable(e) }
 
-// Flush waits until everything enqueued so far is on disk.
-func (d *DB) Flush() {
-	ack := make(chan struct{})
+// Flush attempts to write everything enqueued so far. On failure it returns an
+// error and retains unconfirmed batches for retry. Ignoring the return preserves
+// the historical call syntax, but does not mean the data is durable.
+func (d *DB) Flush() error {
+	local, err := d.enqueueLocal(nil, true)
+	if err != nil {
+		return err
+	}
+	if err = <-local; err != nil {
+		return err
+	}
+	ack := make(chan error, 1)
 	select {
 	case d.flushCh <- ack:
-		<-ack
+		return <-ack
 	case <-d.done:
+		return errors.Join(errNoDB, d.pendingError())
 	}
 }
 
-// Close flushes and stops the writer.
+// Close stops admission, drains within CloseTimeout and closes handles/ownership.
+// Failure leaves unconfirmed events on disk for the next Open; it returns the
+// same error on repeated calls. CloseTimeout cancels DB work, not OS fsync itself.
 func (d *DB) Close() error {
-	var err error
 	d.once.Do(func() {
+		// Fence admission and start cancellation budget BEFORE waiting on any
+		// producer or in-progress local fsync. Queue producers observe closing.
+		timer := time.AfterFunc(d.closeTimeout, d.writerCancel)
+		d.closing.Store(true)
+		close(d.admissionClosing)
+		d.admissionGate <- struct{}{}
+		close(d.admissionQ)
+		<-d.admissionGate
+		<-d.admissionDone
+		d.recordMu.Lock()
+		d.closed = true
+		d.publishReadinessLocked()
 		close(d.stop)
+		d.recordMu.Unlock()
 		<-d.done
-		err = d.sql.Close()
+		timer.Stop()
+		d.writerCancel()
+		d.closeErr = errors.Join(d.durabilityErr, d.pendingError(), d.outbox.Close(), unlockOutbox(d.outboxLock), d.sql.Close())
 	})
-	return err
+	return d.closeErr
 }
 
 const (
@@ -417,46 +489,16 @@ const (
 
 func (d *DB) writer() {
 	defer close(d.done)
-	batch := make([]Event, 0, batchMax)
-	timer := time.NewTimer(batchDelay)
+	timer := time.NewTicker(batchDelay)
 	defer timer.Stop()
-	flush := func() {
-		if len(batch) == 0 {
-			return
-		}
-		d.writePool(batch)
-		batch = batch[:0]
-	}
-	drain := func() {
-		for {
-			select {
-			case e := <-d.queue:
-				batch = append(batch, e)
-				if len(batch) >= batchMax {
-					flush()
-				}
-			default:
-				return
-			}
-		}
-	}
 	for {
 		select {
-		case e := <-d.queue:
-			batch = append(batch, e)
-			if len(batch) >= batchMax {
-				flush()
-			}
 		case <-timer.C:
-			flush()
-			timer.Reset(batchDelay)
+			_ = d.drainOutbox(false)
 		case ack := <-d.flushCh:
-			drain()
-			flush()
-			close(ack)
+			ack <- d.drainOutbox(true)
 		case <-d.stop:
-			drain()
-			flush()
+			_ = d.drainOutbox(true)
 			return
 		}
 	}
@@ -525,116 +567,95 @@ const pgUpsertHourlySQL = `INSERT INTO hourly (hour, realm, model, requests, ok,
 
 func epoch(t time.Time) float64 { return float64(t.UnixNano()) / 1e9 }
 
-// writePool splits one batch across the configured workers. Each chunk gets
-// its own transaction, so a slow commit does not serialise the whole queue on
-// PostgreSQL. SQLite defaults to one worker because concurrent writers only
-// queue on the database lock.
-func (d *DB) writePool(events []Event) {
-	d.batches.Add(1)
-	workers := d.workers
-	if workers > len(events) {
-		workers = len(events)
-	}
-	if workers <= 1 {
-		if err := d.writeBatch(events); err != nil {
-			d.failures.Add(1)
-			d.lastErr.Store(err.Error())
-			return
-		}
-		d.written.Add(int64(len(events)))
-		return
-	}
-	chunk := (len(events) + workers - 1) / workers
-	var wg sync.WaitGroup
-	var written, failed atomic.Int64
-	var setErr sync.Once
-	var firstErr string
-	for start := 0; start < len(events); start += chunk {
-		end := start + chunk
-		if end > len(events) {
-			end = len(events)
-		}
-		wg.Add(1)
-		go func(part []Event) {
-			defer wg.Done()
-			if err := d.writeBatch(part); err != nil {
-				failed.Add(1)
-				setErr.Do(func() { firstErr = err.Error() })
-				return
-			}
-			written.Add(int64(len(part)))
-		}(events[start:end])
-	}
-	wg.Wait()
-	d.written.Add(written.Load())
-	d.failures.Add(failed.Load())
-	if firstErr != "" {
-		d.lastErr.Store(firstErr)
-	}
-}
-
-func (d *DB) writeBatch(events []Event) error {
-	tx, err := d.sql.Begin()
+func (d *DB) writeBatch(ctx context.Context, unit writeUnit) error {
+	tx, err := d.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	// PostgreSQL rollup upserts from concurrent writer goroutines (and from
-	// other replicas) can touch the same daily/hourly rows in different orders,
-	// which PostgreSQL reports as a deadlock. Serialise the whole batch on a
-	// transaction-scoped advisory lock; batching keeps this cheap compared with
-	// losing usage rows.
+	defer tx.Rollback()
+	// Retain cross-replica lock until ordered rollup batching is proven safe.
 	if d.driver == "pg" {
-		if _, err := tx.Exec("select pg_advisory_xact_lock($1)", pgUsageWriterLock); err != nil {
-			tx.Rollback()
+		if _, err = tx.ExecContext(ctx, "select pg_advisory_xact_lock($1)", pgUsageWriterLock); err != nil {
 			return err
 		}
 	}
-	ins, err := d.prepare(tx, insertSQL)
+	if _, err = tx.ExecContext(ctx, d.bind("INSERT INTO usage_sources(id,seq) VALUES(?,0) ON CONFLICT(id) DO NOTHING"), unit.id); err != nil {
+		return err
+	}
+	var through int64
+	if err = tx.QueryRowContext(ctx, d.bind("SELECT seq FROM usage_sources WHERE id=?"), unit.id).Scan(&through); err != nil {
+		return err
+	}
+	if d.driver == "pg" {
+		through, err = d.writePGBulk(ctx, tx, unit, through)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, "UPDATE usage_sources SET seq=$1 WHERE id=$2", through, unit.id); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	ins, err := tx.PrepareContext(ctx, d.bind(insertSQL))
 	if err != nil {
-		tx.Rollback()
 		return err
 	}
 	defer ins.Close()
-	st, err := d.prepareRollups(tx)
+	st, err := d.prepareRollupsContext(ctx, tx)
 	if err != nil {
-		tx.Rollback()
 		return err
 	}
 	defer st.close()
 	st.ins = ins
-	for i := range events {
-		if err := st.store(&events[i]); err != nil {
-			tx.Rollback()
+	for i := range unit.events {
+		if unit.seqs[i] <= through {
+			continue
+		}
+		if err = st.storeDetailContext(ctx, &unit.events[i], unit.details[i]); err != nil {
 			return err
 		}
+		through = unit.seqs[i]
+	}
+	if _, err = tx.ExecContext(ctx, d.bind("UPDATE usage_sources SET seq=? WHERE id=?"), through, unit.id); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
 
 // stmts are the prepared statements of one write transaction.
 type stmts struct {
-	ins, daily, hourly *sql.Stmt
+	ins, facts, daily, hourly *sql.Stmt
 }
 
 func (d *DB) prepareRollups(tx *sql.Tx) (*stmts, error) {
+	return d.prepareRollupsContext(context.Background(), tx)
+}
+
+func (d *DB) prepareRollupsContext(ctx context.Context, tx *sql.Tx) (*stmts, error) {
 	st := &stmts{}
+	var ferr error
+	st.facts, ferr = tx.PrepareContext(ctx, d.bind(insertFactsSQL))
+	if ferr != nil {
+		return nil, ferr
+	}
 	dailySQL, hourlySQL := upsertDailySQL, upsertHourlySQL
 	if d.driver == "pg" {
 		dailySQL, hourlySQL = pgUpsertDailySQL, pgUpsertHourlySQL
 	}
 	var err error
-	if st.daily, err = d.prepare(tx, dailySQL); err != nil {
+	if st.daily, err = tx.PrepareContext(ctx, d.bind(dailySQL)); err != nil {
+		st.close()
 		return nil, err
 	}
-	if st.hourly, err = d.prepare(tx, hourlySQL); err != nil {
-		st.daily.Close()
+	if st.hourly, err = tx.PrepareContext(ctx, d.bind(hourlySQL)); err != nil {
+		st.close()
 		return nil, err
 	}
 	return st, nil
 }
 
 func (s *stmts) close() {
-	for _, x := range []*sql.Stmt{s.ins, s.daily, s.hourly} {
+	for _, x := range []*sql.Stmt{s.ins, s.facts, s.daily, s.hourly} {
 		if x != nil {
 			x.Close()
 		}
@@ -642,14 +663,29 @@ func (s *stmts) close() {
 }
 
 func (s *stmts) store(e *Event) error {
+	return s.storeContext(context.Background(), e)
+}
+
+func (s *stmts) storeContext(ctx context.Context, e *Event) error {
+	return s.storeDetailContext(ctx, e, true)
+}
+
+func (s *stmts) storeDetailContext(ctx context.Context, e *Event, detail bool) error {
 	var extra any
 	if len(e.Extra) > 0 {
 		extra = string(e.Extra)
 	}
-	if _, err := s.ins.Exec(epoch(e.At), e.Model, e.Account, e.Realm, e.KeyID, b2i(e.Stream), e.Outcome, e.Status, e.ElapsedMs,
-		nullInt(e.TTFTMs), nullInt(e.GenMs), e.HeldMs, e.Prompt, e.Completion, e.Reasoning, e.Cached, e.Total, e.Credit,
-		e.Effort, b2i(e.Estimated), e.Error, extra); err != nil {
-		return err
+	if detail {
+		if _, err := s.ins.ExecContext(ctx, epoch(e.At), e.Model, e.Account, e.Realm, e.KeyID, b2i(e.Stream), e.Outcome, e.Status, e.ElapsedMs,
+			nullInt(e.TTFTMs), nullInt(e.GenMs), e.HeldMs, e.Prompt, e.Completion, e.Reasoning, e.Cached, e.Total, e.Credit,
+			e.Effort, b2i(e.Estimated), e.Error, extra); err != nil {
+			return err
+		}
+	}
+	if s.facts != nil {
+		if _, err := s.facts.ExecContext(ctx, factValues(e)...); err != nil {
+			return err
+		}
 	}
 	var ok, aborted, failed int
 	switch e.Outcome {
@@ -669,11 +705,11 @@ func (s *stmts) store(e *Event) error {
 		genMs, genTok = *e.GenMs, e.Completion
 	}
 	vals := []any{ok, aborted, failed, e.Prompt, e.Completion, e.Reasoning, e.Cached, e.Total, e.Credit, e.ElapsedMs, ttftSum, ttftN, genMs, genTok}
-	day := e.At.In(time.Local).Format("2006-01-02")
-	if _, err := s.daily.Exec(append([]any{day, e.Realm, e.Model, e.Account, e.KeyID}, vals...)...); err != nil {
+	day := eventDay(e)
+	if _, err := s.daily.ExecContext(ctx, append([]any{day, e.Realm, e.Model, e.Account, e.KeyID}, vals...)...); err != nil {
 		return err
 	}
-	_, err := s.hourly.Exec(append([]any{e.At.Unix() / 3600, e.Realm, e.Model}, vals...)...)
+	_, err := s.hourly.ExecContext(ctx, append([]any{e.At.Unix() / 3600, e.Realm, e.Model}, vals...)...)
 	return err
 }
 

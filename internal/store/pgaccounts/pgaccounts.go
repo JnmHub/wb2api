@@ -118,9 +118,12 @@ func decode(uid string, raw []byte, now time.Time) (*accounts.Record, error) {
 	if m == nil {
 		return nil, errors.New("not a JSON object")
 	}
-	if v, _ := m["uid"].(string); v == "" {
-		m["uid"] = uid
+	if v, _ := m["uid"].(string); v != "" && v != uid {
+		// Tombstones are keyed by the SQL primary key. Publishing a different
+		// embedded UID would leave an undeletable stale credential in the pool.
+		return nil, fmt.Errorf("account uid %q does not match database key %q", v, uid)
 	}
+	m["uid"] = uid
 	rec := accounts.FromMap(m, "", now)
 	baseline, err := rec.Marshal()
 	if err != nil {
@@ -158,6 +161,12 @@ func Save(ctx context.Context, pool *pgxpool.Pool, rec *accounts.Record) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// Match the trigger's lock order: clock before account row. Otherwise two
+	// cooperating Save transactions can deadlock on different account rows when
+	// a transaction writes more than one account. The lock is held until commit.
+	if _, err := tx.Exec(ctx, `select version from wb_account_sync_clock where id for update`); err != nil {
+		return err
+	}
 	var current []byte
 	if err := tx.QueryRow(ctx, `select data from wb_accounts where uid = $1 for update`, rec.UID).Scan(&current); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

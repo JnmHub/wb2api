@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"wb2api/internal/activity"
@@ -121,10 +122,12 @@ func main() {
 	stickyErr := flag.Float64("sticky-escape-error-rate", envFloat("WB_STICKY_ESCAPE_ERROR_RATE", 0.5), "escape a sticky account when its error EWMA exceeds this")
 	topK := flag.Int("sched-top-k", envInt("WB_SCHED_TOP_K", 1), "choose among the K least-loaded ready accounts (1 = strict least-loaded)")
 	usageDir := flag.String("usage-dir", envOr("WB_PROXY_USAGE_DIR", "usage"), "directory for usage.db (and the legacy usage.jsonl to import)")
-	usageQueue := flag.Int("usage-queue", envInt("WB_USAGE_QUEUE", 0), "usage write-queue capacity (0 = 8192)")
-	usageWorkers := flag.Int("usage-workers", envInt("WB_USAGE_WORKERS", 0), "parallel usage writers (0 = 1 SQLite / 4 PostgreSQL)")
-	usageOverflow := flag.String("usage-overflow", envOr("WB_USAGE_OVERFLOW", "drop"), "usage overflow policy: drop or sample")
-	usageSample := flag.Int("usage-sample", envInt("WB_USAGE_SAMPLE", 20), "keep 1/N events under pressure when -usage-overflow=sample")
+	usageQueue := flag.Int("usage-queue", envInt("WB_USAGE_QUEUE", 0), "detail-shedding backlog threshold (0 = 8192); quota facts remain durable")
+	usageWorkers := flag.Int("usage-workers", envInt("WB_USAGE_WORKERS", 0), "compatibility option; durable ordered delivery uses one writer per replica")
+	usageOutbox := flag.String("usage-outbox", os.Getenv("WB_USAGE_OUTBOX"), "stable per-replica durable outbox path (default usage-dir/usage-outbox.db)")
+	usageOutboxMB := flag.Int("usage-outbox-mb", envInt("WB_USAGE_OUTBOX_MB", 256), "pending durable payload budget in MiB (SQLite overhead additional)")
+	usageOverflow := flag.String("usage-overflow", envOr("WB_USAGE_OVERFLOW", "drop"), "optional usage-detail overflow policy: drop or sample (accounting retained)")
+	usageSample := flag.Int("usage-sample", envInt("WB_USAGE_SAMPLE", 20), "keep 1/N optional usage details under pressure when -usage-overflow=sample")
 	panelPassword := flag.String("panel-password", os.Getenv("WB_PANEL_PASSWORD"), "set the dashboard password at start-up")
 	catalogDir := flag.String("catalog-dir", envOr("WB_PROXY_CATALOG_DIR", "catalog"), "archive directory for the last /v3/config responses")
 	postgresDSN := flag.String("postgres-dsn", os.Getenv("WB_POSTGRES_DSN"), "PostgreSQL DSN (empty keeps the file/SQLite stores)")
@@ -132,7 +135,9 @@ func main() {
 	redisPassword := flag.String("redis-password", os.Getenv("WB_REDIS_PASSWORD"), "Redis password")
 	redisDB := flag.Int("redis-db", func() int { n, _ := strconv.Atoi(envOr("WB_REDIS_DB", "0")); return n }(), "Redis database index")
 	redisInflight := flag.Int("redis-inflight", func() int { n, _ := strconv.Atoi(envOr("WB_REDIS_INFLIGHT", "0")); return n }(), "per-account in-flight limit shared through Redis (0 = off)")
-	redisWaitMS := flag.Int("redis-wait-ms", func() int { n, _ := strconv.Atoi(envOr("WB_REDIS_WAIT_MS", "0")); return n }(), "queue this long for a full account before failing over (ms, 0 = off)")
+	redisWaitMS := flag.Int("redis-wait-ms", func() int { n, _ := strconv.Atoi(envOr("WB_REDIS_WAIT_MS", "0")); return n }(), "overall account admission budget (ms, 0 = no capacity wait)")
+	sharedFailOpen := flag.Bool("shared-limit-fail-open", os.Getenv("WB_SHARED_LIMIT_FAIL_OPEN") == "1", "explicitly allow local-only admission during Redis outage (can exceed global caps)")
+	downstreamWriteMS := flag.Int("downstream-write-ms", envInt("WB_DOWNSTREAM_WRITE_MS", 30000), "sliding client write/flush timeout in ms (negative disables)")
 	firstOutputMS := flag.Int("first-output-ms", func() int { n, _ := strconv.Atoi(envOr("WB_FIRST_OUTPUT_MS", "0")); return n }(), "fail over when a streaming account sends no semantic output within this time (ms, 0 = off)")
 	noModelsDev := flag.Bool("no-modelsdev", os.Getenv("WB_NO_MODELSDEV") == "1", "never contact models.dev for context/output limits")
 	debug := flag.Bool("debug", os.Getenv("WB_DEBUG") == "1", "expose /debug/runtime")
@@ -180,9 +185,13 @@ func main() {
 		log.Info("redis connected", "addr", *redisAddr)
 	}
 
+	bg, stopBG := context.WithCancel(context.Background())
+	var background backgroundTasks
+	var backgroundJoins []func()
 	var recs []*accounts.Record
 	var errs []accounts.LoadError
 	var accountMu sync.Mutex
+	var accountCursor int64 // guarded with accountMu after startup
 	var accountPool *pool.Pool
 	persist := func(rec *accounts.Record) error {
 		_, err := accounts.Save(*accountsDir, rec)
@@ -191,7 +200,7 @@ func main() {
 	deleteFn := accounts.Delete
 	if pgDB != nil {
 		var err error
-		recs, errs, err = pgaccounts.Load(startupCtx, pgDB.Pool, *accountsDir)
+		recs, errs, accountCursor, err = pgaccounts.LoadSnapshot(startupCtx, pgDB.Pool, *accountsDir)
 		if err != nil {
 			log.Error("cannot load accounts from PostgreSQL", "err", err)
 			os.Exit(1)
@@ -202,15 +211,23 @@ func main() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			err := pgaccounts.Save(ctx, pgDB.Pool, rec)
+			if rec == nil || rec.UID == "" {
+				return err
+			}
 			reloadCtx, reloadCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer reloadCancel()
-			if latest, bad, loadErr := pgaccounts.Load(reloadCtx, pgDB.Pool, ""); loadErr == nil && len(bad) == 0 && accountPool != nil {
-				accountPool.SyncRecords(latest)
-				for _, a := range accountPool.All() {
+			// Reload just this row even after a conflict: Save may have merged
+			// remote management edits, or a concurrent deletion may have won.
+			// Never advance the poll cursor from a one-row reconciliation.
+			if latest, loadErr := pgaccounts.LoadOne(reloadCtx, pgDB.Pool, rec.UID); loadErr == nil && accountPool != nil {
+				accountPool.ApplyChanges([]*accounts.Record{latest}, nil)
+				if a := accountPool.Get(latest.UID); a != nil {
 					a.SetMaxInflight(*perAccount)
 				}
-			} else if loadErr != nil || len(bad) != 0 {
-				log.Warn("account reconciliation failed", "err", loadErr, "invalid", len(bad))
+			} else if errors.Is(loadErr, pgx.ErrNoRows) && accountPool != nil {
+				accountPool.ApplyChanges(nil, []string{rec.UID})
+			} else if loadErr != nil {
+				log.Warn("account reconciliation failed", "uid", rec.UID, "err", loadErr)
 			}
 			return err
 		}
@@ -219,7 +236,13 @@ func main() {
 			defer accountMu.Unlock()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			return pgaccounts.Delete(ctx, pgDB.Pool, rec)
+			if err := pgaccounts.Delete(ctx, pgDB.Pool, rec); err != nil {
+				return err
+			}
+			if rec != nil && accountPool != nil {
+				accountPool.ApplyChanges(nil, []string{rec.UID})
+			}
+			return nil
 		}
 	} else {
 		recs, errs = accounts.Load(*accountsDir, time.Now())
@@ -237,11 +260,12 @@ func main() {
 	}
 	var st *settings.Store
 	if pgDB != nil {
-		if _, err := pgsettings.Load(startupCtx, pgDB.Pool, *accountsDir); err != nil {
+		initialSettings, err := pgsettings.Load(startupCtx, pgDB.Pool, *accountsDir)
+		if err != nil {
 			log.Error("cannot seed settings from PostgreSQL", "err", err)
 			os.Exit(1)
 		}
-		st = settings.OpenWithUpdater(
+		st = settings.OpenWithUpdaterInitial(initialSettings,
 			func() (settings.Doc, error) {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
@@ -283,11 +307,13 @@ func main() {
 	h := &openai.Handler{
 		Pool: p, Up: up, Settings: st, Log: log, Refresher: refresher, Persist: persist,
 		UpstreamOverride: *upstreamOverride, MaxAttempts: *maxAttempts, FilterMode: mode,
-		MaxBody:            int64(*maxBodyMB) << 20,
-		AccountInflight:    *redisInflight,
-		AccountWait:        time.Duration(*redisWaitMS) * time.Millisecond,
-		FirstOutputTimeout: time.Duration(*firstOutputMS) * time.Millisecond,
-		Sched:              feedback,
+		MaxBody:                int64(*maxBodyMB) << 20,
+		AccountInflight:        *redisInflight,
+		AccountWait:            time.Duration(*redisWaitMS) * time.Millisecond,
+		SharedLimitFailOpen:    *sharedFailOpen,
+		DownstreamWriteTimeout: time.Duration(*downstreamWriteMS) * time.Millisecond,
+		FirstOutputTimeout:     time.Duration(*firstOutputMS) * time.Millisecond,
+		Sched:                  feedback,
 	}
 	p.SetScorer(h.AccountScore)
 	if rdb != nil {
@@ -334,9 +360,8 @@ func main() {
 		log.Error("cannot create the usage directory", "dir", *usageDir, "err", err)
 		os.Exit(1)
 	}
-	bg, stopBG := context.WithCancel(context.Background())
 	if pgDB != nil {
-		go func() {
+		background.start(func() {
 			ticker := time.NewTicker(2 * time.Second)
 			defer ticker.Stop()
 			for {
@@ -346,29 +371,50 @@ func main() {
 				case <-ticker.C:
 					accountMu.Lock()
 					ctx, cancel := context.WithTimeout(bg, 5*time.Second)
-					latest, bad, err := pgaccounts.Load(ctx, pgDB.Pool, "")
+					latest, deleted, bad, next, err := pgaccounts.Changes(ctx, pgDB.Pool, accountCursor)
+					reset := errors.Is(err, pgaccounts.ErrCursorAhead)
+					if reset {
+						latest, bad, next, err = pgaccounts.LoadSnapshot(ctx, pgDB.Pool, "")
+					}
 					cancel()
-					if err == nil && len(bad) == 0 {
-						p.SyncRecords(latest)
-						for _, a := range p.All() {
-							a.SetMaxInflight(*perAccount)
+					if err == nil {
+						if reset {
+							p.SyncSnapshot(latest)
+						} else {
+							p.ApplyChanges(latest, deleted)
+						}
+						for _, rec := range latest {
+							if a := p.Get(rec.UID); a != nil {
+								a.SetMaxInflight(*perAccount)
+							}
+						}
+						accountCursor = next
+						for _, e := range bad {
+							log.Warn("removing unreadable shared account", "err", e)
 						}
 					} else {
-						log.Warn("shared account synchronization failed", "err", err, "invalid", len(bad))
+						log.Warn("shared account synchronization failed", "err", err)
 					}
 					accountMu.Unlock()
 				}
 			}
-		}()
+		})
 	}
-	defer stopBG()
 	var (
 		udb *usagedb.DB
 		err error
 	)
+	if *usageOutbox == "" {
+		*usageOutbox = filepath.Join(*usageDir, "usage-outbox.db")
+	}
+	if *usageOutboxMB < 1 || *usageOutboxMB > 1<<20 {
+		log.Error("usage-outbox-mb must be between 1 and 1048576")
+		os.Exit(1)
+	}
 	usageOpts := usagedb.Options{
 		QueueSize: *usageQueue, Workers: *usageWorkers,
 		Overflow: usagedb.OverflowPolicy(*usageOverflow), SampleEvery: *usageSample,
+		OutboxPath: *usageOutbox, OutboxMaxBytes: int64(*usageOutboxMB) << 20,
 	}
 	if *postgresDSN != "" {
 		udb, err = usagedb.OpenPostgresWithOptions(*postgresDSN, usageOpts)
@@ -379,8 +425,33 @@ func main() {
 		log.Error("cannot open the usage database", "err", err)
 		os.Exit(1)
 	}
-	defer udb.Close()
-	limits := &usageest.Estimator{DB: udb, Pool: p, Dir: *usageDir, Log: log}
+	// One storage finalizer owns ordering: handlers are quiescent before return,
+	// then stop/join all readers and producers, flush observations, close DB.
+	// This defer is registered after pgDB.Close, so the shared pool closes last.
+	var limits *usageest.Estimator
+	defer func() {
+		finishStorage(stopBG, func() {
+			for _, join := range backgroundJoins {
+				join()
+			}
+			background.wait()
+			if limits != nil {
+				if err := limits.Stop(context.Background()); err != nil {
+					log.Error("limit estimator stop failed", "err", err)
+				}
+			}
+		}, func(ctx context.Context) error {
+			if limits != nil {
+				return limits.FlushEvents(ctx)
+			}
+			return nil
+		}, udb.Close, func(err error) {
+			log.Error("usage storage shutdown failed", "err", err)
+		})
+	}()
+	h.UsageReady = udb.Ready
+	limits = &usageest.Estimator{DB: udb, Pool: p, Dir: *usageDir, Log: log}
+	limits.Start(bg)
 	h.Limits = limits
 	realmOf := api.RealmOf(p)
 	trace := os.Getenv("WB_TRACE") == "1"
@@ -392,7 +463,7 @@ func main() {
 	var elector *leader.Elector
 	if pgDB != nil {
 		elector = leader.New(pgDB.Pool, leader.KeyBackground, log)
-		go elector.Run(bg)
+		background.start(func() { elector.Run(bg) })
 	}
 	isLeader := func() bool { return elector == nil || elector.IsLeader() }
 	var windowStore quota.WindowStore
@@ -408,9 +479,13 @@ func main() {
 	keyring := &atrest.Keyring{}
 	agentMgr := agents.New(*accountsDir)
 	h.OnUsage = func(ev openai.UsageEvent) {
-		feedback.Observe(ev.Account, ev.TTFT, sched.Failure(ev.Outcome))
+		feedback.Observe(ev.Account, ev.UpstreamTTFT, sched.Failure(ev.Outcome))
 		ue := api.EventFromGateway(ev, realmOf)
-		udb.Record(ue)
+		if err := udb.Record(ue); err != nil {
+			// Output may already be committed; do not replay or claim durable
+			// accounting. Ready fails subsequent admissions on local failure.
+			log.Error("usage durable recording failed", "err", err, "account", ev.Account, "outcome", ev.Outcome)
+		}
 		today.Add(ue)
 		if ue.Credit > 0 && ev.Account != "" {
 			if a := p.Get(ev.Account); a != nil {
@@ -429,10 +504,10 @@ func main() {
 	if pgDB != nil {
 		importPool = pgDB.Pool
 	}
-	go func() {
-		err := leader.WithLock(context.Background(), importPool, leader.KeyImport, func() error {
+	background.start(func() {
+		err := leader.WithLock(bg, importPool, leader.KeyImport, func() error {
 			legacy := filepath.Join(*usageDir, "usage.jsonl")
-			n, err := udb.ImportJSONL(context.Background(), legacy, nil)
+			n, err := udb.ImportJSONL(bg, legacy, nil)
 			switch {
 			case err != nil:
 				log.Warn("usage.jsonl import stopped", "err", err, "imported", n)
@@ -440,7 +515,7 @@ func main() {
 				log.Info("usage.jsonl imported", "rows", n)
 			}
 			if *postgresDSN != "" {
-				n, err := udb.ImportSQLite(context.Background(), filepath.Join(*usageDir, "usage.db"))
+				n, err := udb.ImportSQLite(bg, filepath.Join(*usageDir, "usage.db"))
 				switch {
 				case err != nil:
 					log.Warn("usage.db import stopped", "err", err, "imported", n)
@@ -453,7 +528,7 @@ func main() {
 		if err != nil {
 			log.Warn("legacy usage import lock failed", "err", err)
 		}
-	}()
+	})
 
 	if *panelPassword != "" {
 		if err := st.SetPanelPassword(*panelPassword); err != nil {
@@ -518,11 +593,12 @@ func main() {
 		if err := pricingStore.UsePolicySource(pgpricing.New(pgDB.Pool, *accountsDir)); err != nil {
 			log.Warn("cannot load shared pricing policies; keeping the local file", "err", err)
 		} else {
-			pricingStore.StartPolicySync(bg, 5*time.Second)
+			done := pricingStore.StartPolicySync(bg, 5*time.Second)
+			backgroundJoins = append(backgroundJoins, func() { <-done })
 			log.Info("shared pricing policies enabled")
 		}
 	}
-	go refreshPricingLoop(pricingStore, log)
+	background.start(func() { refreshPricingLoop(bg, pricingStore, log) })
 	(&api.Usage{DB: udb, Est: limits, Pricing: pricingStore}).Register(mux, auth.Require)
 	bus := events.New(512)
 	var jobStore jobs.Store
@@ -530,6 +606,11 @@ func main() {
 		jobStore = pgjobs.New(pgDB.Pool)
 	}
 	jobMgr := &jobs.Manager{Workers: 4, Store: jobStore, OnProgress: func(j jobs.Job) { bus.Publish("job.progress", j) }}
+	backgroundJoins = append(backgroundJoins, func() {
+		if err := jobMgr.Stop(context.Background()); err != nil {
+			log.Error("background jobs stop failed", "err", err)
+		}
+	})
 	if jobStore != nil {
 		jobMgr.StartSync(bg)
 		log.Info("shared job history enabled")
@@ -561,7 +642,7 @@ func main() {
 	(&api.Settings{Store: st, Pool: p, Realm: realmSw, Guards: h.Guards, Catalog: cat, Ops: opsGate}).Register(mux, auth.Require)
 	checker := &updates.Checker{Current: version, Enabled: st.UpdateCheckEnabled, Store: st, Log: log}
 	(&api.Updates{Checker: checker}).Register(mux, auth.Require)
-	go func() {
+	background.start(func() {
 		select {
 		case <-time.After(30 * time.Second):
 		case <-bg.Done():
@@ -577,7 +658,7 @@ func main() {
 				return
 			}
 		}
-	}()
+	})
 	(&api.Logs{Ring: logRing}).Register(mux, auth.Require)
 	ui, err := webui.New(webui.Dist())
 	if err != nil {
@@ -601,16 +682,19 @@ func main() {
 	}
 
 	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
+	requests, cancelRequests := context.WithCancel(context.Background())
+	drain := newRequestDrain()
 	srv := &http.Server{
-		Addr: addr, Handler: openai.PinnedRoutes(p, mux),
+		Addr: addr, Handler: drain.wrap(openai.PinnedRoutes(p, mux)),
+		BaseContext:       func(net.Listener) context.Context { return requests },
 		ReadHeaderTimeout: 15 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-	go refresher.Run(bg)
-	go feedback.RunShared(bg, 2*time.Second)
-	go sched.Run(bg)
-	go sched.RunCredits(bg)
-	go cat.RunDaily(bg)
+	background.start(func() { refresher.Run(bg) })
+	background.start(func() { feedback.RunShared(bg, 2*time.Second) })
+	background.start(func() { sched.Run(bg) })
+	background.start(func() { sched.RunCredits(bg) })
+	background.start(func() { cat.RunDaily(bg) })
 	go func() {
 		log.Info("listening", "addr", addr, "accounts", p.Len(), "dir", *accountsDir, "leak_filter", map[leak.Mode]string{leak.Precise: "precise", leak.Legacy: "legacy"}[mode])
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -623,19 +707,22 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
 	log.Info("shutting down")
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	_ = srv.Shutdown(ctx)
+	signal.Stop(stop)
+	quiesceHTTP(srv, drain, 15*time.Second, cancelRequests, func(err error) {
+		log.Warn("HTTP shutdown required forced cancellation", "err", err)
+	})
+	// The single storage finalizer now stops/joins background readers, flushes
+	// observations, and closes usage storage before the shared PostgreSQL pool.
 }
 
 // refreshPricingLoop keeps the OpenRouter pricing snapshot warm without doing
 // network work on the request path.
-func refreshPricingLoop(s *pricing.Store, log *slog.Logger) {
+func refreshPricingLoop(life context.Context, s *pricing.Store, log *slog.Logger) {
 	refresh := func() {
 		if stale, _ := s.Status()["stale"].(bool); !stale {
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithTimeout(life, 2*time.Minute)
 		defer cancel()
 		n, err := s.Refresh(ctx)
 		if err != nil {
@@ -647,7 +734,12 @@ func refreshPricingLoop(s *pricing.Store, log *slog.Logger) {
 	refresh()
 	ticker := time.NewTicker(12 * time.Hour)
 	defer ticker.Stop()
-	for range ticker.C {
-		refresh()
+	for {
+		select {
+		case <-life.Done():
+			return
+		case <-ticker.C:
+			refresh()
+		}
 	}
 }

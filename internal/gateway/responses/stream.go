@@ -3,9 +3,6 @@ package responses
 import (
 	"sort"
 	"strings"
-	"unicode/utf8"
-
-	"wb2api/internal/gateway/leak"
 	"wb2api/internal/jsonx"
 )
 
@@ -16,7 +13,7 @@ type toolEntry struct {
 	outputIndex int
 	id          string
 	name        string
-	arguments   string
+	arguments   strings.Builder
 	custom      bool
 	itemID      string
 }
@@ -38,7 +35,7 @@ type Stream struct {
 	finish                 string
 	usage                  *jsonx.Obj
 	tools                  map[int]*toolEntry
-	textBuffer             string
+	textHold               dsmlHold
 	dsmlCalls              []dsmlCall
 	sawDone                bool
 	estimatedUsage         bool
@@ -192,6 +189,7 @@ func toolIndex(tc *jsonx.Obj) int {
 // Chunk consumes one upstream chat.completion.chunk.
 func (s *Stream) Chunk(chunk *jsonx.Obj) []Frame {
 	var out []Frame
+	s.expireDSML(&out)
 	if uo, ok := asObj(chunk.Get("usage")); ok && uo.Len() > 0 {
 		if s.usage == nil || numOf(uo.Get("total_tokens")) >= numOf(s.usage.Get("total_tokens")) {
 			s.usage = uo
@@ -244,7 +242,8 @@ func (s *Stream) Chunk(chunk *jsonx.Obj) []Frame {
 				if custom {
 					prefix = "ctc_"
 				}
-				entry = &toolEntry{outputIndex: outIdx, id: callID, name: fnName, arguments: fnArgs, custom: custom, itemID: s.env.id(prefix)}
+				entry = &toolEntry{outputIndex: outIdx, id: callID, name: fnName, custom: custom, itemID: s.env.id(prefix)}
+				entry.arguments.WriteString(fnArgs)
 				s.tools[idx] = entry
 				item := obj("id", entry.itemID, "status", "in_progress", "call_id", callID, "name", fnName)
 				if custom {
@@ -264,7 +263,7 @@ func (s *Stream) Chunk(chunk *jsonx.Obj) []Frame {
 					}
 				}
 				if fnArgs != "" {
-					entry.arguments += fnArgs
+					entry.arguments.WriteString(fnArgs)
 					etype := "response.function_call_arguments.delta"
 					if entry.custom {
 						etype = "response.custom_tool_call_input.delta"
@@ -286,54 +285,13 @@ func (s *Stream) Chunk(chunk *jsonx.Obj) []Frame {
 					s.ev("response.content_part.added", obj("item_id", s.msgID, "output_index", num(int64(s.msgIndex)), "content_index", num(0),
 						"part", obj("type", "output_text", "text", "", "annotations", []any{}))))
 			}
-			s.textBuffer += piece
-			s.drainText(&out)
+			s.feedText(&out, piece)
 		}
 		if fr := choice.Get("finish_reason"); tr(fr) {
 			s.finish = jsonx.PyStr(fr)
 		}
 	}
 	return out
-}
-
-// drainText forwards buffered text, withholding anything that may be the start
-// of a printed DSML tool-call block. (Like the original, a held-back "<" at the
-// very start of the buffer still emits an empty delta.)
-func (s *Stream) drainText(out *[]Frame) {
-	for s.textBuffer != "" {
-		idx := strings.IndexByte(s.textBuffer, '<')
-		if idx < 0 {
-			s.textDelta(out, s.textBuffer)
-			s.textBuffer = ""
-			return
-		}
-		if bs, be, ok := leak.FindDSMLBlock(s.textBuffer); ok && bs == idx {
-			if idx > 0 {
-				s.textDelta(out, s.textBuffer[:idx])
-			}
-			calls, _ := s.env.parseDSML(s.textBuffer[bs:be])
-			s.dsmlCalls = append(s.dsmlCalls, calls...)
-			s.textBuffer = s.textBuffer[be:]
-			continue
-		}
-		cand := runeSlice(s.textBuffer, idx, 30)
-		isCand := strings.Contains(cand, "DSML") ||
-			(utf8.RuneCountInString(cand) < 10 && !strings.ContainsAny(cand, " \t\n>"))
-		if isCand {
-			s.textDelta(out, s.textBuffer[:idx])
-			s.textBuffer = s.textBuffer[idx:]
-			return
-		}
-		if next := strings.IndexByte(s.textBuffer[idx+1:], '<'); next >= 0 {
-			flush := idx + 1 + next
-			s.textDelta(out, s.textBuffer[:flush])
-			s.textBuffer = s.textBuffer[flush:]
-		} else {
-			s.textDelta(out, s.textBuffer)
-			s.textBuffer = ""
-			return
-		}
-	}
 }
 
 // SawDone records that the upstream sent its [DONE] marker.
@@ -345,7 +303,7 @@ func (s *Stream) Finish() []Frame {
 	dropped := 0
 	if len(s.tools) > 0 && (s.finish == "length" || !s.sawDone) {
 		for _, idx := range sortedKeys(s.tools) {
-			if isTruncatedArguments(s.tools[idx].arguments) {
+			if isTruncatedArguments(s.tools[idx].arguments.String()) {
 				delete(s.tools, idx)
 				dropped++
 			}
@@ -359,53 +317,50 @@ func (s *Stream) Finish() []Frame {
 		e := s.tools[idx]
 		var item *jsonx.Obj
 		if e.custom {
-			in := unwrapCustomInput(e.arguments)
+			in := unwrapCustomInput(e.arguments.String())
 			out = append(out, s.ev("response.custom_tool_call_input.done", obj("output_index", num(int64(e.outputIndex)),
 				"item_id", e.itemID, "call_id", e.id, "input", in)))
-			item = obj("id", e.itemID, "type", "custom_tool_call", "status", "completed", "call_id", e.id, "name", e.name, "input", unwrapCustomInput(e.arguments))
+			item = obj("id", e.itemID, "type", "custom_tool_call", "status", "completed", "call_id", e.id, "name", e.name, "input", unwrapCustomInput(e.arguments.String()))
 		} else {
 			out = append(out, s.ev("response.function_call_arguments.done", obj("output_index", num(int64(e.outputIndex)),
-				"item_id", e.itemID, "call_id", e.id, "arguments", e.arguments)))
-			item = obj("id", e.itemID, "type", "function_call", "status", "completed", "call_id", e.id, "name", e.name, "arguments", e.arguments)
+				"item_id", e.itemID, "call_id", e.id, "arguments", e.arguments.String())))
+			item = obj("id", e.itemID, "type", "function_call", "status", "completed", "call_id", e.id, "name", e.name, "arguments", e.arguments.String())
 		}
 		stampNamespace(item, s.info.Namespaces)
 		s.outputs[e.outputIndex] = item
 		out = append(out, s.ev("response.output_item.done", obj("output_index", num(int64(e.outputIndex)), "item", item)))
 	}
-	if s.textBuffer != "" {
-		calls, clean := s.env.parseDSML(s.textBuffer)
+	if s.textHold.buf.Len() > 0 {
+		// Preserve EOF recovery of a complete block behind another held
+		// candidate. Only withheld, budget-bounded text is eligible here.
+		calls, clean := s.env.parseDSML(s.textHold.buf.String()[s.textHold.start:])
 		s.dsmlCalls = append(s.dsmlCalls, calls...)
 		if clean != "" {
-			s.textParts = append(s.textParts, clean)
-			if s.msgIndex >= 0 {
-				out = append(out, s.ev("response.output_text.delta", obj("item_id", s.msgID, "output_index", num(int64(s.msgIndex)),
-					"content_index", num(0), "delta", clean)))
-			}
+			s.textDelta(&out, clean)
 		}
-		s.textBuffer = ""
+		s.textHold = dsmlHold{}
 	}
 	fullText := strings.Join(s.textParts, "")
 	dsml := s.dsmlCalls
-	if len(dsml) == 0 {
-		if extra, clean := s.env.parseDSML(fullText); len(extra) > 0 {
-			dsml, fullText = extra, clean
-		}
-	}
 	if len(dsml) > 0 && len(s.tools) == 0 {
 		for _, dc := range dsml {
 			outIdx := len(s.outputs)
-			item := obj("id", s.env.id("fc_"), "type", "function_call", "status", "completed",
-				"call_id", dc.id, "name", dc.name, "arguments", dc.args)
+			prefix, kind, field, etype, value := "fc_", "function_call", "arguments", "response.function_call_arguments", dc.args
+			if s.info.CustomNames[dc.name] {
+				prefix, kind, field, etype, value = "ctc_", "custom_tool_call", "input", "response.custom_tool_call_input", unwrapCustomInput(dc.args)
+			}
+			item := obj("id", s.env.id(prefix), "type", kind, "status", "completed",
+				"call_id", dc.id, "name", dc.name, field, value)
 			stampNamespace(item, s.info.Namespaces)
 			s.outputs = append(s.outputs, item)
 			added := item.Clone()
 			added.Set("status", "in_progress")
-			added.Set("arguments", "")
+			added.Set(field, "")
 			iid, cid := item.Get("id"), item.Get("call_id")
 			out = append(out,
 				s.ev("response.output_item.added", obj("output_index", num(int64(outIdx)), "item", added)),
-				s.ev("response.function_call_arguments.delta", obj("output_index", num(int64(outIdx)), "item_id", iid, "call_id", cid, "delta", dc.args)),
-				s.ev("response.function_call_arguments.done", obj("output_index", num(int64(outIdx)), "item_id", iid, "call_id", cid, "arguments", dc.args)),
+				s.ev(etype+".delta", obj("output_index", num(int64(outIdx)), "item_id", iid, "call_id", cid, "delta", value)),
+				s.ev(etype+".done", obj("output_index", num(int64(outIdx)), "item_id", iid, "call_id", cid, field, value)),
 				s.ev("response.output_item.done", obj("output_index", num(int64(outIdx)), "item", item)))
 		}
 	}

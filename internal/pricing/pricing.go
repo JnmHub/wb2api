@@ -126,11 +126,13 @@ func (s *Store) UsePolicySource(src PolicySource) error {
 
 // StartPolicySync polls the shared policy source so a change made on another
 // replica becomes visible here. A local write racing with the poll wins.
-func (s *Store) StartPolicySync(ctx context.Context, interval time.Duration) {
+func (s *Store) StartPolicySync(ctx context.Context, interval time.Duration) <-chan struct{} {
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
@@ -142,6 +144,7 @@ func (s *Store) StartPolicySync(ctx context.Context, interval time.Duration) {
 			}
 		}
 	}()
+	return done
 }
 
 func (s *Store) syncPolicies() {

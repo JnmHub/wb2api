@@ -35,8 +35,9 @@ func (h *Handler) stageFirstOutput(q *request, body io.Reader, cancel context.Ca
 		err error
 	}
 	ch := make(chan staged, 1)
+	noteSemantic := upstreamObserver(q.r.Context())
 	go func() {
-		r, err := readUntilSemantic(q, body)
+		r, err := readUntilSemanticObserved(q, body, noteSemantic)
 		ch <- staged{r: r, err: err}
 	}()
 
@@ -55,11 +56,21 @@ func (h *Handler) stageFirstOutput(q *request, body io.Reader, cancel context.Ca
 }
 
 func readUntilSemantic(q *request, body io.Reader) (io.Reader, error) {
+	noteSemantic := func([]byte) {}
+	if q.r != nil {
+		noteSemantic = upstreamObserver(q.r.Context())
+	}
+	return readUntilSemanticObserved(q, body, noteSemantic)
+}
+
+func readUntilSemanticObserved(q *request, body io.Reader, noteSemantic func([]byte)) (io.Reader, error) {
 	br := bufio.NewReaderSize(body, 64<<10)
 	var prelude bytes.Buffer
 	for {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {
+			// Timestamp the actual read, not the later replay/relay of this line.
+			noteSemantic(line)
 			if prelude.Len()+len(line) > maxFirstOutputPrelude {
 				return nil, fmt.Errorf("first output prelude exceeds %d bytes", maxFirstOutputPrelude)
 			}

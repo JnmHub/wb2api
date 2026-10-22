@@ -5,6 +5,12 @@ import (
 	"time"
 )
 
+func TestDecodeRejectsMismatchedUID(t *testing.T) {
+	if _, err := decode("database-key", []byte(`{"uid":"different-uid"}`), time.Now()); err == nil {
+		t.Fatal("embedded UID mismatch could escape SQL-keyed deletion")
+	}
+}
+
 func TestDecodeKeepsUidAndNumbers(t *testing.T) {
 	rec, err := decode("u1", []byte(`{"uid":"u1","nickname":"n","weight":3}`), time.Now())
 	if err != nil {

@@ -33,7 +33,7 @@ func TestWriterStatsReflectOptions(t *testing.T) {
 	}
 	defer d.Close()
 	st := d.Stats()
-	if st.QueueCapacity != 32 || st.Workers != 3 || st.Overflow != "sample" {
+	if st.QueueCapacity != 32 || st.Workers != 1 || st.Overflow != "sample" {
 		t.Fatalf("unexpected stats: %+v", st)
 	}
 	d.Record(Event{At: time.Now(), Model: "m", Outcome: "completed", Total: 7})
@@ -71,8 +71,8 @@ func TestSampleOverflowKeepsAccountingComplete(t *testing.T) {
 	if st.Dropped == 0 {
 		t.Fatalf("sample mode should have dropped some events under pressure: %+v", st)
 	}
-	if st.Written+st.Dropped != total {
-		t.Fatalf("written %d + dropped %d != %d", st.Written, st.Dropped, total)
+	if st.Written != total {
+		t.Fatalf("written %d (detail-dropped %d) != %d", st.Written, st.Dropped, total)
 	}
 }
 
@@ -323,7 +323,7 @@ func TestDayCounters(t *testing.T) {
 	}
 }
 
-func TestRecordNeverBlocksAndCountsDrops(t *testing.T) {
+func TestRecordLocalDurabilityDoesNotWaitForSink(t *testing.T) {
 	d, err := Open(filepath.Join(t.TempDir(), "u.db"), 1) // tiny queue
 	if err != nil {
 		t.Fatal(err)
@@ -335,13 +335,13 @@ func TestRecordNeverBlocksAndCountsDrops(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for i := 0; i < 5000; i++ {
+		for i := 0; i < 100; i++ {
 			d.Record(Event{At: time.Now(), Model: "m", Outcome: "completed"})
 		}
 	}()
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("Record blocked the caller")
 	}
 	tx.Rollback()
@@ -349,8 +349,8 @@ func TestRecordNeverBlocksAndCountsDrops(t *testing.T) {
 	if d.Dropped() == 0 {
 		t.Error("with a 1-slot queue and a stalled writer some events must be dropped (and counted)")
 	}
-	if d.Written()+d.Dropped() != 5000 {
-		t.Errorf("written %d + dropped %d != 5000", d.Written(), d.Dropped())
+	if d.Written() != 100 {
+		t.Errorf("written %d + dropped %d != 100", d.Written(), d.Dropped())
 	}
 }
 
@@ -372,12 +372,12 @@ func TestConcurrentWritersAndReaders(t *testing.T) {
 	wg.Wait()
 	d.Flush()
 	tot, _ := d.Totals(Filter{})
-	if tot.Requests+d.Dropped() != 4000 || tot.Requests != d.Written() {
+	if tot.Requests != 4000 || tot.Requests != d.Written() {
 		t.Fatalf("requests=%d written=%d dropped=%d", tot.Requests, d.Written(), d.Dropped())
 	}
 	var rows int
 	d.SQL().QueryRow("SELECT COUNT(*) FROM requests").Scan(&rows)
-	if int64(rows) != tot.Requests {
+	if int64(rows)+d.Dropped() != tot.Requests {
 		t.Fatalf("requests table (%d) and rollup (%d) disagree", rows, tot.Requests)
 	}
 }
@@ -502,12 +502,12 @@ func TestImportSQLiteIntoPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db, err := OpenPostgres(dsn, 32)
+	db, err := OpenPostgresWithOptions(dsn, Options{QueueSize: 32, OutboxPath: filepath.Join(t.TempDir(), "outbox.db")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.sql.Exec("TRUNCATE requests, daily, hourly, meta"); err != nil {
+	if _, err := db.sql.Exec("TRUNCATE requests, daily, hourly, usage_facts, legacy_daily, legacy_hourly, usage_sources, usage_batches; DELETE FROM meta WHERE k LIKE 'import%'"); err != nil {
 		t.Fatal(err)
 	}
 	n, err := db.ImportSQLite(context.Background(), path)
@@ -535,12 +535,12 @@ func TestPostgresWriterHandlesConcurrentRollups(t *testing.T) {
 	if dsn == "" {
 		t.Skip("WB_TEST_POSTGRES_DSN not set")
 	}
-	db, err := OpenPostgresWithOptions(dsn, Options{QueueSize: 2048, Workers: 4, Overflow: OverflowDrop})
+	db, err := OpenPostgresWithOptions(dsn, Options{QueueSize: 2048, Workers: 4, Overflow: OverflowDrop, OutboxPath: filepath.Join(t.TempDir(), "outbox.db")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.sql.Exec("TRUNCATE requests, daily, hourly, meta"); err != nil {
+	if _, err := db.sql.Exec("TRUNCATE requests, daily, hourly, usage_facts, legacy_daily, legacy_hourly, usage_sources, usage_batches; DELETE FROM meta WHERE k LIKE 'import%'"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	at := time.Now().Add(-time.Minute)
@@ -567,12 +567,12 @@ func TestPostgresRoundTrip(t *testing.T) {
 	if dsn == "" {
 		t.Skip("WB_TEST_POSTGRES_DSN not set")
 	}
-	db, err := OpenPostgres(dsn, 32)
+	db, err := OpenPostgresWithOptions(dsn, Options{QueueSize: 32, OutboxPath: filepath.Join(t.TempDir(), "outbox.db")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.sql.Exec("TRUNCATE requests, daily, hourly, meta"); err != nil {
+	if _, err := db.sql.Exec("TRUNCATE requests, daily, hourly, usage_facts, legacy_daily, legacy_hourly, usage_sources, usage_batches; DELETE FROM meta WHERE k LIKE 'import%'"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	at := time.Now().Add(-time.Minute)

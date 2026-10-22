@@ -65,6 +65,13 @@ jobs:
     needs: binary
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify versioned release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: test -s "docs/releases/${RELEASE_TAG}.md"
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -74,5 +81,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+          body_path: docs/releases/${{ github.ref_name }}.md
+          make_latest: true
           generate_release_notes: true
           fail_on_unmatched_files: true

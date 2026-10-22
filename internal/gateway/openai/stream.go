@@ -164,20 +164,16 @@ func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp fu
 	hdr.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	rc := http.NewResponseController(w)
-	// Send the headers now: with held-back text the first body byte can be a long
-	// way off, and the client should know the connection is alive.
-	_ = rc.Flush()
-	bw := bufio.NewWriterSize(w, 32<<10)
-	flush := func() error {
-		if bw.Buffered() == 0 {
-			return nil
-		}
-		if err := bw.Flush(); err != nil {
-			return err
-		}
-		return rc.Flush()
+	bw := h.newRelayWriter(w, r)
+	defer bw.Close()
+	// Send headers under the same write bound as body frames. Keep any failure
+	// sticky in the buffered writer so normal cancellation/accounting runs.
+	bw.dirty = true
+	headerErr := bw.Flush()
+	if headerErr != nil {
+		cancelUp()
 	}
+	flush := bw.Flush
 	writeData := func(b []byte) error {
 		if _, err := bw.WriteString("data: "); err != nil {
 			return err
@@ -185,16 +181,15 @@ func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp fu
 		if _, err := bw.Write(b); err != nil {
 			return err
 		}
-		_, err := bw.WriteString("\n\n")
-		return err
+		if _, err := bw.WriteString("\n\n"); err != nil {
+			return err
+		}
+		return bw.firstOutput(b)
 	}
 
 	if idleD <= 0 {
 		idleD = 5 * time.Minute
 	}
-	idle := time.AfterFunc(idleD, cancelUp)
-	defer idle.Stop()
-
 	holdMax := h.MaxHoldTime
 	if holdMax <= 0 {
 		holdMax = 20 * time.Second
@@ -202,7 +197,7 @@ func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp fu
 	filter := leak.NewFilter(h.FilterMode)
 	pacer := newStreamPacer(maxTPS)
 	var (
-		br           = bufio.NewReaderSize(body, sseReadBlock)
+		br           *bufio.Reader
 		acc2         []byte
 		meta         = streamMeta{model: model}
 		est          tokenEstimator
@@ -218,8 +213,15 @@ func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp fu
 		outcome      = "completed"
 		status       = http.StatusOK
 		streamErr    error
-		clientClosed bool
+		clientClosed = headerErr != nil
 	)
+	br = bufio.NewReaderSize(&relayReader{body: body, idle: idleD, cancel: cancelUp, beforeRead: func() error {
+		err := flush()
+		if err != nil {
+			clientClosed = true
+		}
+		return err
+	}}, sseReadBlock)
 
 	emitActions := func(acts []leak.Action) error {
 		for _, a := range acts {
@@ -257,17 +259,12 @@ func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp fu
 		}
 	}
 
+	noteSemantic := upstreamObserver(r.Context())
 loop:
 	for {
-		if br.Buffered() == 0 {
-			if err := flush(); err != nil {
-				clientClosed = true
-				break
-			}
-		}
 		line, err := readLine(br, &acc2)
 		if len(line) > 0 {
-			idle.Reset(idleD)
+			noteSemantic(line)
 			now := time.Now()
 			if data := sseData(line); data != nil && !bytes.Equal(data, []byte("[DONE]")) {
 				if upstreamErr, isErr := upstreamSSEError(data); isErr {
@@ -278,11 +275,10 @@ loop:
 				c, ok := parseChunk(data)
 				if ok && pacer != nil {
 					if n := c.outputTokens(); n > 0 {
-						if perr := pacer.wait(r.Context(), n); perr != nil {
+						if perr := pacer.waitBefore(r.Context(), n, flush); perr != nil {
 							clientClosed = true
 							break loop
 						}
-						idle.Reset(idleD)
 					}
 				}
 				if firstAt.IsZero() {
@@ -412,7 +408,7 @@ loop:
 		ev.Usage = json.RawMessage(`{"prompt_tokens":0,"completion_tokens":` + strconv.Itoa(n) + `,"total_tokens":` + strconv.Itoa(n) + `}`)
 		ev.Estimated = true
 	}
-	h.emit(ev)
+	h.emitWithLatency(r.Context(), ev)
 }
 
 type aggTool struct {
@@ -456,9 +452,11 @@ func (h *Handler) collect(r *http.Request, cancelUp func(), idleD time.Duration,
 		sawDone   bool
 		res       = &collected{meta: streamMeta{model: model}, finish: "stop"}
 	)
+	noteSemantic := upstreamObserver(r.Context())
 	for {
 		line, err := readLine(br, &acc2)
 		if len(line) > 0 {
+			noteSemantic(line)
 			idle.Reset(idleD)
 			if data := sseData(line); data != nil && bytes.Equal(data, []byte("[DONE]")) {
 				sawDone = true
@@ -606,7 +604,7 @@ func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp fun
 	ev := res.usageEvent(acc, model, keyID, effort, start)
 	if res.err != nil {
 		markCollectedError(&ev, r)
-		h.emit(ev)
+		h.emitWithLatency(r.Context(), ev)
 		if r.Context().Err() == nil {
 			writeError(w, http.StatusBadGateway, "upstream stream aborted", "server_error")
 		}
@@ -634,12 +632,14 @@ func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp fun
 	if res.usage != nil {
 		resp["usage"] = res.usage
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(resp)
-	h.emit(ev)
+	b, err := marshalNoEscape(resp)
+	if err != nil {
+		ev.Outcome, ev.Status = "failed", http.StatusInternalServerError
+		h.emitWithLatency(r.Context(), ev)
+		writeError(w, http.StatusInternalServerError, "cannot encode response", "server_error")
+		return
+	}
+	h.completeJSON(w, r, cancelUp, b, ev)
 }
 
 // truncatedArguments: a non-empty argument string that is not valid JSON.

@@ -25,8 +25,8 @@ FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata \
  && addgroup -S -g 10001 wb2api \
  && adduser -S -D -H -u 10001 -G wb2api wb2api \
- && mkdir -p /data \
- && chown -R wb2api:wb2api /data
+ && mkdir -p /data /outbox \
+ && chown -R wb2api:wb2api /data /outbox
 COPY --from=build /out/wb2api /usr/local/bin/wb2api
 USER wb2api
 EXPOSE 8788

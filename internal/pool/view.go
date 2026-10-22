@@ -38,6 +38,8 @@ func (p *Pool) Add(rec *accounts.Record) *Account {
 	replaced := false
 	for _, x := range cur.all {
 		if x.UID == rec.UID {
+			// A request/affinity snapshot may still hold the replaced pointer.
+			x.enabled.Store(false)
 			list = append(list, a)
 			replaced = true
 		} else {
@@ -61,6 +63,8 @@ func (p *Pool) Remove(uid string) bool {
 	found := false
 	for _, x := range cur.all {
 		if x.UID == uid {
+			// Removing membership alone does not revoke already-held pointers.
+			x.enabled.Store(false)
 			found = true
 			continue
 		}

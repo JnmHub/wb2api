@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -63,6 +64,29 @@ func TestStreamPacerOffAndCancel(t *testing.T) {
 	}
 	if time.Since(start) > 500*time.Millisecond {
 		t.Fatal("cancellation must interrupt the wait")
+	}
+}
+
+func TestStreamPacerFlushesOnlyBeforeSleep(t *testing.T) {
+	ctx := context.Background()
+	p := newStreamPacer(100)
+	calls := 0
+	before := func() error { calls++; return nil }
+	if err := p.waitBefore(ctx, 1, before); err != nil || calls != 0 {
+		t.Fatalf("first chunk: callbacks=%d err=%v", calls, err)
+	}
+	p.start = time.Now().Add(-time.Second)
+	if err := p.waitBefore(ctx, 1, before); err != nil || calls != 0 {
+		t.Fatalf("catch-up chunk: callbacks=%d err=%v", calls, err)
+	}
+	p.start = time.Now()
+	want := errors.New("flush failed")
+	if err := p.waitBefore(ctx, 1, func() error { calls++; return want }); !errors.Is(err, want) || calls != 1 {
+		t.Fatalf("sleep flush: callbacks=%d err=%v", calls, err)
+	}
+	// Flushing can itself satisfy the delay; do not sleep for that time again.
+	if err := p.waitBefore(ctx, 1, func() error { p.start = time.Now().Add(-time.Second); return nil }); err != nil {
+		t.Fatal(err)
 	}
 }
 

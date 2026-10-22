@@ -138,7 +138,7 @@ func (h *Handler) messagesWhole(q *request, acc *pool.Account, cancel context.Ca
 	ev := res.usageEvent(acc, model, q.keyID, q.effort(h), q.start)
 	if res.err != nil {
 		markCollectedError(&ev, q.r)
-		h.emit(ev)
+		h.emitWithLatency(q.r.Context(), ev)
 		if q.r.Context().Err() == nil {
 			writeAnthropicError(q.w, http.StatusBadGateway, "upstream stream aborted")
 		}
@@ -151,10 +151,7 @@ func (h *Handler) messagesWhole(q *request, acc *pool.Account, cancel context.Ca
 		writeAnthropicError(q.w, http.StatusInternalServerError, "cannot encode response")
 		return
 	}
-	q.w.Header().Set("Content-Type", "application/json")
-	q.w.WriteHeader(http.StatusOK)
-	_, _ = q.w.Write(append(b, '\n'))
-	h.emit(ev)
+	h.completeJSON(q.w, q.r, cancel, b, ev)
 }
 
 // chatFromCollected rebuilds a chat.completion object from a folded stream.
@@ -203,27 +200,15 @@ func (h *Handler) messagesStream(q *request, acc *pool.Account, cancelUp context
 	hdr.Set("Cache-Control", "no-cache")
 	hdr.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	rc := http.NewResponseController(w)
-	bw := bufio.NewWriterSize(w, 32<<10)
-	flush := func() error {
-		if bw.Buffered() == 0 {
-			return nil
-		}
-		if err := bw.Flush(); err != nil {
-			return err
-		}
-		return rc.Flush()
-	}
+	bw := h.newRelayWriter(w, q.r)
+	defer bw.Close()
+	flush := bw.Flush
 	if idleD <= 0 {
 		idleD = 5 * time.Minute
 	}
-	idle := time.AfterFunc(idleD, cancelUp)
-	defer idle.Stop()
-
 	s := anthropic.NewStream(model, anthropic.Env{}, anthropic.DefaultCached)
 	pacer := newStreamPacer(q.maxTPS)
 	var (
-		br           = bufio.NewReaderSize(body, sseReadBlock)
 		acc2         []byte
 		firstAt      time.Time
 		lastAt       time.Time
@@ -231,22 +216,25 @@ func (h *Handler) messagesStream(q *request, acc *pool.Account, cancelUp context
 		streamErr    error
 		clientClosed bool
 	)
-	for !clientClosed {
-		if br.Buffered() == 0 && flush() != nil {
+	br := bufio.NewReaderSize(&relayReader{body: body, idle: idleD, cancel: cancelUp, beforeRead: func() error {
+		err := flush()
+		if err != nil {
 			clientClosed = true
-			break
 		}
+		return err
+	}}, sseReadBlock)
+	noteSemantic := upstreamObserver(q.r.Context())
+	for !clientClosed {
 		line, err := readLine(br, &acc2)
 		if len(line) > 0 {
-			idle.Reset(idleD)
+			noteSemantic(line)
 			if data := sseData(line); data != nil && !bytes.Equal(data, []byte("[DONE]")) {
 				if pacer != nil {
 					if n := chunkOutputTokens(data); n > 0 {
-						if perr := pacer.wait(q.r.Context(), n); perr != nil {
+						if perr := pacer.waitBefore(q.r.Context(), n, flush); perr != nil {
 							clientClosed = true
 							break
 						}
-						idle.Reset(idleD)
 					}
 				}
 				now := time.Now()
@@ -259,6 +247,11 @@ func (h *Handler) messagesStream(q *request, acc *pool.Account, cancelUp context
 			for _, f := range s.Line(line) {
 				if _, werr := bw.Write(f); werr != nil {
 					clientClosed = true
+					break
+				}
+				if bw.firstOutput(f) != nil {
+					clientClosed = true
+					break
 				}
 			}
 			if s.Failed() {
@@ -301,5 +294,5 @@ func (h *Handler) messagesStream(q *request, acc *pool.Account, cancelUp context
 	if !firstAt.IsZero() {
 		ev.TTFT, ev.Gen = firstAt.Sub(q.start), lastAt.Sub(firstAt)
 	}
-	h.emit(ev)
+	h.emitWithLatency(q.r.Context(), ev)
 }

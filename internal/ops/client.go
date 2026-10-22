@@ -178,7 +178,7 @@ func truncate(s string, n int) string {
 }
 
 func retryable(err error) bool {
-	if err == nil {
+	if err == nil || upstream.IsAmbiguousRequest(err) {
 		return false
 	}
 	if he, ok := err.(*HTTPError); ok {

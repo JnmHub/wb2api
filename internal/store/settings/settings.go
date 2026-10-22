@@ -2,8 +2,8 @@
 // carries every panel-managed setting. The file format is shared with the
 // legacy Python gateway; unknown keys always survive a rewrite.
 //
-// Reads are served from an in-memory snapshot that is refreshed only when the
-// file's (mtime, size) changes, so the request hot path never touches disk.
+// Reads normally use an in-memory snapshot. Once per CheckInterval a reader
+// synchronously checks the file or backend; concurrent refreshes are coalesced.
 package settings
 
 import (
@@ -47,15 +47,17 @@ type snapshot struct {
 
 // Store is the settings.json handle for one accounts directory.
 type Store struct {
-	dev       deviceTokenCache
-	path      string
-	loadFn    func() (Doc, error)
-	saveFn    func(Doc) error
-	updateFn  func(func(Doc) error) (Doc, error)
-	lastCheck atomic.Int64 // unix nanos of the last stat
-	revSeq    atomic.Uint64
-	mu        sync.Mutex // serialises writers
-	snap      atomic.Pointer[snapshot]
+	dev        deviceTokenCache
+	path       string
+	loadFn     func() (Doc, error)
+	saveFn     func(Doc) error
+	updateFn   func(func(Doc) error) (Doc, error)
+	lastCheck  atomic.Int64 // unix nanos of the last stat
+	revSeq     atomic.Uint64
+	mu         sync.Mutex    // serialises writers
+	refreshMu  sync.Mutex    // serialises refresh I/O, independent of committed writes
+	refreshSeq atomic.Uint64 // completed refreshes, including unchanged/error results
+	snap       atomic.Pointer[snapshot]
 }
 
 // Open returns a Store for dir/settings.json. The file need not exist.
@@ -77,6 +79,46 @@ func OpenWithUpdater(load func() (Doc, error), save func(Doc) error, update func
 	return &Store{loadFn: load, saveFn: save, updateFn: update}
 }
 
+// OpenWithUpdaterInitial starts with an already successfully loaded backend
+// document. Publishing it before the first read avoids discarding known auth
+// configuration if the backend becomes unavailable immediately after startup.
+// The initial decoded JSON document is recursively copied, so its maps/slices
+// remain owned by the caller; other values must be immutable JSON scalars.
+// Backend polling resumes after CheckInterval, and committed updates remain
+// immediately visible, exactly as with OpenWithUpdater.
+func OpenWithUpdaterInitial(initial Doc, load func() (Doc, error), save func(Doc) error, update func(func(Doc) error) (Doc, error)) *Store {
+	s := OpenWithUpdater(load, save, update)
+	doc := cloneInitialValue(initial).(Doc)
+	s.snap.Store(&snapshot{rev: s.revSeq.Add(1), doc: doc, exists: true})
+	s.lastCheck.Store(time.Now().UnixNano())
+	return s
+}
+
+func cloneInitialValue(v any) any {
+	switch v := v.(type) {
+	case Doc:
+		out := make(Doc, len(v))
+		for k, value := range v {
+			out[k] = cloneInitialValue(value)
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for k, value := range v {
+			out[k] = cloneInitialValue(value)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, value := range v {
+			out[i] = cloneInitialValue(value)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
 // Path returns the settings file path.
 func (s *Store) Path() string { return s.path }
 
@@ -95,22 +137,45 @@ func (s *Store) Get() Doc {
 // the result must not be mutated.
 func (s *Store) View() Doc { return s.refresh().doc }
 
-func (s *Store) refresh() *snapshot {
+func (s *Store) refresh() *snapshot { return s.refreshWithForce(false) }
+
+// force is for legacy read/modify/write: it must load fresh state after any
+// in-flight read, not join a result that started before the mutation.
+func (s *Store) refreshWithForce(force bool) *snapshot {
+	completed := s.refreshSeq.Load()
 	cur := s.snap.Load()
 	// The request path must not hit the filesystem on every call: a stat per
 	// request showed up as hundreds of milliseconds of tail latency under load.
-	// External edits are noticed within CheckInterval; our own writes drop the
-	// snapshot and are visible immediately.
+	// A due reader checks synchronously: do not make auth/revocation reads
+	// unconditionally stale while a background poll runs. Our writes are
+	// immediately visible (or invalidate the snapshot in file/legacy mode).
 	now := time.Now().UnixNano()
-	if cur != nil && now-s.lastCheck.Load() < int64(CheckInterval) {
+	if !force && cur != nil && now-s.lastCheck.Load() < int64(CheckInterval) {
 		return cur
 	}
+	// Do not hold the writer mutex across backend I/O. A committed Update
+	// must be able to publish while an older refresh is blocked; CAS below
+	// fences that older result. Cold callers wait here rather than receiving
+	// an empty document (which can disable API-key authentication).
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+	cur = s.snap.Load()
+	now = time.Now().UnixNano()
+	// Join the refresh completed while we waited, even if its I/O took more
+	// than one interval. A later caller can check again immediately, but a
+	// burst of waiters must not each repeat the same slow/error/unchanged read.
+	if !force && cur != nil && (s.refreshSeq.Load() != completed || now-s.lastCheck.Load() < int64(CheckInterval)) {
+		return cur
+	}
+	// Keep the interval anchored to the START of I/O, not its completion:
+	// slow loads must not add another CheckInterval of stale authorization.
 	s.lastCheck.Store(now)
+	defer s.refreshSeq.Add(1)
 	if s.loadFn != nil {
 		doc, err := s.loadFn()
 		if err != nil {
 			if cur != nil {
-				return cur
+				return s.latestSnapshot(cur)
 			}
 			n := &snapshot{rev: s.revSeq.Add(1), doc: Doc{}}
 			if s.snap.CompareAndSwap(cur, n) {
@@ -212,7 +277,11 @@ func (s *Store) Update(fn func(Doc) error) error {
 		return nil
 	}
 	s.snap.Store(nil)
-	doc := s.Get()
+	fresh := s.refreshWithForce(true)
+	doc := make(Doc, len(fresh.doc))
+	for k, v := range fresh.doc {
+		doc[k] = v
+	}
 	if err := fn(doc); err != nil {
 		return err
 	}

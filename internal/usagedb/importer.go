@@ -158,7 +158,7 @@ func (d *DB) ImportJSONL(ctx context.Context, path string, progress ImportProgre
 		if len(batch) == 0 && upTo == offset {
 			return nil
 		}
-		tx, err := d.sql.Begin()
+		tx, err := d.beginImport()
 		if err != nil {
 			return err
 		}
@@ -371,6 +371,31 @@ func (d *DB) ImportSQLite(ctx context.Context, path string) (int, error) {
 			return 0, err
 		}
 	}
+	// New ledger and aggregate-only sources require an offline atomic snapshot,
+	// not request-row replay (which would discard unsampled quota).
+	var factsTable int
+	if err := legacy.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='usage_facts'").Scan(&factsTable); err != nil {
+		return 0, err
+	}
+	if factsTable != 0 {
+		return d.importSQLiteSnapshot(ctx, legacy, path, true)
+	}
+	var dailyTable int
+	if err := legacy.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='daily'").Scan(&dailyTable); err != nil {
+		return 0, err
+	}
+	if dailyTable != 0 {
+		var rollup, details int64
+		if err := legacy.QueryRowContext(ctx, "SELECT COALESCE(SUM(requests),0) FROM daily").Scan(&rollup); err != nil {
+			return 0, err
+		}
+		if err := legacy.QueryRowContext(ctx, "SELECT COUNT(*) FROM requests").Scan(&details); err != nil {
+			return 0, err
+		}
+		if rollup != details {
+			return d.importSQLiteSnapshot(ctx, legacy, path, false)
+		}
+	}
 	key := sqliteMetaKey(path)
 	var lastID int64
 	if v, ok := d.getMeta(key); ok {
@@ -446,7 +471,7 @@ func (d *DB) setMeta(key string, id int64) error {
 }
 
 func (d *DB) importSQLiteBatch(events []Event, key string, lastID int64) error {
-	tx, err := d.sql.Begin()
+	tx, err := d.beginImport()
 	if err != nil {
 		return err
 	}

@@ -31,9 +31,9 @@ jobs:
       - run: go vet ./...
       # -race needs cgo; the Linux runner has gcc, the Windows one is skipped.
       - if: runner.os == 'Linux'
-        run: go test -race ./... -timeout 10m
+        run: go test -race ./... -p=1 -count=1 -timeout 10m
       - if: runner.os != 'Linux'
-        run: go test ./... -timeout 10m
+        run: go test ./... -p=1 -count=1 -timeout 10m
       - run: go build ./cmd/...
 
   postgres:
@@ -52,15 +52,28 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: PostgreSQL usage store round-trip and rollup concurrency
+      - name: PostgreSQL durable outbox, replay, bulk rollups and crash recovery
         env:
           WB_TEST_POSTGRES_DSN: postgres://wb2api:wb2api@127.0.0.1:5432/wb2api_test?sslmode=disable
-        run: go test ./internal/usagedb -run 'TestPostgres' -count=1 -v
+        run: go test -race ./internal/usagedb -count=1 -v -timeout=10m
+      - name: Redis leases, response loss and affinity fencing
+        env:
+          WB_TEST_REDIS_ADDR: 127.0.0.1:6379
+        run: go test -race ./internal/platform/redisx -count=1 -v -timeout=5m
       - name: PostgreSQL schema migration lock
         env:
           WB_TEST_POSTGRES_DSN: postgres://wb2api:wb2api@127.0.0.1:5432/wb2api_test?sslmode=disable

@@ -16,8 +16,9 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
   会话亲和（配置 Redis 后跨副本共享）、慢账号逃逸（TTFT/错误率 EWMA 跨副本合并）、
   最低负载优先、可选 top-K 负载分散、PostgreSQL 用量记账；
   账号槽位和 API Key 并发可选用 Redis 跨进程共享，全部满槽时短暂排队后返回 429。
-- **用量写入池**：有界异步队列 + 批量并行事务（SQLite 默认 1、PostgreSQL 默认 4），
-  队列饱和可按 `drop` 丢弃计数或 `sample` 采样；面板显示积压、丢弃和失败批次。
+- **可靠用量账本**：每副本独立持久化 outbox，FULL-WAL 批量提交成功后确认，再按稳定事件身份
+  异步幂等投递 SQLite/PostgreSQL；`drop`/`sample` 只削减可选明细，不采样已接受的用量事实。
+  面板区分本地可写状态、持久化积压和远端投递错误。
 - **首包保护**：流式请求在收到语义输出前不向客户端发送响应头；超过
   `WB_FIRST_OUTPUT_MS` 仍未产出时取消该账号并换号，避免把半截 SSE 暴露给客户端。
 - **运营**：国内签到/活跃上报/成长任务/猫猫旅行/连登管家，国际每日活跃
@@ -34,6 +35,11 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
 - **安全**：面板登录、API Key、CSRF、TLS 指纹（OpenSSL 形状 ClientHello）、
   私网抓取防护。
 - **更新检查**：可选每天检查 GitHub Releases，只读，不自动下载。
+
+## 最新发行版
+
+[v2.4.0 更新说明](docs/releases/v2.4.0.md)：高并发调度、可靠记账与三协议流式修复。
+**升级前请阅读迁移与默认策略变化；旧版用量 writer 不能与新版混跑，每个副本必须保留独立 outbox。**
 
 ## 快速开始（二进制）
 
@@ -139,10 +145,14 @@ services:
 | `-host` / `-lan` | `127.0.0.1` / 关 | 监听地址；`-lan` 等价于所有网卡 |
 | `-accounts-dir` | `accounts` | 账号 JSON 目录 |
 | `-usage-dir` | `usage` | `usage.db` 与日志 |
-| `-usage-queue` / `WB_USAGE_QUEUE` | `8192` | 用量异步写入队列容量 |
-| `-usage-workers` / `WB_USAGE_WORKERS` | `1` / `4` | 每批并行写入事务数；SQLite 默认 1，PostgreSQL 默认 4 |
-| `-usage-overflow` / `WB_USAGE_OVERFLOW` | `drop` | 队列满时策略：`drop` 丢弃并计数，`sample` 保留采样 |
-| `-usage-sample` / `WB_USAGE_SAMPLE` | `20` | `sample` 模式下队列达 75% 后每 N 条保留 1 条 |
+| `-usage-queue` / `WB_USAGE_QUEUE` | `8192` | 可选请求明细的降载阈值，不是可靠账本的容量 |
+| `-usage-workers` / `WB_USAGE_WORKERS` | `1` | 兼容参数；持久化 outbox 按每副本单写者顺序投递 |
+| `-usage-overflow` / `WB_USAGE_OVERFLOW` | `drop` | 仅对可选明细降载：`drop` 或 `sample`；不采样已接受的配额事实 |
+| `-usage-sample` / `WB_USAGE_SAMPLE` | `20` | `sample` 模式下达到明细阈值 75% 后每 N 条保留 1 条明细 |
+| `-usage-outbox` / `WB_USAGE_OUTBOX` | usage-dir 下的 `usage-outbox.db` | 每副本独占、重启后保留的本地持久化 outbox，不能多个副本共用 |
+| `-usage-outbox-mb` / `WB_USAGE_OUTBOX_MB` | `256` | 待投递有效载荷预算（MiB）；SQLite 索引、WAL、空闲页另占空间 |
+| `-shared-limit-fail-open` / `WB_SHARED_LIMIT_FAIL_OPEN` | 关 | Redis 限流不可用时默认拒绝新准入；显式开启才退回本地，故障时不保证集群上限 |
+| `-downstream-write-ms` / `WB_DOWNSTREAM_WRITE_MS` | `30000` | 每次实际客户端写入/刷新超时；不包含 TPS 主动等待，负数关闭 |
 | `-catalog-dir` | `catalog` | 模型目录缓存 |
 | `-panel-password` | 空 | 面板密码，也可用 `WB_PANEL_PASSWORD` |
 | `-max-attempts` | `5` | 单请求最多切换账号次数 |
@@ -153,6 +163,8 @@ services:
 | `-sched-top-k` / `WB_SCHED_TOP_K` | `1` | 从评分最优的 K 个可用账号中选择；1 = 严格最优 |
 | `-no-modelsdev` | 关 | 不访问 models.dev 的额度数据 |
 | `-debug` | 关 | 暴露 `/debug/runtime` |
+
+用量完成事件先写入本地持久化 outbox，再异步交付 SQLite/PostgreSQL 汇总。远端故障时可继续记账，直到本地容量或存储不可用；`/api/v2/usage/summary` 的 `durability` 区分本地可写状态、待交付事件与远端错误。配额读取的是已交付汇总，因此远端长时间中断时并非实时硬配额。完整边界、迁移和恢复要求见 [用量持久化契约](internal/usagedb/DURABILITY.md)。HA 配置为每个副本提供独立 outbox 卷；不要删除这些卷或使用 `down -v` 来升级。
 
 常用环境变量：`WB_ACCOUNTS_DIR`、`WB_PROXY_USAGE_DIR`、
 `WB_PROXY_CATALOG_DIR`、`WB_PANEL_PASSWORD`、`WB_UPDATE_REPO`、

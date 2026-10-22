@@ -247,19 +247,20 @@ type Pool struct {
 	notify  atomic.Pointer[func(uid string)]
 	writeMu sync.Mutex // serialises membership changes (Add / Remove / Replace)
 
-	affinity  *SessionAffinity
-	prefs     atomic.Pointer[prefSnap] // dispatch preferences (weights, expiring credits), rebuilt lazily
-	prefDirty atomic.Bool
-	expWindow atomic.Pointer[map[string]int] // realm -> expiring window in days
-	wrrMu     sync.Mutex
-	wrrManual map[string]int                            // smooth weighted round-robin state: manual weights
-	wrrExpire map[string]int                            // ... expiring-credits window
-	wrrRemain map[string]int                            // ... remaining-usage estimate
-	remainW   atomic.Pointer[map[string]map[string]int] // model -> uid -> weight
-	pageCur   sync.Map                                  // pageKey -> *atomic.Uint64
-	slots     atomic.Pointer[map[string]string]         // enabled proxy slot id -> URL
-	topK      atomic.Int32                              // select among the K least-loaded ready accounts (1 = strict least-loaded)
-	scorer    atomic.Pointer[Scorer]                    // optional feedback-aware rank; lower is better
+	affinity       *SessionAffinity
+	prefs          atomic.Pointer[prefSnap] // dispatch preferences (weights, expiring credits), rebuilt lazily
+	prefDirty      atomic.Bool
+	expWindow      atomic.Pointer[map[string]int] // realm -> expiring window in days
+	wrrMu          sync.Mutex
+	wrrManual      map[string]int                            // smooth weighted round-robin state: manual weights
+	wrrExpire      map[string]int                            // ... expiring-credits window
+	wrrRemain      map[string]int                            // ... remaining-usage estimate
+	remainW        atomic.Pointer[map[string]map[string]int] // legacy compatibility, no dispatch reads
+	remainSnapshot atomic.Pointer[RemainingSnapshot]         // immutable advisory scheduling weights
+	pageCur        sync.Map                                  // pageKey -> *atomic.Uint64
+	slots          atomic.Pointer[map[string]string]         // enabled proxy slot id -> URL
+	topK           atomic.Int32                              // select among the K least-loaded ready accounts (1 = strict least-loaded)
+	scorer         atomic.Pointer[Scorer]                    // optional feedback-aware rank; lower is better
 }
 
 // Scorer ranks an account for a model. Lower scores are preferred. It must be

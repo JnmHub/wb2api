@@ -14,9 +14,10 @@ type DayStat struct {
 	Credit   float64
 }
 
-// Today keeps today's per-account consumption in memory, so list views and the
-// daily limit guards never need a database round trip. It rolls over at local
-// midnight and is seeded from the usage database at start-up.
+// Today keeps today's per-account consumption in memory for list views. Daily
+// guards independently read database rollups. It rolls over at local midnight
+// and is seeded once before serving requests, including recovered local outbox
+// events not yet delivered to the sink.
 type Today struct {
 	Now func() time.Time
 
@@ -47,7 +48,7 @@ func (t *Today) Add(ev usagedb.Event) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.rollLocked(ev.At)
+	t.rollLocked(t.now())
 	if ev.At.In(time.Local).Format("2006-01-02") != t.day {
 		return // a late event from yesterday
 	}
@@ -74,9 +75,12 @@ func (t *Today) Get(uid string) DayStat {
 	return DayStat{}
 }
 
-// Seed loads today's totals from the database.
+// Seed loads one startup snapshot of delivered and locally pending totals.
+// Call before concurrent Add/Get; this is not a periodic reconciliation API.
+// Query errors leave existing counters unchanged rather than fabricating zero.
 func (t *Today) Seed(db *usagedb.DB) error {
-	dc, err := db.Day(usagedb.LocalMidnight(t.now()))
+	now := t.now()
+	dc, err := db.DayIncludingPending(usagedb.LocalMidnight(now))
 	if err != nil {
 		return err
 	}

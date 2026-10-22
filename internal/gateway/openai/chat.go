@@ -95,6 +95,14 @@ type Handler struct {
 	OnUsage func(UsageEvent)
 	// Limiter optionally enforces account concurrency across processes.
 	Limiter InflightLimiter
+	// SharedLimitFailOpen explicitly trades cluster-wide concurrency safety for
+	// availability during Redis failure. The default is fail closed.
+	SharedLimitFailOpen bool
+	// UsageReady rejects new upstream work when durable accounting is unavailable.
+	UsageReady func() error
+	// DownstreamWriteTimeout bounds each actual client write/flush. Zero uses
+	// 30 seconds; negative explicitly disables it. It does not cap stream length.
+	DownstreamWriteTimeout time.Duration
 	// AccountInflight is the per-account limit used with Limiter (0 = off).
 	AccountInflight int
 	// AccountWait bounds how long a request queues on one full account after
@@ -293,26 +301,27 @@ func extractSessionKey(r *http.Request, payload *jsonx.Obj) string {
 
 // request is the state of one client request across failover attempts.
 type request struct {
-	r          *http.Request
-	w          http.ResponseWriter
-	start      time.Time
-	payload    *jsonx.Obj
-	model      string
-	stream     bool
-	keyID      string
-	realm      string
-	sessionKey string
-	turnID     string // X-Conversation-Request-ID, one per user turn (all retries)
-	vscodeConv string
-	shaped     *jsonx.Obj
-	enc        map[string]*encoded
-	sink       sinkFunc // renders the upstream stream (nil = chat completions)
-	page       *pool.Page
-	maxTPS     float64
-	at         attemptState
-	effortVal  string
-	effortDone bool
-	anth       bool
+	r                   *http.Request
+	w                   http.ResponseWriter
+	start               time.Time
+	payload             *jsonx.Obj
+	model               string
+	stream              bool
+	keyID               string
+	realm               string
+	sessionKey          string
+	affinityObservation pool.AffinityObservation
+	turnID              string // X-Conversation-Request-ID, one per user turn (all retries)
+	vscodeConv          string
+	shaped              *jsonx.Obj
+	enc                 map[string]*encoded
+	sink                sinkFunc // renders the upstream stream (nil = chat completions)
+	page                *pool.Page
+	maxTPS              float64
+	at                  attemptState
+	effortVal           string
+	effortDone          bool
+	anth                bool
 
 	refreshed       map[string]bool
 	degradedRetried bool

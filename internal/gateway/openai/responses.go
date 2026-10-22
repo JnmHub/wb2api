@@ -318,6 +318,7 @@ func (h *Handler) openFollowUp(q *request, acc *pool.Account, chat *jsonx.Obj) (
 	hdrs := h.chatHeaders(&q2, rec, product, gz)
 	cfg := h.Settings.UpstreamConfig()
 	ctx, cancel := context.WithCancel(q.r.Context())
+	beginAttempt(ctx)
 	resp, err := h.Up.Wire(acc.UID, acc.Proxy()).Do(ctx, upstream.Request{
 		Method: http.MethodPost, URL: h.chatURL(acc, product), Headers: hdrs, Body: enc.wire(gz),
 		HeaderTimeout: cfg.HeaderTimeout,
@@ -426,7 +427,7 @@ func (h *Handler) responsesWhole(q *request, acc *pool.Account, cancel context.C
 		if res.err != nil {
 			ev := res.usageEvent(acc, model, q.keyID, q.effort(h), q.start)
 			markCollectedError(&ev, q.r)
-			h.emit(ev)
+			h.emitWithLatency(q.r.Context(), ev)
 			if q.r.Context().Err() == nil {
 				writeError(q.w, http.StatusBadGateway, "upstream stream aborted", "server_error")
 			}
@@ -446,7 +447,7 @@ func (h *Handler) responsesWhole(q *request, acc *pool.Account, cancel context.C
 					if q.r.Context().Err() != nil {
 						ev.Outcome, ev.Status = "client_aborted", http.StatusOK
 					}
-					h.emit(ev)
+					h.emitWithLatency(q.r.Context(), ev)
 					if q.r.Context().Err() == nil {
 						writeError(q.w, http.StatusBadGateway, "web tool follow-up failed", "server_error")
 					}
@@ -497,10 +498,7 @@ func (h *Handler) responsesWhole(q *request, acc *pool.Account, cancel context.C
 		writeError(q.w, http.StatusInternalServerError, "cannot encode response", "server_error")
 		return
 	}
-	q.w.Header().Set("Content-Type", "application/json")
-	q.w.WriteHeader(http.StatusOK)
-	_, _ = q.w.Write(append(b, '\n'))
-	h.emit(ev)
+	h.completeJSON(q.w, q.r, current.close, b, ev)
 }
 
 // responsesStream relays the upstream stream as Responses server-sent events.
@@ -513,20 +511,15 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 	hdr.Set("Cache-Control", "no-cache")
 	hdr.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
-	rc := http.NewResponseController(w)
-	bw := bufio.NewWriterSize(w, 32<<10)
-	flush := func() error {
-		if bw.Buffered() == 0 {
-			return nil
-		}
-		if err := bw.Flush(); err != nil {
-			return err
-		}
-		return rc.Flush()
-	}
+	bw := h.newRelayWriter(w, q.r)
+	defer bw.Close()
+	flush := bw.Flush
 	write := func(frames []responses.Frame) error {
 		for _, f := range frames {
 			if _, err := bw.Write(f); err != nil {
+				return err
+			}
+			if err := bw.firstOutput(f); err != nil {
 				return err
 			}
 		}
@@ -557,23 +550,22 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 	current := &responseRound{Reader: body, cancel: cancelUp}
 	defer func() { current.close() }()
 	for round := 0; !clientClosed; round++ {
-		// A method value captures this round; a late timer cannot close the
-		// next follow-up. Close also aborts bodies on early SSE error exits.
-		idle := time.AfterFunc(idleD, current.close)
-		br := bufio.NewReaderSize(current.Reader, sseReadBlock)
+		// Capture this round: an expired read must never close its follow-up.
+		br := bufio.NewReaderSize(&relayReader{body: current.Reader, idle: idleD, cancel: current.close, beforeRead: func() error {
+			err := flush()
+			if err != nil {
+				clientClosed = true
+			}
+			return err
+		}}, sseReadBlock)
 		var acc2 []byte
 		pending := map[int]*webCall{}
+		noteSemantic := upstreamObserver(q.r.Context())
 	readRound:
 		for !clientClosed {
-			if br.Buffered() == 0 {
-				if flush() != nil {
-					clientClosed = true
-					break
-				}
-			}
 			line, err := readLine(br, &acc2)
 			if len(line) > 0 {
-				idle.Reset(idleD)
+				noteSemantic(line)
 				data := sseData(line)
 				if upstreamErr, isErr := upstreamSSEError(data); isErr {
 					streamErr = upstreamErr
@@ -599,11 +591,10 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 					now := time.Now()
 					if pacer != nil {
 						if n := chunkOutputTokens(data); n > 0 {
-							if perr := pacer.wait(q.r.Context(), n); perr != nil {
+							if perr := pacer.waitBefore(q.r.Context(), n, flush); perr != nil {
 								clientClosed = true
 								break
 							}
-							idle.Reset(idleD)
 						}
 					}
 					if firstAt.IsZero() {
@@ -612,13 +603,12 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 					lastAt = now
 					stripped := info.WebTools && filterWebChunk(chunk, pending)
 					if !stripped {
-						if write(s.Line(line)) != nil {
+						if write(s.Chunk(chunk)) != nil {
 							clientClosed = true
 						}
 						nChunks++
 					} else if !emptyWebChunk(chunk) {
-						b, _ := jsonx.Marshal(chunk)
-						if write(s.Line(append(append([]byte("data: "), b...), '\n', '\n'))) != nil {
+						if write(s.Chunk(chunk)) != nil {
 							clientClosed = true
 						}
 						nChunks++
@@ -632,7 +622,6 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 				break
 			}
 		}
-		idle.Stop()
 		current.close()
 		if q.r.Context().Err() != nil {
 			clientClosed = true
@@ -697,5 +686,5 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 	if !firstAt.IsZero() {
 		ev.TTFT, ev.Gen = firstAt.Sub(q.start), lastAt.Sub(firstAt)
 	}
-	h.emit(ev)
+	h.emitWithLatency(q.r.Context(), ev)
 }

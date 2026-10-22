@@ -1,8 +1,9 @@
 // Package guards computes the daily and reserve limits that park accounts:
 // the low-credit reserve line, the per-account daily token and credit budgets,
 // and the per-model daily token budget. The numbers come from the usage
-// database and the settings; the result is pushed into the pool as atomics so
-// the request path never touches either.
+// database and the settings; the result is pushed into the pool as atomics for
+// cheap readiness checks. A due Apply synchronously refreshes usage/settings;
+// only calls inside its TTL avoid the usage database.
 package guards
 
 import (
@@ -31,10 +32,13 @@ type Scanner struct {
 	// TTL bounds how often the usage fold runs (default 5 s).
 	TTL time.Duration
 
-	mu       sync.Mutex
+	mu       sync.Mutex // short request-path scan gate; never held over usage I/O
+	scanMu   sync.Mutex // serialises folds and guard publication
 	lastScan time.Time
+	lastDay  string
 	lastRev  uint64
-	counts   *dayCounts
+	counts   *dayCounts       // last successful fold, protected by scanMu
+	now      func() time.Time // nil uses the local wall clock
 }
 
 type dayCounts struct {
@@ -59,26 +63,46 @@ func (s *Scanner) logger() *slog.Logger {
 }
 
 // Apply recomputes the guards when the TTL has passed, the settings changed or
-// force is set. It is cheap to call per request: inside the TTL it is two
-// atomic loads and a mutex.
+// force is set. Inside the TTL it checks the settings revision, local day and a
+// short mutex; it never waits for an in-flight usage fold on that fast path.
 func (s *Scanner) Apply(force bool) {
-	rev := s.Settings.Rev()
+	rev, now := s.Settings.Rev(), s.clock()
 	s.mu.Lock()
-	if !force && rev == s.lastRev && time.Since(s.lastScan) < s.ttl() {
+	fresh := !force && rev == s.lastRev && now.Format("2006-01-02") == s.lastDay && now.Sub(s.lastScan) < s.ttl()
+	s.mu.Unlock()
+	if fresh {
+		return
+	}
+	// A slow older fold must not publish after a newer scan. Keep the fast
+	// gate separate so requests inside the TTL never wait on usage SQL.
+	s.scanMu.Lock()
+	defer s.scanMu.Unlock()
+	rev, now = s.Settings.Rev(), s.clock()
+	s.mu.Lock()
+	if !force && rev == s.lastRev && now.Format("2006-01-02") == s.lastDay && now.Sub(s.lastScan) < s.ttl() {
 		s.mu.Unlock()
 		return
 	}
-	s.lastScan, s.lastRev = time.Now(), rev
+	s.lastScan, s.lastRev, s.lastDay = now, rev, now.Format("2006-01-02")
 	s.mu.Unlock()
-	s.scan()
+	s.scan(now)
 }
 
-func (s *Scanner) fold() *dayCounts {
-	now := time.Now()
+func (s *Scanner) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
+func (s *Scanner) fold(now time.Time) *dayCounts {
 	rows, err := s.Usage.DayUsage(now)
 	if err != nil {
 		s.logger().Warn("daily guards: usage read failed", "err", err)
-		return nil // unknown never parks an account
+		// A read outage must not clear known same-day quota restrictions. The
+		// caller discarded yesterday's counts before folding; a cold failure
+		// still fails open, preserving the historical unknown-usage policy.
+		return s.counts
 	}
 	c := &dayCounts{day: now.Format("2006-01-02"), tokens: map[string]int64{}, credits: map[string]float64{},
 		models: map[string]map[string]int64{}}
@@ -93,17 +117,32 @@ func (s *Scanner) fold() *dayCounts {
 	return c
 }
 
-func (s *Scanner) scan() {
+// scan runs under scanMu. Cached counts are immutable and never reused across
+// local days; settings and account balances are recomputed even on read failure.
+func (s *Scanner) scan(now time.Time) {
+	if s.counts != nil && s.counts.day != now.Format("2006-01-02") {
+		s.counts = nil
+	}
 	limits := s.Settings.Limits()
-	tokLim, credLim, modLim := limits[settings.LimitDailyToken], limits[settings.LimitDailyCredit], limits[settings.LimitModelDailyToken]
-	resLim := limits[settings.LimitReserveCredits]
 	wants := func(e settings.LimitEntry) bool {
 		return e.Global > 0 || (e.Intl != nil && *e.Intl > 0) || (e.CN != nil && *e.CN > 0)
 	}
 	var counts *dayCounts
-	if s.Usage != nil && (wants(tokLim) || wants(credLim) || wants(modLim)) {
-		counts = s.fold()
+	if s.Usage != nil && (wants(limits[settings.LimitDailyToken]) || wants(limits[settings.LimitDailyCredit]) || wants(limits[settings.LimitModelDailyToken])) {
+		counts = s.fold(now)
+		s.counts = counts
+		// A slow query may cross midnight. Do not publish yesterday's quota
+		// blocks into today; the next Apply bypasses the prior-day TTL gate.
+		if now.Format("2006-01-02") != s.clock().Format("2006-01-02") {
+			counts, s.counts = nil, nil
+		}
 	}
+	// Settings can change while usage I/O is blocked. Publish from the latest
+	// settings snapshot, not the limits captured before that read (notably an
+	// operator disabling a daily cap must still clear it during an outage).
+	limits = s.Settings.Limits()
+	tokLim, credLim, modLim := limits[settings.LimitDailyToken], limits[settings.LimitDailyCredit], limits[settings.LimitModelDailyToken]
+	resLim := limits[settings.LimitReserveCredits]
 	free := map[string]map[string]bool{}
 	freeOf := func(realm string) map[string]bool {
 		if f, ok := free[realm]; ok {
