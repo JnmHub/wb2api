@@ -205,14 +205,20 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	q.vscodeConv = identity.NewMessageID()
 	h.reshape(q)
 	// No client session id: derive one from the conversation's stable head so
-	// every turn lands on the account that already holds its prefix.
+	// every turn lands on the account that already holds its prefix. The head
+	// comes from the client payload, not the reshaped body: gateway prompt
+	// modes (append/custom, degrade) rewrite the system message for every
+	// conversation at once, and hashing the rewritten body would evict every
+	// conversation from its warm account on such a change.
 	if q.sessionKey == "" {
-		if msgs, ok := q.shaped.Get("messages").([]any); ok {
-			q.sessionKey, q.page = h.affinity().route(msgs)
+		msgs, _ := payload.Get("messages").([]any)
+		if len(msgs) == 0 {
+			msgs, _ = q.shaped.Get("messages").([]any)
 		}
+		q.sessionKey, q.page = h.affinity().route(msgs)
 	}
 	var recent []string
-	if q.sessionKey != "" && q.page == nil {
+	if q.sessionKey != "" {
 		recent, q.affinityObservation = h.Pool.Affinity().ObserveContext(r.Context(), q.sessionKey)
 	}
 	if h.Sched != nil && q.sessionKey != "" {
@@ -588,7 +594,7 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 
 	ctx, cancel := context.WithCancel(q.r.Context())
 	defer cancel()
-	if q.sessionKey != "" && q.page == nil {
+	if q.sessionKey != "" {
 		_, q.affinityObservation = h.Pool.Affinity().ObserveContext(q.r.Context(), q.sessionKey)
 	}
 	tDo := time.Now()
@@ -633,7 +639,7 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 		}
 		body = staged
 	}
-	if q.sessionKey != "" && q.page == nil {
+	if q.sessionKey != "" {
 		h.Pool.Affinity().BindObserved(q.sessionKey, acc.UID, q.affinityObservation)
 	}
 	if q.sink != nil {

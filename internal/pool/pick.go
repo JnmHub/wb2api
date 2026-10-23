@@ -394,11 +394,19 @@ func (p *Pool) SelectForSessionBestContext(ctx context.Context, realm, sessionKe
 	return p.selectForSession(ctx, realm, sessionKey, exclude, model, page, better, false)
 }
 
+// selectForSession prefers the accounts that already served this conversation.
+// A conversation past the affinity length cap used to skip the table entirely
+// and rotate over its page on every turn, so a turn could land on a page
+// account that had never seen the prefix and report zero cached tokens even
+// though a warm account was available. The warm account is honoured inside the
+// page too: the page still bounds how many accounts carry the large bodies,
+// but the turn goes to one that already holds the prefix whenever it is
+// usable. Without a warm page account the rotation is unchanged.
 func (p *Pool) selectForSession(ctx context.Context, realm, sessionKey string, exclude map[string]struct{}, model string, page *Page, better func(a, b *Account) bool, bind bool) *Account {
 	if ctx.Err() != nil {
 		return nil
 	}
-	if sessionKey != "" && page == nil {
+	if sessionKey != "" {
 		now := time.Now()
 		var best *Account
 		recent := p.affinity.RecentContext(ctx, sessionKey)
@@ -411,6 +419,9 @@ func (p *Pool) selectForSession(ctx context.Context, realm, sessionKey string, e
 			}
 			a := p.Get(uid)
 			if a == nil || a.Realm != realm || !a.Ready(model, now) {
+				continue
+			}
+			if !p.inPage(realm, page, uid) {
 				continue
 			}
 			if best == nil || (better != nil && better(a, best)) {
@@ -429,10 +440,28 @@ func (p *Pool) selectForSession(ctx context.Context, realm, sessionKey string, e
 		// nobody usable on the page: serving from outside beats not serving
 		a = p.pick(realm, model, exclude, nil)
 	}
-	if bind && a != nil && sessionKey != "" && page == nil {
+	if bind && a != nil && sessionKey != "" {
 		p.affinity.Bind(sessionKey, a.UID)
 	}
 	return a
+}
+
+// inPage reports whether uid belongs to the conversation's page. A nil page, a
+// page of one, or a page as large as the realm covers every account.
+func (p *Pool) inPage(realm string, page *Page, uid string) bool {
+	if page == nil {
+		return true
+	}
+	list := p.snap.Load().byRealm[realm]
+	if page.Size <= 1 || page.Size >= len(list) {
+		return true
+	}
+	prefs := p.preferences().byRealm[realm]
+	if prefs == nil {
+		return true
+	}
+	r, ok := prefs.rank[uid]
+	return ok && r%page.Size == page.Index%page.Size
 }
 
 // RealmLen is the number of accounts in a realm.

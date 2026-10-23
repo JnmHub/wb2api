@@ -38,7 +38,8 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
 
 ## 最新发行版
 
-[v2.4.0 更新说明](docs/releases/v2.4.0.md)：高并发调度、可靠记账与三协议流式修复。
+[v2.4.1 更新说明](docs/releases/v2.4.1.md)：修复超长对话绕开会话亲和导致的缓存失效。
+上一版 [v2.4.0](docs/releases/v2.4.0.md)：高并发调度、可靠记账与三协议流式修复。
 **升级前请阅读迁移与默认策略变化；旧版用量 writer 不能与新版混跑，每个副本必须保留独立 outbox。**
 
 ## 快速开始（二进制）
