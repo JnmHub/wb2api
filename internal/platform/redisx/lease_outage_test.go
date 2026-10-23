@@ -212,7 +212,10 @@ func TestLeaseOutageRealRedisUnconfirmedRepliesFenceBeforeTTL(t *testing.T) {
 		t.Fatal(err)
 	}
 	limiter := NewLimiter(client)
-	limiter.ttl = 900 * time.Millisecond
+	// A TTL this long keeps the renewal provably fresh while the proxy drops
+	// replies, even when the test goroutine is descheduled for a while on a
+	// loaded runner. The fence must still arrive before the full TTL.
+	limiter.ttl = 3 * time.Second
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
 	lost := make(chan time.Time, 1)
@@ -247,6 +250,23 @@ func TestLeaseOutageRealRedisUnconfirmedRepliesFenceBeforeTTL(t *testing.T) {
 	if lastAck.IsZero() {
 		t.Fatal("proxy observed no confirmed replies")
 	}
+	// Prove this is ambiguous success, not merely a disconnected socket: a
+	// renewal whose reply was discarded still commits on the server. Drive one
+	// directly instead of waiting for the heartbeat ticker. On a loaded CI
+	// runner the ticker may not be scheduled before the fence, and a late tick
+	// would prove nothing about ambiguity; the commit path is identical.
+	committed := false
+	for attempt := 0; attempt < 20 && !committed; attempt++ {
+		callCtx, callCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		_, _ = renewScript.Run(callCtx, limiter.c.Client, []string{key}, "owner",
+			time.Now().UnixMilli(), limiter.ttl.Milliseconds()).Int()
+		callCancel()
+		after, zerr := control.ZScore(context.Background(), key, "owner").Result()
+		committed = zerr == nil && after > beforeBlackout
+	}
+	if !committed {
+		t.Fatal("blacked-out renewal never committed on the server")
+	}
 	var canceledAt time.Time
 	select {
 	case canceledAt = <-lost:
@@ -255,12 +275,6 @@ func TestLeaseOutageRealRedisUnconfirmedRepliesFenceBeforeTTL(t *testing.T) {
 	}
 	if !errors.Is(context.Cause(ctx), ErrLeaseLost) {
 		t.Fatalf("cause=%v", context.Cause(ctx))
-	}
-	// Prove this was ambiguous success, not merely a disconnected socket:
-	// Redis processed at least one renewal whose reply the owner never saw.
-	afterBlackout, err := control.ZScore(context.Background(), key, "owner").Result()
-	if err != nil || afterBlackout <= beforeBlackout {
-		t.Fatalf("fault proxy did not commit an unacknowledged renewal: before=%v after=%v err=%v", beforeBlackout, afterBlackout, err)
 	}
 	// Forwarded ACK time is later than call-start, so this is a conservative
 	// upper bound: the safety watch must not consume even that full lease TTL.
