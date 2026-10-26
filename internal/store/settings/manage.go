@@ -475,11 +475,16 @@ func (s *Store) SetCreditsRefreshHours(h float64) error {
 // ---------------------------------------------------------------- schedule
 
 // DefaultSchedule are the hours (local time) the unattended jobs fire at.
+// Every chore owns its grid: checkin is the CN check-in, report the CN
+// chat-activity report, daily_chat the international daily activity (desktop
+// chat plus the web-console session), keepalive the token sweep.
 var DefaultSchedule = map[string][]int{
-	"checkin":   {9, 21}, // CN daily check-in
-	"travel":    {9, 21}, // kept for settings compatibility (unused)
-	"keepalive": {22},    // token keep-alive sweep
-	"cat":       {1},     // kept for settings compatibility (unused)
+	"checkin":    {9, 21}, // CN daily check-in
+	"report":     {9, 21}, // CN chat-activity report
+	"daily_chat": {9, 21}, // INTL daily activity chat
+	"travel":     {9, 21}, // kept for settings compatibility (unused)
+	"keepalive":  {22},    // token keep-alive sweep
+	"cat":        {1},     // kept for settings compatibility (unused)
 }
 
 func normalizeHours(v any) ([]int, bool) {

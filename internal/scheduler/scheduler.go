@@ -152,6 +152,8 @@ func (s *Scheduler) NextFire() time.Time {
 }
 
 // Trigger runs a cycle now in the background; false when one is already running.
+// A manual trigger ignores the hour grids: the operator asked for the chores
+// now, and the once-a-day stamps still keep every upstream call idempotent.
 func (s *Scheduler) Trigger() bool {
 	if !s.isLeader() {
 		return false
@@ -162,12 +164,30 @@ func (s *Scheduler) Trigger() bool {
 		return false
 	}
 	s.mu.Unlock()
-	go s.Cycle(context.Background(), "手动立即触发")
+	go s.cycle(context.Background(), "手动立即触发", true)
 	return true
 }
 
-// Cycle performs one pass over every account.
+// Cycle performs one pass over every account, honouring the hour grids.
 func (s *Scheduler) Cycle(ctx context.Context, reason string) {
+	s.cycle(ctx, reason, false)
+}
+
+// dueInGrid reports whether a chore with these grid hours is due: on a
+// configured hour, or in any later cycle of the same day (so a chore that
+// failed earlier is retried by the following sweeps instead of waiting a day).
+// normalizeHours sorts the grid, so the last entry is the final shot of the day.
+func dueInGrid(hours []int, hour int) bool {
+	if hoursInclude(hours, hour) {
+		return true
+	}
+	if len(hours) == 0 {
+		return false
+	}
+	return hour > hours[len(hours)-1]
+}
+
+func (s *Scheduler) cycle(ctx context.Context, reason string, force bool) {
 	if !s.isLeader() {
 		s.note("跳过本次巡检 (%s)：当前副本不是后台任务主节点", reason)
 		return
@@ -185,8 +205,15 @@ func (s *Scheduler) Cycle(ctx context.Context, reason string) {
 	s.note("开始执行任务 (%s)...", reason)
 	hour := s.now().Hour()
 	sched := s.Settings.ScheduleHours()
-	travelHours := hoursInclude(sched["travel"], hour)
-	nightHours := hoursInclude(sched["cat"], hour)
+	// Each chore has its own grid. A cycle fires on the union of every grid, so
+	// the gates below keep the 01:00 night sweep from re-attempting the daily
+	// check-in and the international daily chat, and let an operator move the
+	// daily chat to its own hours.
+	checkinDue := force || dueInGrid(sched["checkin"], hour)
+	reportDue := force || dueInGrid(sched["report"], hour)
+	chatDue := force || dueInGrid(sched["daily_chat"], hour)
+	travelHours := force || hoursInclude(sched["travel"], hour)
+	nightHours := force || hoursInclude(sched["cat"], hour)
 	accs := append([]*pool.Account(nil), s.Pool.All()...)
 	if len(accs) == 0 {
 		s.note("暂无可用的活跃账号，跳过本次巡检")
@@ -233,7 +260,7 @@ func (s *Scheduler) Cycle(ctx context.Context, reason string) {
 		}
 		switch rec.Realm {
 		case realm.CN:
-			if s.Ops.CanCheckin(acc) {
+			if checkinDue && s.Ops.CanCheckin(acc) {
 				res := s.Ops.Checkin(ctx, acc, "scheduler")
 				if res.OK {
 					checkin++
@@ -243,7 +270,7 @@ func (s *Scheduler) Cycle(ctx context.Context, reason string) {
 				}
 				s.pause(time.Second)
 			}
-			if s.Ops.CanReportActivity(acc) {
+			if reportDue && s.Ops.CanReportActivity(acc) {
 				res := s.Ops.ReportActivity(ctx, acc, "scheduler")
 				if res.OK {
 					report++
@@ -278,7 +305,7 @@ func (s *Scheduler) Cycle(ctx context.Context, reason string) {
 				}
 			}
 		case realm.Intl:
-			if s.Ops.CanDailyChat(acc) {
+			if chatDue && s.Ops.CanDailyChat(acc) {
 				res := s.Ops.DailyChat(ctx, acc, "scheduler")
 				if res.OK {
 					chat++
@@ -353,7 +380,9 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.runWindows(ctx)
 		s.runScans(ctx)
 		if s.Settings.SchedulerEnabled() {
-			s.Cycle(ctx, "启动初次初始化巡检")
+			// The start-up pass is a catch-up: a replica that comes back after
+			// the configured hour still checks in and chats once for the day.
+			s.cycle(ctx, "启动初次初始化巡检", true)
 		}
 	}
 	lastFired := time.Time{}

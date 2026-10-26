@@ -96,6 +96,14 @@ func (f *fx) called(sub string) int {
 	return n
 }
 
+// atHour pins the scheduler clock to a given local hour of today, so the hour
+// grids are exercised deterministically. The ops client keeps the real clock,
+// which is what the once-a-day stamps compare against.
+func (f *fx) atHour(h int) {
+	now := time.Now()
+	f.s.Now = func() time.Time { return time.Date(now.Year(), now.Month(), now.Day(), h, 5, 0, 0, now.Location()) }
+}
+
 func TestCycleDoesTheDailyChores(t *testing.T) {
 	f := newFx(t,
 		map[string]any{"realm": "cn", "uid": "cn-1"},                                                               // check-in + activity report
@@ -105,6 +113,7 @@ func TestCycleDoesTheDailyChores(t *testing.T) {
 		map[string]any{"realm": "intl", "uid": "soon", "expiresAt": time.Now().Add(30 * time.Minute).Unix(),
 			"lastDailyChat": time.Now().Format("2006-01-02 15:04:05")}, // keep-alive only
 	)
+	f.atHour(9) // the default grid: check-in, report and daily chat at 09:00
 	f.s.Cycle(context.Background(), "test")
 	if f.called("daily-checkin cn-1") != 1 || f.called("/v2/report cn-1") != 1 || f.called("chat/completions intl-1") != 1 {
 		t.Fatalf("calls: %v", f.calls)
@@ -216,5 +225,79 @@ func TestNextFireAndHours(t *testing.T) {
 	}
 	if got, err := f.s.Settings.SetScheduleHours(map[string]any{"checkin": "8, 20, 20, 99"}); err != nil || len(got["checkin"]) != 2 || got["checkin"][0] != 8 {
 		t.Fatalf("%v %v", got, err)
+	}
+	// Every chore owns a grid; the daily chat no longer rides on the check-in one.
+	if got := f.s.Settings.ScheduleHours()["daily_chat"]; len(got) != 2 || got[0] != 9 || got[1] != 21 {
+		t.Fatalf("default daily chat grid: %v", got)
+	}
+}
+
+func TestDueInGrid(t *testing.T) {
+	grid := []int{9, 21}
+	for _, tc := range []struct {
+		hour int
+		want bool
+	}{
+		{8, false},  // before the first slot
+		{9, true},   // on the slot
+		{16, false}, // between slots: not this chore's turn
+		{21, true},  // second slot
+		{22, true},  // after the last slot: a failed chore is retried today
+		{1, false},  // the night sweep belongs to another chore
+	} {
+		if got := dueInGrid(grid, tc.hour); got != tc.want {
+			t.Errorf("dueInGrid(%v, %d) = %v", grid, tc.hour, got)
+		}
+	}
+	if dueInGrid(nil, 9) {
+		t.Error("an empty grid never fires")
+	}
+}
+
+func TestDailyChoresStayOffForeignHours(t *testing.T) {
+	f := newFx(t,
+		map[string]any{"realm": "cn", "uid": "cn-1"},
+		map[string]any{"realm": "intl", "uid": "intl-1"},
+	)
+	f.atHour(16) // the 01:00 and 22:00 sweeps must not drag the daily chores along
+	f.s.Cycle(context.Background(), "midday")
+	if f.called("daily-checkin") != 0 || f.called("/v2/report") != 0 || f.called("chat/completions") != 0 {
+		t.Fatalf("daily chores ran off their grid: %v", f.calls)
+	}
+	// Past the last slot of the day the sweeps retry whatever is still due.
+	f.atHour(22)
+	f.s.Cycle(context.Background(), "catch-up")
+	if f.called("daily-checkin cn-1") != 1 || f.called("/v2/report cn-1") != 1 || f.called("chat/completions intl-1") != 1 {
+		t.Fatalf("catch-up did not run the chores: %v", f.calls)
+	}
+}
+
+func TestManualCycleIgnoresTheGrid(t *testing.T) {
+	f := newFx(t,
+		map[string]any{"realm": "cn", "uid": "cn-1"},
+		map[string]any{"realm": "intl", "uid": "intl-1"},
+	)
+	f.atHour(3)
+	f.s.cycle(context.Background(), "手动立即触发", true)
+	if f.called("daily-checkin cn-1") != 1 || f.called("/v2/report cn-1") != 1 || f.called("chat/completions intl-1") != 1 {
+		t.Fatalf("a manual run ignores the hour grids: %v", f.calls)
+	}
+}
+
+func TestDailyChatGridIsIndependent(t *testing.T) {
+	f := newFx(t,
+		map[string]any{"realm": "cn", "uid": "cn-1"},
+		map[string]any{"realm": "intl", "uid": "intl-1"},
+	)
+	if _, err := f.s.Settings.SetScheduleHours(map[string]any{"daily_chat": "3"}); err != nil {
+		t.Fatal(err)
+	}
+	f.atHour(3)
+	f.s.Cycle(context.Background(), "chat grid")
+	if f.called("chat/completions intl-1") != 1 {
+		t.Fatalf("the daily chat did not follow its own grid: %v", f.calls)
+	}
+	if f.called("daily-checkin") != 0 || f.called("/v2/report") != 0 {
+		t.Fatalf("moving the daily chat moved the CN chores too: %v", f.calls)
 	}
 }

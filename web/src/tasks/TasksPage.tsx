@@ -169,7 +169,7 @@ function GrowthCard() {
 function SchedulerCard() {
   const qc = useQueryClient()
   const q = useQuery({ queryKey: ['scheduler'], queryFn: () => get<SchedulerStatus>('/api/v2/scheduler'), refetchInterval: 5000 })
-  const [hours, setHours] = useState<{ checkin: string; keepalive: string } | null>(null)
+  const [hours, setHours] = useState<{ checkin: string; daily_chat: string; keepalive: string } | null>(null)
   const [msg, setMsg] = useState('')
   const update = useMutation({
     mutationFn: (body: Record<string, unknown>) => patch<SchedulerStatus>('/api/v2/scheduler', body),
@@ -198,7 +198,12 @@ function SchedulerCard() {
   if (!s) {
     return <Card style={{ marginBottom: 12 }}>{q.isError ? String(q.error) : '加载中…'}</Card>
   }
-  const edit = hours ?? { checkin: (s.schedule.checkin ?? []).join(', '), keepalive: (s.schedule.keepalive ?? []).join(', ') }
+  const edit =
+    hours ?? {
+      checkin: (s.schedule.checkin ?? []).join(', '),
+      daily_chat: (s.schedule.daily_chat ?? []).join(', '),
+      keepalive: (s.schedule.keepalive ?? []).join(', '),
+    }
   const dirty = hours !== null
   return (
     <Card
@@ -215,14 +220,19 @@ function SchedulerCard() {
     >
       <Typography.Paragraph type="secondary">
         Token 保活、国内版每日签到与活跃上报、国际版每日活跃对话，账号之间随机错峰 2–5 秒；受风控限制的账号和被暂停的区域会被跳过。
+        每类任务只在各自的整点执行，错过最后一个整点后当天后续巡检会补跑；「立即巡检」不受整点限制。
       </Typography.Paragraph>
       <Toggle label="启用定时任务" checked={s.enabled} onChange={(v) => update.mutate({ enabled: v })} />
       <Row gutter={12} style={{ marginTop: 12 }}>
-        <Col xs={24} md={12}>
-          <Typography.Text type="secondary">签到 / 活跃巡检的整点（本地时间，逗号分隔）</Typography.Text>
+        <Col xs={24} md={8}>
+          <Typography.Text type="secondary">国内签到 / 活跃上报的整点（本地时间，逗号分隔）</Typography.Text>
           <Input value={edit.checkin} onChange={(e) => setHours({ ...edit, checkin: e.target.value })} placeholder="9, 21" />
         </Col>
-        <Col xs={24} md={12}>
+        <Col xs={24} md={8}>
+          <Typography.Text type="secondary">国际版每日活跃对话的整点</Typography.Text>
+          <Input value={edit.daily_chat} onChange={(e) => setHours({ ...edit, daily_chat: e.target.value })} placeholder="9, 21" />
+        </Col>
+        <Col xs={24} md={8}>
           <Typography.Text type="secondary">Token 保活巡检的整点</Typography.Text>
           <Input value={edit.keepalive} onChange={(e) => setHours({ ...edit, keepalive: e.target.value })} placeholder="22" />
         </Col>
@@ -237,7 +247,15 @@ function SchedulerCard() {
             size="small"
             type="primary"
             loading={update.isPending}
-            onClick={() => update.mutate({ schedule: { checkin: parseHours(edit.checkin), keepalive: parseHours(edit.keepalive) } })}
+            onClick={() =>
+              update.mutate({
+                schedule: {
+                  checkin: parseHours(edit.checkin),
+                  daily_chat: parseHours(edit.daily_chat),
+                  keepalive: parseHours(edit.keepalive),
+                },
+              })
+            }
           >
             保存时间表
           </Button>
