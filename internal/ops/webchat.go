@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -64,21 +67,67 @@ func (c *Client) dailyChatWebUpstream(ctx context.Context, acc *pool.Account) Re
 	if c.Settings.DailyChatWebRetry() {
 		total = c.Settings.DailyChatWebAttempts()
 	}
+	bctx, cancel := context.WithTimeout(ctx, dailyChatBudget())
+	defer cancel()
 	var last Result
+	var lastBackoff time.Duration
 	for attempt := 0; attempt < total; attempt++ {
-		wait := base << attempt
-		turn := c.webTurnOnce(ctx, acc, wait)
+		if attempt > 0 {
+			lastBackoff = dailyChatBackoff(attempt)
+			if dl, ok := bctx.Deadline(); ok && time.Until(dl) < lastBackoff {
+				return Result{Error: "每日活跃超出本轮时间预算，稍后自动重试",
+					Extra: map[string]any{"attempts": attempt, "budget_exhausted": true,
+						"wait_ms": lastBackoff.Milliseconds()}}
+			}
+			select {
+			case <-time.After(lastBackoff):
+			case <-bctx.Done():
+				return Result{Error: "每日活跃超出本轮时间预算，稍后自动重试",
+					Extra: map[string]any{"attempts": attempt, "budget_exhausted": true,
+						"wait_ms": lastBackoff.Milliseconds()}}
+			}
+		}
+		sessionWait := base * (attempt + 1)
+		turn := c.webTurnOnce(bctx, acc, sessionWait)
 		turn.Attempts = attempt + 1
 		res := Result{OK: turn.OK, Msg: turn.summary(), Error: turn.Error,
 			Extra: map[string]any{"conversation": turn.Conversation, "status": turn.Status,
 				"events": turn.Events, "chunks": turn.Chunks, "elapsed_ms": turn.ElapsedMS,
-				"attempts": turn.Attempts, "retryable": turn.Retryable}}
+				"attempts": turn.Attempts, "retryable": turn.Retryable,
+				"wait_ms": lastBackoff.Milliseconds()}}
 		last = res
-		if turn.OK || !turn.Retryable || ctx.Err() != nil {
+		if turn.OK || !turn.Retryable || bctx.Err() != nil {
+			if !turn.OK && bctx.Err() != nil {
+				res.Extra["budget_exhausted"] = true
+				last = res
+			}
 			return res
 		}
 	}
 	return last
+}
+
+// dailyChatBudget caps one daily-chat run (all attempts together).
+func dailyChatBudget() time.Duration {
+	if v, ok := envMillis("WB_DAILY_CHAT_BUDGET_MS"); ok {
+		if v <= 0 {
+			return 8 * time.Minute
+		}
+		return time.Duration(v) * time.Millisecond
+	}
+	return 8 * time.Minute
+}
+
+// dailyChatBackoff is the linear gap before retry number n (n >= 1).
+func dailyChatBackoff(n int) time.Duration {
+	if n < 1 {
+		return 0
+	}
+	d := time.Duration(n) * 2 * time.Second
+	if d > 30*time.Second {
+		d = 30 * time.Second
+	}
+	return d
 }
 
 func (t WebTurnResult) summary() string {
@@ -91,7 +140,7 @@ func (t WebTurnResult) summary() string {
 	return fmt.Sprintf("网页通道失败（第 %d 轮）：%s", t.Attempts, t.Error)
 }
 
-func (c *Client) webTurnOnce(ctx context.Context, acc *pool.Account, waitSeconds int) WebTurnResult {
+func (c *Client) webTurnOnce(ctx context.Context, acc *pool.Account, waitSeconds int) (turn WebTurnResult) {
 	started := time.Now()
 	fail := func(format string, args ...any) WebTurnResult {
 		return WebTurnResult{ElapsedMS: time.Since(started).Milliseconds(), Error: fmt.Sprintf(format, args...), Retryable: true}
@@ -99,12 +148,27 @@ func (c *Client) webTurnOnce(ctx context.Context, acc *pool.Account, waitSeconds
 	model := c.dailyModel(acc)
 	conv, err := c.createWebConversation(ctx, acc, model)
 	if err != nil {
-		var business *webBusinessError
-		if errors.As(err, &business) {
-			return WebTurnResult{ElapsedMS: time.Since(started).Milliseconds(), Error: business.Error(), Retryable: false}
+		var capped *webCapError
+		if errors.As(err, &capped) {
+			if c.clearOldestWebConversations(ctx, acc, 1) == 0 {
+				return WebTurnResult{ElapsedMS: time.Since(started).Milliseconds(),
+					Error: "会话数量已达上限，且没有可清理的旧会话：" + err.Error(), Retryable: true}
+			}
+			conv, err = c.createWebConversation(ctx, acc, model)
 		}
-		return fail("建会话失败：%v", err)
+		if err != nil {
+			var business *webBusinessError
+			if errors.As(err, &business) {
+				return WebTurnResult{ElapsedMS: time.Since(started).Milliseconds(), Error: business.Error(), Retryable: false}
+			}
+			return fail("建会话失败：%v", err)
+		}
 	}
+	// The conversation exists now; whatever happens next it must not be left
+	// behind — the console caps the number of live conversations per account.
+	defer func() {
+		c.releaseWebConversation(ctx, acc, conv, turn.OK)
+	}()
 	session, err := c.webGetJSON(ctx, acc, c.webConvURL(conv)+"/session")
 	if err != nil {
 		return WebTurnResult{Conversation: conv, ElapsedMS: time.Since(started).Milliseconds(),
@@ -125,7 +189,7 @@ func (c *Client) webTurnOnce(ctx context.Context, acc *pool.Account, waitSeconds
 		return WebTurnResult{Conversation: conv, ElapsedMS: time.Since(started).Milliseconds(),
 			Error: "沙箱未就绪（没有 link/token）", Retryable: true}
 	}
-	turn := c.runACPTurn(ctx, acc, conv, link, token, sessionID, cwd, model, waitSeconds)
+	turn = c.runACPTurn(ctx, acc, conv, link, token, sessionID, cwd, model, waitSeconds)
 	turn.Conversation = conv
 	if turn.OK {
 		turn.ElapsedMS = time.Since(started).Milliseconds()
@@ -194,6 +258,9 @@ func (c *Client) createWebConversation(ctx context.Context, acc *pool.Account, m
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode/100 != 2 {
+		if resp.StatusCode == http.StatusTooManyRequests || webCapHint(string(data)) {
+			return "", &webCapError{status: resp.StatusCode, body: truncate(string(data), 160)}
+		}
 		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(string(data), 120))
 	}
 	o, err := jsonx.UnmarshalObj(data)
@@ -205,7 +272,11 @@ func (c *Client) createWebConversation(ctx context.Context, acc *pool.Account, m
 		code = fmt.Sprint(v)
 	}
 	if code != "" && code != "0" {
-		return "", &webBusinessError{code: code, msg: fmt.Sprint(o.Get("msg"))}
+		msg := fmt.Sprint(o.Get("msg"))
+		if code == "10105" || webCapHint(msg) {
+			return "", &webCapError{status: resp.StatusCode, body: truncate(code+" "+msg, 160)}
+		}
+		return "", &webBusinessError{code: code, msg: msg}
 	}
 	d, _ := o.Get("data").(*jsonx.Obj)
 	id := ""
@@ -409,4 +480,162 @@ func readACPStream(body io.Reader, updates, chunks *int32) {
 			atomic.AddInt32(chunks, 1)
 		}
 	}
+}
+
+// ------------------------------------------------------- conversation release
+
+// webCapError means the account already holds the maximum number of live web
+// conversations; the fix is to drop the oldest one and try again.
+type webCapError struct {
+	status int
+	body   string
+}
+
+func (e *webCapError) Error() string {
+	return fmt.Sprintf("会话数量已达上限（HTTP %d）：%s", e.status, e.body)
+}
+
+func webCapHint(text string) bool {
+	low := strings.ToLower(text)
+	return containsAny(low, "10105", "会话数量", "会话数已达", "too many conversation", "conversation limit", "maximum number of conversations", "limit reached")
+}
+
+// releaseWebConversation stops a finished conversation (and deletes a failed
+// one). Cleanup never changes the task outcome.
+func (c *Client) releaseWebConversation(ctx context.Context, acc *pool.Account, conv string, ok bool) {
+	if conv == "" {
+		return
+	}
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	_ = c.stopWebConversation(cctx, acc, conv)
+	if !ok {
+		_ = c.deleteWebConversation(cctx, acc, conv)
+	}
+}
+
+func (c *Client) stopWebConversation(ctx context.Context, acc *pool.Account, conv string) error {
+	body := jsonx.NewObj()
+	raw, _ := jsonx.Marshal(body)
+	resp, err := c.webDo(ctx, acc, http.MethodPost, c.webConvURL(conv)+"/stop", raw, "application/json, text/plain, */*")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("stop HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (c *Client) deleteWebConversation(ctx context.Context, acc *pool.Account, conv string) error {
+	resp, err := c.webDo(ctx, acc, http.MethodDelete, c.webConvURL(conv), nil, "application/json, text/plain, */*")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("delete HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// clearOldestWebConversations drops up to n conversations listed oldest-first
+// by the console and returns how many deletes succeeded.
+func (c *Client) clearOldestWebConversations(ctx context.Context, acc *pool.Account, n int) int {
+	if n <= 0 {
+		return 0
+	}
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 8*time.Second)
+	defer cancel()
+	ids := c.listWebConversations(cctx, acc)
+	removed := 0
+	for i := 0; i < len(ids) && removed < n; i++ {
+		if err := c.deleteWebConversation(cctx, acc, ids[i]); err == nil {
+			removed++
+		}
+	}
+	return removed
+}
+
+// listWebConversations reads the console list and returns ids oldest-first when
+// the payload carries a creation time; otherwise in the order returned.
+func (c *Client) listWebConversations(ctx context.Context, acc *pool.Account) []string {
+	o, err := c.webGetJSON(ctx, acc, c.webBase()+webConversations)
+	if err != nil {
+		return nil
+	}
+	root := o
+	if d, ok := o.Get("data").(*jsonx.Obj); ok && d != nil {
+		root = d
+	}
+	var raw []any
+	for _, k := range []string{"conversations", "items", "list", "rows", "data"} {
+		if arr, ok := root.Get(k).([]any); ok {
+			raw = arr
+			break
+		}
+	}
+	type entry struct {
+		id      string
+		created int64
+	}
+	out := make([]entry, 0, len(raw))
+	for _, it := range raw {
+		obj, ok := it.(*jsonx.Obj)
+		if !ok {
+			continue
+		}
+		id := firstNonEmptyObj(obj, "id", "conversationId", "conversation_id")
+		if id == "" {
+			continue
+		}
+		created := int64(0)
+		for _, k := range []string{"createdAt", "created_at", "createTime", "created"} {
+			if v, ok := obj.Lookup(k); ok && v != nil {
+				switch t := v.(type) {
+				case float64:
+					created = int64(t)
+				case json.Number:
+					if n, err := t.Int64(); err == nil {
+						created = n
+					}
+				}
+			}
+		}
+		out = append(out, entry{id: id, created: created})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	hasTimes := false
+	for _, e := range out {
+		if e.created > 0 {
+			hasTimes = true
+			break
+		}
+	}
+	if hasTimes {
+		sort.SliceStable(out, func(i, j int) bool { return out[i].created < out[j].created })
+	}
+	ids := make([]string, 0, len(out))
+	for _, e := range out {
+		ids = append(ids, e.id)
+	}
+	return ids
+}
+
+// envMillis reads a millisecond override from the environment.
+func envMillis(name string) (int64, bool) {
+	raw, ok := os.LookupEnv(name)
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }

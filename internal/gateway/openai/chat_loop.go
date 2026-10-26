@@ -123,6 +123,15 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	q.at.full = map[string]*pool.Account{}
 	applyBackgroundAlias(payload, h.logger())
 	q.model, _ = payload.Get("model").(string)
+	// A client-facing alias resolves before every check, so the deny-list, the
+	// key's model filter, realm rules and the upstream call all see the real id.
+	if h.Settings != nil {
+		if real, ok := h.Settings.ResolveModelAlias(q.model); ok {
+			q.clientModel = q.model
+			q.model = real
+			payload.Set("model", real)
+		}
+	}
 	// The local model deny-list: refuse before touching the upstream (legacy
 	// is_model_banned), in whatever envelope the endpoint speaks.
 	if h.Settings != nil && h.Settings.ModelBanned(q.model) {
@@ -138,6 +147,18 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	q.sink = opts.sink
 	explicit := requestRealm(r, key)
 	pinned := PinnedFrom(r.Context())
+	if key != nil {
+		q.keyID = key.ID
+		if key.Restricted() {
+			q.keyAccounts = key.Accounts
+			q.keyDenied = h.accountsDeniedFor(key.Accounts)
+			if pinned != nil && !key.AllowsAccount(pinned.UID) {
+				q.httpErr(http.StatusForbidden,
+					fmt.Sprintf("API Key %s 无权使用账号 %s。", key.Name, pinned.UID), "permission_error")
+				return
+			}
+		}
+	}
 	switch {
 	case explicit != "":
 		q.realm = explicit
@@ -204,6 +225,7 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	}
 	q.vscodeConv = identity.NewMessageID()
 	h.reshape(q)
+	h.applyEffortMap(q)
 	// No client session id: derive one from the conversation's stable head so
 	// every turn lands on the account that already holds its prefix. The head
 	// comes from the client payload, not the reshaped body: gateway prompt
@@ -801,7 +823,9 @@ func (h *Handler) classify(q *request, acc *pool.Account, status int, body []byt
 			h.logger().Warn("unscoped 429, parking the model", "account", short(acc.UID), "model", q.model,
 				"for", wait, "streak", acc.UnscopedStreak())
 		}
-		acc.NoteModelError(q.model, until, wait, "HTTP 429 (model throttled)", detail, now)
+		if rec, isNew := acc.NoteModelError(q.model, until, wait, "HTTP 429 (model throttled)", detail, now); isNew && rec != nil {
+			h.persistRecord(rec)
+		}
 		// Any model-scoped 429 that names a reset instant becomes a window the
 		// scheduler can probe at that instant (legacy wb_window_probe).
 		if hasReset && h.Windows != nil {
@@ -897,6 +921,21 @@ func (h *Handler) classify(q *request, acc *pool.Account, status int, body []byt
 		if code := modelScopedErrorCode(body); code != 0 && modelScopedErrorCodes[code] {
 			// A dead/unsupported model must not be charged to the account: the
 			// body says the model/service is unavailable, not the credential.
+			if code == 11158 {
+				// "model not available to this account" is per account: a paid
+				// account may still serve it. Remember the refusal (24h, persisted)
+				// so this account stops being picked for that model, then try the
+				// next account instead of failing the whole request.
+				h.logger().Warn("upstream model entitlement error; blocking model for this account",
+					"account", short(acc.UID), "model", q.model, "code", code)
+				if rec, changed := acc.BlockModel(q.model, now.Add(entitlementBlock), now); changed && rec != nil {
+					if err := h.Persist(rec); err != nil {
+						h.logger().Warn("cannot persist model entitlement block", "account", short(acc.UID), "err", err)
+					}
+				}
+				q.demote(h, acc)
+				return result{kind: retry, status: status, body: body}
+			}
 			// Stop rotating (another account would hit the same model error).
 			h.logger().Warn("upstream model-scoped error; not charging the account",
 				"account", short(acc.UID), "model", q.model, "code", code, "status", status)

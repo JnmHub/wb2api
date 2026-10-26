@@ -201,6 +201,8 @@ func (h *Handler) messagesStream(q *request, acc *pool.Account, cancelUp context
 	hdr.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	bw := h.newRelayWriter(w, q.r)
+	stopBeat := startHeartbeat(bw, sseHeartbeat, func() { cancelUp() })
+	defer stopBeat()
 	defer bw.Close()
 	flush := bw.Flush
 	if idleD <= 0 {
@@ -209,12 +211,15 @@ func (h *Handler) messagesStream(q *request, acc *pool.Account, cancelUp context
 	s := anthropic.NewStream(model, anthropic.Env{}, anthropic.DefaultCached)
 	pacer := newStreamPacer(q.maxTPS)
 	var (
-		acc2         []byte
-		firstAt      time.Time
-		lastAt       time.Time
-		nChunks      int
-		streamErr    error
-		clientClosed bool
+		acc2          []byte
+		firstAt       time.Time
+		lastAt        time.Time
+		nChunks       int
+		streamErr     error
+		clientClosed  bool
+		sawContent    bool
+		sawReasoning  bool
+		reasoningOnly bool
 	)
 	br := bufio.NewReaderSize(&relayReader{body: body, idle: idleD, cancel: cancelUp, beforeRead: func() error {
 		err := flush()
@@ -243,6 +248,12 @@ func (h *Handler) messagesStream(q *request, acc *pool.Account, cancelUp context
 				}
 				lastAt = now
 				nChunks++
+				if ct, rs, cl := chunkSignals(data); ct || cl {
+					sawContent = true
+					_ = rs
+				} else if rs {
+					sawReasoning = true
+				}
 			}
 			for _, f := range s.Line(line) {
 				if _, werr := bw.Write(f); werr != nil {
@@ -272,6 +283,10 @@ func (h *Handler) messagesStream(q *request, acc *pool.Account, cancelUp context
 	case clientClosed:
 	case streamErr != nil:
 		_, _ = bw.Write(anthropic.ErrorFrame("api_error", "upstream stream aborted"))
+	case !sawContent && sawReasoning:
+		// Thinking without an answer is a failure, not a blank success.
+		reasoningOnly = true
+		_, _ = bw.Write(anthropic.ErrorFrame("api_error", reasoningOnlyDetail))
 	default:
 		for _, f := range s.Finish() {
 			_, _ = bw.Write(f)
@@ -286,6 +301,8 @@ func (h *Handler) messagesStream(q *request, acc *pool.Account, cancelUp context
 		outcome = "client_aborted"
 	case streamErr != nil:
 		outcome, status = "upstream_aborted", http.StatusBadGateway
+	case reasoningOnly:
+		outcome, status = "failed", http.StatusBadGateway
 	case s.Failed():
 		outcome, status = "failed", http.StatusBadGateway
 	}

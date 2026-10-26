@@ -460,6 +460,14 @@ func (h *Handler) responsesWhole(q *request, acc *pool.Account, cancel context.C
 		break
 	}
 	ev := res.usageEvent(acc, model, q.keyID, q.effort(h), q.start)
+	if res.content == "" && res.reasoning != "" && len(res.calls) == 0 {
+		ev.Outcome, ev.Status = "failed", http.StatusBadGateway
+		h.emitWithLatency(q.r.Context(), ev)
+		if q.r.Context().Err() == nil {
+			writeError(q.w, http.StatusBadGateway, reasoningOnlyDetail, "server_error")
+		}
+		return
+	}
 	msg := jsonx.NewObj()
 	msg.Set("role", "assistant")
 	msg.Set("content", res.content)
@@ -513,6 +521,8 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 	w.WriteHeader(http.StatusOK)
 	bw := h.newRelayWriter(w, q.r)
 	defer bw.Close()
+	stopBeat := startHeartbeat(bw, sseHeartbeat, func() { cancelUp() })
+	defer stopBeat()
 	flush := bw.Flush
 	write := func(frames []responses.Frame) error {
 		for _, f := range frames {
@@ -532,11 +542,14 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 	s := responses.NewStream(model, info, responses.Env{})
 	pacer := newStreamPacer(q.maxTPS)
 	var (
-		firstAt      time.Time
-		lastAt       time.Time
-		nChunks      int
-		streamErr    error
-		clientClosed bool
+		firstAt       time.Time
+		lastAt        time.Time
+		nChunks       int
+		streamErr     error
+		clientClosed  bool
+		sawContent    bool
+		sawReasoning  bool
+		reasoningOnly bool
 	)
 	// created / in_progress go out at once so the client knows it is connected
 	if write(s.Start()) != nil || flush() != nil {
@@ -602,6 +615,12 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 					}
 					lastAt = now
 					stripped := info.WebTools && filterWebChunk(chunk, pending)
+					if ct, rs, cl := chunkSignals(data); ct || cl {
+						sawContent = true
+						_ = rs
+					} else if rs {
+						sawReasoning = true
+					}
 					if !stripped {
 						if write(s.Chunk(chunk)) != nil {
 							clientClosed = true
@@ -660,7 +679,14 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 		current = &responseRound{Reader: nr}
 	}
 	if !clientClosed && streamErr == nil {
-		if write(s.Finish()) != nil {
+		if !sawContent && sawReasoning {
+			// Reasoning with no answer: report a failed response instead of a
+			// completed one with empty output.
+			reasoningOnly = true
+			if write([]responses.Frame{s.Error(reasoningOnlyDetail)}) != nil {
+				clientClosed = true
+			}
+		} else if write(s.Finish()) != nil {
 			clientClosed = true
 		}
 	} else if !clientClosed && q.r.Context().Err() == nil {
@@ -680,6 +706,8 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 		outcome = "client_aborted"
 	case streamErr != nil:
 		outcome, status = "upstream_aborted", http.StatusBadGateway
+	case reasoningOnly:
+		outcome, status = "failed", http.StatusBadGateway
 	}
 	ev := UsageEvent{At: q.start, Model: model, Account: acc.UID, KeyID: q.keyID, Stream: true, Outcome: outcome,
 		Status: status, Elapsed: time.Since(q.start), Usage: usageJSON(s.Usage()), Estimated: s.Estimated(), Chunks: nChunks, Effort: q.effort(h)}

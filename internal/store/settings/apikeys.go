@@ -14,6 +14,7 @@ type APIKey struct {
 	Key              string
 	Realm            string // "", "intl" or "cn"
 	Models           []string
+	Accounts         []string // account UID patterns; empty = every account
 	ConcurrencyLimit int
 	TPSLimit         float64 // -1 = off, 0 = follow global, >0 = per-key cap
 	Enabled          bool
@@ -118,8 +119,9 @@ func (s *Store) APIKeys(includeDeleted bool) []APIKey {
 			}
 			e := APIKey{
 				ID: truthyStr(m["id"]), Name: name, Key: key, Realm: realm,
-				Models: cleanModelPatterns(m["models"]), ConcurrencyLimit: conc,
-				TPSLimit: keyTPSLimit(m), Enabled: enabled,
+				Models: cleanModelPatterns(m["models"]), Accounts: cleanAccountPatterns(m["accounts"]),
+				ConcurrencyLimit: conc,
+				TPSLimit:         keyTPSLimit(m), Enabled: enabled,
 				CreatedAt: truthyStr(m["created_at"]), DeletedAt: deleted,
 			}
 			if e.Key != "" {
@@ -196,6 +198,33 @@ func (k APIKey) AllowsModel(model string) bool {
 		}
 	}
 	return false
+}
+
+// AllowsAccount reports whether the key places no account restriction or uid
+// matches one of its patterns. An empty pattern list means "any account".
+func (k APIKey) AllowsAccount(uid string) bool {
+	if len(k.Accounts) == 0 {
+		return true
+	}
+	name := strings.ToLower(strings.TrimSpace(uid))
+	if name == "" {
+		return false
+	}
+	for _, p := range k.Accounts {
+		if FnMatchCase(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// Restricted reports whether the key narrows the pickable accounts.
+func (k APIKey) Restricted() bool { return len(k.Accounts) > 0 }
+
+// cleanAccountPatterns keeps UID patterns lower-cased and de-duplicated; a
+// pasted "u000012, u000013" list is accepted like the model patterns are.
+func cleanAccountPatterns(v any) []string {
+	return cleanModelPatterns(v)
 }
 
 var (

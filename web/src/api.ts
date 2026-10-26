@@ -94,6 +94,8 @@ export interface Account {
   added_at: number
   inflight: number
   today: { requests: number; tokens: number; credit: number }
+  tasks_enabled: boolean
+  tier: string
   cooldown_for?: number
   restricted_for?: number
   unavailable_reason?: string
@@ -273,6 +275,7 @@ export interface KeyView {
   key_preview: string
   realm: '' | 'intl' | 'cn'
   models: string[]
+  accounts: string[]
   concurrency_limit: number
   tps_limit: number
   enabled: boolean
@@ -327,6 +330,8 @@ export interface SettingsView {
   ops_concurrency: number
   ops_interval_ms: number
   output_tps_limit: number
+  model_aliases: Record<string, string>
+  models_only_available: boolean
   proxy_slots: ProxySlot[]
   catalog?: CatalogStatus[]
 }

@@ -41,9 +41,16 @@ func (h *Handler) pickAccount(q *request) *pool.Account {
 		if len(q.at.avoid) > 0 {
 			exclude = unionExclude(base, q.at.avoid)
 		}
+		if len(q.keyDenied) > 0 {
+			exclude = unionExclude(exclude, q.keyDenied)
+		}
 		a := h.Pool.SelectForSessionBestContext(q.r.Context(), q.realm, q.sessionKey, exclude, q.model, q.page, h.betterAccount)
 		if a == nil && len(q.at.avoid) > 0 {
-			a = h.Pool.SelectForSessionBestContext(q.r.Context(), q.realm, q.sessionKey, base, q.model, q.page, h.betterAccount)
+			alt := base
+			if len(q.keyDenied) > 0 {
+				alt = unionExclude(base, q.keyDenied)
+			}
+			a = h.Pool.SelectForSessionBestContext(q.r.Context(), q.realm, q.sessionKey, alt, q.model, q.page, h.betterAccount)
 		}
 		if a != nil {
 			return a

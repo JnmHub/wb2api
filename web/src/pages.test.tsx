@@ -102,6 +102,8 @@ describe('SettingsPage', () => {
     quota_scan_models: [],
     banned_models: [],
     banned_substring: '',
+    model_aliases: {},
+    models_only_available: false,
     proxy_slots: [{ id: 's1', name: 'hk', url: 'socks5://127.0.0.1:1080', enabled: true, ip: '', country: '', country_code: '', ip_type: '', isp: '', asn: '', probed_at: 0 }],
     catalog: [{ realm: 'intl', source: 'bundled', fetched_at: 0, count: 3 }],
   }

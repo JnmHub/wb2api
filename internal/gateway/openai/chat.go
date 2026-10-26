@@ -279,19 +279,21 @@ func (h *Handler) authenticate(r *http.Request) (key *settings.APIKey, ok bool) 
 
 // extractSessionKey mirrors legacy extract_session_key.
 func extractSessionKey(r *http.Request, payload *jsonx.Obj) string {
-	for _, name := range []string{"X-Conversation-Id", "Conversation-Id", "X-Session-Id", "Session-Id"} {
+	for _, name := range []string{"X-Conversation-Id", "X-Wb-Conversation-Id", "Conversation-Id", "X-Session-Id", "X-Wb-Session-Id", "Session-Id"} {
 		if v := r.Header.Get(name); v != "" {
 			return strings.TrimSpace(v)
 		}
 	}
-	for _, k := range []string{"conversation_id", "session_id"} {
+	for _, k := range []string{"conversation_id", "session_id", "prompt_cache_key"} {
 		if v := payload.Get(k); jsonx.Truthy(v) {
 			return strings.TrimSpace(jsonx.PyStr(v))
 		}
 	}
 	if md, ok := payload.Get("metadata").(*jsonx.Obj); ok {
-		if v := md.Get("conversation_id"); jsonx.Truthy(v) {
-			return strings.TrimSpace(jsonx.PyStr(v))
+		for _, k := range []string{"conversation_id", "session_id", "prompt_cache_key"} {
+			if v := md.Get(k); jsonx.Truthy(v) {
+				return strings.TrimSpace(jsonx.PyStr(v))
+			}
 		}
 	}
 	return ""
@@ -306,6 +308,9 @@ type request struct {
 	start               time.Time
 	payload             *jsonx.Obj
 	model               string
+	clientModel         string // the name the client asked for, when it is an alias
+	keyAccounts         []string
+	keyDenied           map[string]struct{}
 	stream              bool
 	keyID               string
 	realm               string

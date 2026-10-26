@@ -76,9 +76,23 @@ func TestDailyChatWebDrivesACP(t *testing.T) {
 	if prompts != 1 {
 		t.Fatalf("prompt count %d", prompts)
 	}
-	// The conversation was created with the web-client shape.
-	if e.vendor.called("POST /console/as/conversations/") != 1 {
-		t.Fatal("conversation not created exactly once")
+	// The conversation was created once and released once.
+	created, stopped := 0, 0
+	e.vendor.mu.Lock()
+	for _, call := range e.vendor.calls {
+		switch call {
+		case "POST /console/as/conversations/":
+			created++
+		case "POST /console/as/conversations/conv-1/stop":
+			stopped++
+		}
+	}
+	e.vendor.mu.Unlock()
+	if created != 1 {
+		t.Fatalf("conversation created %d times", created)
+	}
+	if stopped != 1 {
+		t.Fatalf("conversation released %d times", stopped)
 	}
 }
 

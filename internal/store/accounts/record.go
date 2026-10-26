@@ -51,6 +51,16 @@ type Record struct {
 	LastDailyChat      any
 	LastActivityReport any
 	ModelCaps          map[string]ModelCap
+	// ModelCool holds model-scoped cooldowns (unix seconds) so a 429 window
+	// survives a restart instead of being forgotten with the process' memory.
+	ModelCool map[string]float64
+	// TasksEnabled keeps an account out of scheduled chores (check-in, activity
+	// report, daily chat, keepalive) while it keeps serving traffic. nil/absent
+	// means enabled, so existing files behave exactly as before.
+	TasksEnabled any
+	// Tier is the cached billing tier ("free", "plus", …), informational only:
+	// the gateway never derives permissions from it.
+	Tier string
 
 	// Extra preserves keys this version does not know about so a rewrite never
 	// silently drops data written by a newer or hand-edited file.
@@ -88,13 +98,34 @@ func (r *Record) IsEnterprise() bool {
 	return r.EnterpriseID != "" || realm.JWTEnterpriseID(r.AccessToken) != ""
 }
 
+// TasksOn reports whether scheduled chores may run for this account. Legacy
+// records without the key keep taking chores, exactly as before.
+func (r *Record) TasksOn() bool {
+	if r.TasksEnabled == nil {
+		return true
+	}
+	switch v := r.TasksEnabled.(type) {
+	case bool:
+		return v
+	case string:
+		return v != "" && v != "0" && !strings.EqualFold(v, "false")
+	case json.Number:
+		f, err := v.Float64()
+		return err != nil || f != 0
+	case float64:
+		return v != 0
+	}
+	return true
+}
+
 var knownKeys = map[string]bool{
 	"uid": true, "nickname": true, "domain": true, "realm": true, "platform": true,
 	"product": true, "enterpriseId": true, "accessToken": true, "refreshToken": true,
 	"expiresAt": true, "addedAt": true, "source": true, "proxySlot": true, "proxy": true,
 	"enabled": true, "weight": true, "note": true, "disabledModels": true,
 	"restrictedUntil": true, "credits": true, "lastCheckin": true, "lastDailyChat": true,
-	"lastActivityReport": true, "modelCaps": true,
+	"lastActivityReport": true, "modelCaps": true, "modelCool": true,
+	"tasksEnabled": true, "tier": true,
 	// runtime-only: legacy files may still contain them; never trusted on load
 	// and never written back.
 	"lastError": true, "cooldownUntil": true,
@@ -263,6 +294,26 @@ func FromMap(data map[string]any, path string, now time.Time) *Record {
 			}
 			r.ModelCaps[mid] = ModelCap{At: at, Reset: reset}
 		}
+	}
+
+	if cool, ok := data["modelCool"].(map[string]any); ok {
+		for mid, v := range cool {
+			until, ok := toFloat(truthyOr(v, 0))
+			if !ok || until <= 0 || mid == "" {
+				continue
+			}
+			if r.ModelCool == nil {
+				r.ModelCool = map[string]float64{}
+			}
+			r.ModelCool[mid] = until
+		}
+	}
+
+	if v, ok := data["tasksEnabled"]; ok {
+		r.TasksEnabled = v
+	}
+	if s, ok := data["tier"].(string); ok {
+		r.Tier = strings.TrimSpace(s)
 	}
 
 	for k, v := range data {

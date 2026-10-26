@@ -190,7 +190,9 @@ func (a *Account) UnscopedStreak() int {
 
 // NoteModelError throttles one model on this account until now+wait (or until
 // `until` when the body named a reset clock), leaving its other models usable.
-func (a *Account) NoteModelError(model string, until time.Time, wait time.Duration, msg, detail string, now time.Time) {
+// The cooldown is written to the record so a restart does not forget it: the
+// record to persist is returned when the window was extended.
+func (a *Account) NoteModelError(model string, until time.Time, wait time.Duration, msg, detail string, now time.Time) (*accounts.Record, bool) {
 	end := now.Add(wait)
 	if !until.IsZero() {
 		end = until
@@ -206,10 +208,56 @@ func (a *Account) NoteModelError(model string, until time.Time, wait time.Durati
 	if a.g.coolAt == nil {
 		a.g.coolAt = map[string]time.Time{}
 	}
+	extended := a.modelCool[model] < end.UnixNano()
 	a.modelCool[model] = end.UnixNano()
 	a.g.coolAt[model] = now
 	a.mu.Unlock()
 	a.touch()
+	if !extended {
+		return nil, false
+	}
+	return a.persistCool(), true
+}
+
+// BlockModel marks one model unusable on this account until a deadline without
+// touching the account's error counters: 11158 says the model is not part of
+// this account's entitlement, not that the account is failing.
+func (a *Account) BlockModel(model string, until, now time.Time) (*accounts.Record, bool) {
+	if model == "" || !until.After(now) {
+		return nil, false
+	}
+	a.mu.Lock()
+	if a.modelCool == nil {
+		a.modelCool = map[string]int64{}
+	}
+	extended := a.modelCool[model] < until.UnixNano()
+	if extended {
+		a.modelCool[model] = until.UnixNano()
+	}
+	a.mu.Unlock()
+	if !extended {
+		return nil, false
+	}
+	a.touch()
+	return a.persistCool(), true
+}
+
+// persistCool snapshots the live model cooldowns into a record copy.
+func (a *Account) persistCool() *accounts.Record {
+	now := time.Now()
+	a.mu.Lock()
+	cool := make(map[string]float64, len(a.modelCool))
+	for m, ns := range a.modelCool {
+		if ns > now.UnixNano() {
+			cool[m] = float64(ns) / 1e9
+		}
+	}
+	a.mu.Unlock()
+	next := *a.Record()
+	next.ModelCool = cool
+	a.rec.Store(&next)
+	a.touch()
+	return &next
 }
 
 // NoteFailure records a 5xx / transport failure toward the breaker.
@@ -469,6 +517,21 @@ func (a *Account) restoreCaps(rec *accounts.Record, now time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.g.caps = nil
+	for m, until := range rec.ModelCool {
+		if until <= 0 {
+			continue
+		}
+		end := time.Unix(0, int64(until*1e9))
+		if !end.After(now) {
+			continue
+		}
+		if a.modelCool == nil {
+			a.modelCool = map[string]int64{}
+		}
+		if a.modelCool[m] < end.UnixNano() {
+			a.modelCool[m] = end.UnixNano()
+		}
+	}
 	for m, c := range rec.ModelCaps {
 		if !realm.IsFreeCapModel(a.Realm, m) || c.Reset <= 0 {
 			continue

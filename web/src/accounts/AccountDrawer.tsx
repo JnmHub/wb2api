@@ -40,7 +40,7 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
   const qc = useQueryClient()
   const q = useQuery({ queryKey: ['account', uid], queryFn: () => get<Account>(`/api/v2/accounts/${uid}`) })
   const a = q.data
-  const [form, setForm] = useState({ enabled: true, weight: 1, note: '', models: '', proxySlot: '', product: 'workbuddy' })
+  const [form, setForm] = useState({ enabled: true, tasks: true, weight: 1, note: '', models: '', proxySlot: '', product: 'workbuddy' })
   const [dirty, setDirty] = useState(false)
   const [job, setJob] = useState<string | null>(null)
   const [busy, setBusy] = useState('')
@@ -51,6 +51,7 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
     if (a && !dirty) {
       setForm({
         enabled: a.enabled,
+        tasks: a.tasks_enabled,
         weight: a.weight,
         note: a.note,
         models: a.disabled_models.join(', '),
@@ -64,6 +65,7 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
     mutationFn: () =>
       patch<Account>(`/api/v2/accounts/${uid}`, {
         enabled: form.enabled,
+        tasks_enabled: form.tasks,
         weight: Number(form.weight),
         note: form.note,
         disabled_models: form.models.split(/[,\s]+/).filter(Boolean),
@@ -151,6 +153,10 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
             <Space>
               <Switch size="small" checked={form.enabled} onChange={(v) => set('enabled', v)} />
               <Typography.Text>参与调度</Typography.Text>
+            </Space>
+            <Space>
+              <Switch size="small" checked={form.tasks} onChange={(v) => set('tasks', v)} />
+              <Typography.Text>参与定时任务（签到 / 活跃上报 / 每日对话 / 保活）</Typography.Text>
             </Space>
             <div>
               <Typography.Text type="secondary">权重（1–100）</Typography.Text>

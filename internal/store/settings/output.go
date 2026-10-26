@@ -30,3 +30,24 @@ func (s *Store) FilterModelsByKey() bool {
 	b, _ := s.View()["filter_models_by_key"].(bool)
 	return b
 }
+
+// ModelsOnlyAvailable reports whether /v1/models should hide models that no
+// reachable account can serve right now. Off by default: the catalogue is the
+// contract for clients, and a temporarily cooling account must not make a model
+// disappear from a saved configuration.
+func (s *Store) ModelsOnlyAvailable() bool {
+	b, _ := s.View()["models_only_available"].(bool)
+	return b
+}
+
+// SetModelsOnlyAvailable flips the availability filter; it is off unless set.
+func (s *Store) SetModelsOnlyAvailable(on bool) error {
+	return s.Update(func(d Doc) error {
+		if on {
+			d["models_only_available"] = true
+			return nil
+		}
+		delete(d, "models_only_available")
+		return nil
+	})
+}

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Card, Checkbox, Col, Input, InputNumber, Row, Segmented, Select, Space, Tag, Typography } from 'antd'
+import { Button, Card, Checkbox, Col, Input, InputNumber, Row, Segmented, Select, Space, Switch, Tag, Typography } from 'antd'
 import { ApiError, get, patch, post, type SettingsView, type UpdateStatus } from '../api'
 import { Toggle } from '../components/Modal'
 import { AgentsSection } from './AgentsSection'
@@ -126,6 +126,7 @@ export function SettingsPage() {
       <UpstreamSection s={s} />
       <ProbeSection s={s} />
       <ModelsSection s={s} />
+      <ModelRoutingSection s={s} />
       <AgentsSection />
       <UpdatesSection />
       <ProxySection s={s} />
@@ -379,6 +380,47 @@ function ModelsSection({ s }: { s: SettingsView }) {
       <div style={{ marginTop: 12 }}>
         <Typography.Text type="secondary">封锁子串（模型名包含它就拒绝，留空 = 关闭）</Typography.Text>
         <Input className="mono" value={sub} onChange={(e) => setSub(e.target.value)} placeholder="image-alpha" />
+      </div>
+      {save.isError && <Typography.Text type="danger">{String(save.error)}</Typography.Text>}
+    </Card>
+  )
+}
+
+function ModelRoutingSection({ s }: { s: SettingsView }) {
+  const save = useSaveSettings()
+  const asText = (m: Record<string, string> | undefined) => Object.entries(m ?? {}).map(([k, v]) => `${k}=${v}`).join('\n')
+  const [alias, setAlias] = useState(asText(s.model_aliases))
+  const [onlyAvailable, setOnlyAvailable] = useState<boolean>(s.models_only_available ?? false)
+  const dirty = alias !== asText(s.model_aliases) || onlyAvailable !== (s.models_only_available ?? false)
+  const saveAll = () => {
+    const map: Record<string, string> = {}
+    for (const line of alias.split(/\r?\n/)) {
+      const i = line.indexOf('=')
+      if (i <= 0) continue
+      const k = line.slice(0, i).trim().toLowerCase()
+      const v = line.slice(i + 1).trim()
+      if (k && v) map[k] = v
+    }
+    save.mutate({ model_aliases: map, models_only_available: onlyAvailable })
+  }
+  return (
+    <Card
+      title="模型路由"
+      extra={
+        <Button type="primary" size="small" disabled={!dirty || save.isPending} onClick={saveAll}>
+          保存路由规则
+        </Button>
+      }
+    >
+      <Typography.Paragraph type="secondary">
+        别名把客户端发来的模型名映射成真实模型（每行 <code>别名=真实模型</code>，大小写不敏感）。别名在封锁 / 限额 / 选号之前解析，所以整条链路只看到真实模型；带别名的模型也会出现在 `/v1/models` 里（`alias_of` 指向真实 id）。
+      </Typography.Paragraph>
+      <Input.TextArea className="mono" rows={4} value={alias} onChange={(e) => setAlias(e.target.value)} placeholder={'claude-sonnet-4=glm-4.7\nclaude-3-5-haiku=deepseek-v4.1-flash'} />
+      <div style={{ marginTop: 12 }}>
+        <Space>
+          <Switch checked={onlyAvailable} onChange={setOnlyAvailable} />
+          <Typography.Text>仅列出当前可用的模型（关闭时 `/v1/models` 返回完整目录）</Typography.Text>
+        </Space>
       </div>
       {save.isError && <Typography.Text type="danger">{String(save.error)}</Typography.Text>}
     </Card>

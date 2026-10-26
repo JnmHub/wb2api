@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -16,6 +17,11 @@ import (
 
 	"wb2api/internal/store/settings"
 )
+
+// h2Liveness bounds how long a liveness step may take on a loaded runner. These
+// guards are not latency assertions: the deadline/reset behaviour under test is
+// asserted from the resulting write error, slot release and usage outcome.
+const h2Liveness = 30 * time.Second
 
 type downstreamH2ConnKey struct{}
 
@@ -72,11 +78,18 @@ func TestDownstreamHTTP2SlowStreamIsolation(t *testing.T) {
 					// whole-response abort accounting can both preserve paid usage.
 					_, _ = io.WriteString(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n")
 					frame := relaySSE(strings.Repeat("x", 64<<10))
+					rc := http.NewResponseController(w)
 					for i := 0; i < 128; i++ {
+						// Bound the fixture itself: once the relay stops reading
+						// (its client is gone), this write must not hold the
+						// server shutdown open for minutes.
+						if err := rc.SetWriteDeadline(time.Now().Add(h2Liveness)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+							return
+						}
 						if _, err := io.WriteString(w, frame); err != nil {
 							return
 						}
-						if err := http.NewResponseController(w).Flush(); err != nil {
+						if err := rc.Flush(); err != nil {
 							return
 						}
 					}
@@ -172,25 +185,25 @@ func TestDownstreamHTTP2SlowStreamIsolation(t *testing.T) {
 				}()
 				select {
 				case <-fastEntered:
-				case <-time.After(5 * time.Second):
+				case <-time.After(h2Liveness):
 					t.Fatal("sibling did not enter upstream while slow response unread")
 				}
 				select {
 				case <-pending:
-				case <-time.After(5 * time.Second):
+				case <-time.After(h2Liveness):
 					t.Fatal("slow relay did not attempt output beyond HTTP/2 stream window")
 				}
 				if cancelBlocked {
 					select {
 					case cancel := <-cancelSlow:
 						cancel()
-					case <-time.After(time.Second):
+					case <-time.After(h2Liveness):
 						t.Fatal("missing slow cancellation handle")
 					}
 				}
 				select {
 				case <-slowDone:
-				case <-time.After(5 * time.Second):
+				case <-time.After(h2Liveness):
 					t.Fatal("HTTP/2 slow write did not unwind")
 				}
 				// Keep the sibling active across the slow stream's timeout/reset.
@@ -215,12 +228,12 @@ func TestDownstreamHTTP2SlowStreamIsolation(t *testing.T) {
 					if got.err != nil || got.proto != 2 || got.status != 200 || !strings.Contains(got.body, "sibling survived") {
 						t.Fatalf("sibling failed after slow stream aborted: %+v", got)
 					}
-				case <-time.After(5 * time.Second):
+				case <-time.After(h2Liveness):
 					t.Fatal("sibling did not complete after release")
 				}
 				select {
 				case <-fastDone:
-				case <-time.After(time.Second):
+				case <-time.After(h2Liveness):
 					t.Fatal("sibling handler not finalized")
 				}
 				if a, b := <-slowConn, <-fastConn; a != b || connections.Load() != 1 {

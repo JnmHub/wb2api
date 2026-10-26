@@ -93,7 +93,7 @@ func TestDSHAgentFingerprintRewrite(t *testing.T) {
 	}
 }
 
-func TestDSHIdentityOnlyAppliesToSystemAndDeveloper(t *testing.T) {
+func TestDSHIdentityAppliesToRolesThatUpstreamEchoChecks(t *testing.T) {
 	sentence := "You are an AI assistant built on DeepSeek Harness."
 	msg := func(role, content string) any {
 		o := jsonx.NewObj()
@@ -103,7 +103,7 @@ func TestDSHIdentityOnlyAppliesToSystemAndDeveloper(t *testing.T) {
 	}
 	msgs := []any{msg("system", sentence), msg("developer", sentence), msg("user", sentence), msg("assistant", sentence)}
 	out := sanitizeMessages(msgs, &Options{})
-	for i, wantNeutral := range []bool{true, true, false, false} {
+	for i, wantNeutral := range []bool{true, true, false, true} {
 		item, _ := asObj(out[i])
 		got, _ := item.Get("content").(string)
 		if wantNeutral && got != "You are a helpful AI assistant." {
@@ -138,7 +138,7 @@ func TestDSHSystemPromptKeepsToolContract(t *testing.T) {
 	}
 }
 
-func TestDSHBrandOnlyAppliesToSystemAndDeveloper(t *testing.T) {
+func TestDSHBrandAppliesToRolesThatUpstreamEchoChecks(t *testing.T) {
 	sentence := "The runtime context names the DeepSeek Harness implementation checkout."
 	msg := func(role, content string) any {
 		o := jsonx.NewObj()
@@ -148,7 +148,7 @@ func TestDSHBrandOnlyAppliesToSystemAndDeveloper(t *testing.T) {
 	}
 	msgs := []any{msg("system", sentence), msg("developer", sentence), msg("user", sentence), msg("assistant", sentence)}
 	out := sanitizeMessages(msgs, &Options{})
-	for i, wantChanged := range []bool{true, true, false, false} {
+	for i, wantChanged := range []bool{true, true, false, true} {
 		item, _ := asObj(out[i])
 		got, _ := item.Get("content").(string)
 		if wantChanged {

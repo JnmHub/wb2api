@@ -168,11 +168,13 @@ func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp fu
 	defer bw.Close()
 	// Send headers under the same write bound as body frames. Keep any failure
 	// sticky in the buffered writer so normal cancellation/accounting runs.
-	bw.dirty = true
+	_, _ = bw.WriteString("")
 	headerErr := bw.Flush()
 	if headerErr != nil {
 		cancelUp()
 	}
+	stopBeat := startHeartbeat(bw, sseHeartbeat, cancelUp)
+	defer stopBeat()
 	flush := bw.Flush
 	writeData := func(b []byte) error {
 		if _, err := bw.WriteString("data: "); err != nil {
@@ -197,23 +199,26 @@ func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp fu
 	filter := leak.NewFilter(h.FilterMode)
 	pacer := newStreamPacer(maxTPS)
 	var (
-		br           *bufio.Reader
-		acc2         []byte
-		meta         = streamMeta{model: model}
-		est          tokenEstimator
-		lastUsage    json.RawMessage
-		pendingFin   string
-		synthesized  bool
-		emitted      bool
-		nChunks      int
-		firstAt      time.Time
-		lastAt       time.Time
-		heldSince    time.Time
-		heldTotal    time.Duration
-		outcome      = "completed"
-		status       = http.StatusOK
-		streamErr    error
-		clientClosed = headerErr != nil
+		br            *bufio.Reader
+		acc2          []byte
+		meta          = streamMeta{model: model}
+		est           tokenEstimator
+		lastUsage     json.RawMessage
+		pendingFin    string
+		synthesized   bool
+		emitted       bool
+		sawContent    bool
+		sawReasoning  bool
+		reasoningOnly bool
+		nChunks       int
+		firstAt       time.Time
+		lastAt        time.Time
+		heldSince     time.Time
+		heldTotal     time.Duration
+		outcome       = "completed"
+		status        = http.StatusOK
+		streamErr     error
+		clientClosed  = headerErr != nil
 	)
 	br = bufio.NewReaderSize(&relayReader{body: body, idle: idleD, cancel: cancelUp, beforeRead: func() error {
 		err := flush()
@@ -298,10 +303,15 @@ loop:
 					}
 					for i := range c.deltas {
 						if rs := c.reasoning(i); rs != "" {
+							sawReasoning = true
 							est.add(rs)
+						}
+						if c.toolCalls(i) {
+							sawContent = true
 						}
 						piece := c.content(i)
 						if piece != "" {
+							sawContent = true
 							est.add(piece)
 							acts := filter.Feed(piece)
 							if len(acts) == 1 && acts[0].Kind == leak.Text && acts[0].Text == piece && filter.Held() == 0 {
@@ -367,6 +377,15 @@ loop:
 			errObj, _ := json.Marshal(map[string]apiError{"error": {Message: "empty upstream stream", Type: "server_error"}})
 			_ = writeData(errObj)
 		}
+		if !clientClosed && streamErr == nil && !sawContent && sawReasoning {
+			// A reply that is nothing but thinking is not an answer: end the
+			// stream as an error instead of a fake success with empty content.
+			reasoningOnly = true
+			errObj, _ := json.Marshal(map[string]apiError{"error": {Message: reasoningOnlyDetail, Type: "server_error"}})
+			if writeData(errObj) != nil {
+				clientClosed = true
+			}
+		}
 		if !clientClosed && r.Context().Err() == nil {
 			if streamErr != nil {
 				// Preserve buffered output, but never expose arbitrary upstream
@@ -375,7 +394,7 @@ loop:
 				if writeData(errObj) != nil {
 					clientClosed = true
 				}
-			} else {
+			} else if !reasoningOnly {
 				_, _ = bw.WriteString("data: [DONE]\n\n")
 			}
 			if !clientClosed && flush() != nil {
@@ -389,6 +408,9 @@ loop:
 		outcome = "client_aborted"
 	case streamErr != nil:
 		outcome = "upstream_aborted"
+		status = http.StatusBadGateway
+	case reasoningOnly:
+		outcome = "failed"
 		status = http.StatusBadGateway
 	case pendingFin == "error":
 		outcome = "failed"
@@ -607,6 +629,14 @@ func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp fun
 		h.emitWithLatency(r.Context(), ev)
 		if r.Context().Err() == nil {
 			writeError(w, http.StatusBadGateway, "upstream stream aborted", "server_error")
+		}
+		return
+	}
+	if res.content == "" && res.reasoning != "" && len(res.calls) == 0 {
+		ev.Outcome, ev.Status = "failed", http.StatusBadGateway
+		h.emitWithLatency(r.Context(), ev)
+		if r.Context().Err() == nil {
+			writeError(w, http.StatusBadGateway, reasoningOnlyDetail, "server_error")
 		}
 		return
 	}

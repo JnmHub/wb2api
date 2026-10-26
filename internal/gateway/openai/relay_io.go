@@ -79,11 +79,15 @@ func (r *relayReader) Read(p []byte) (int, error) {
 // relayWriter retains batching after the first semantic frame, but flushes the
 // first actual output immediately. dirty also covers writes which filled the
 // bufio buffer exactly (Buffered()==0 does not mean the HTTP writer is flushed).
+// It is written by the relay goroutine and by the heartbeat goroutine, so the
+// buffer, dirty and deadline state are guarded by mu.
 type relayWriter struct {
 	*bufio.Writer
 	rc              *http.ResponseController
+	mu              sync.Mutex
 	dirty           bool
 	semantic        bool
+	lastFlush       time.Time
 	deadline        *deadlineWriter
 	onSemanticFlush func()
 }
@@ -93,16 +97,26 @@ func newRelayWriter(w http.ResponseWriter) *relayWriter {
 }
 
 func (w *relayWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.dirty = true
 	return w.Writer.Write(p)
 }
 
 func (w *relayWriter) WriteString(s string) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.dirty = true
 	return w.Writer.WriteString(s)
 }
 
 func (w *relayWriter) Flush() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.flushLocked()
+}
+
+func (w *relayWriter) flushLocked() error {
 	if !w.dirty {
 		return nil
 	}
@@ -122,6 +136,7 @@ func (w *relayWriter) Flush() error {
 		return err
 	}
 	w.dirty = false
+	w.lastFlush = time.Now()
 	return nil
 }
 
@@ -134,9 +149,11 @@ func (w *relayWriter) Close() {
 // firstOutput is only inspected until the first meaningful frame is emitted.
 // Setup/role/empty delta frames must not consume the first-output fast path.
 func (w *relayWriter) firstOutput(data []byte) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if !w.semantic && semanticFrame(data) {
 		w.semantic = true
-		if err := w.Flush(); err != nil {
+		if err := w.flushLocked(); err != nil {
 			return err
 		}
 		if w.onSemanticFlush != nil {
@@ -145,6 +162,61 @@ func (w *relayWriter) firstOutput(data []byte) error {
 		return nil
 	}
 	return nil
+}
+
+// sseHeartbeat is how long an SSE stream may stay silent before a comment frame
+// is written. Proxies and clients drop connections that see no bytes for ~30 s,
+// and a model may think for longer than that before its first token.
+const sseHeartbeat = 15 * time.Second
+
+// heartbeat writes an SSE comment when nothing went out recently. A pending real
+// write is just flushed instead. It runs on its own goroutine.
+func (w *relayWriter) heartbeat(now time.Time, every time.Duration) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.dirty {
+		return w.flushLocked()
+	}
+	if !w.lastFlush.IsZero() && now.Sub(w.lastFlush) < every*3/4 {
+		return nil
+	}
+	w.dirty = true
+	if _, err := w.Writer.WriteString(": keepalive\n\n"); err != nil {
+		return err
+	}
+	return w.flushLocked()
+}
+
+// startHeartbeat keeps an SSE stream alive while the upstream is quiet. A
+// failing write means the client is gone: the upstream request is cancelled so
+// the blocked read returns instead of waiting for the idle timeout.
+func startHeartbeat(bw *relayWriter, every time.Duration, cancel func()) func() {
+	if every <= 0 {
+		return func() {}
+	}
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case now := <-t.C:
+				if err := bw.heartbeat(now, every); err != nil {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		wg.Wait()
+	}
 }
 
 func semanticFrame(data []byte) bool {

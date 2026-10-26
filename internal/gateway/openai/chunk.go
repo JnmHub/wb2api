@@ -131,6 +131,22 @@ func (c *chunk) reasoning(i int) string {
 	return s
 }
 
+// toolCalls reports whether choice i's delta carries tool call fragments.
+func (c *chunk) toolCalls(i int) bool {
+	if i >= len(c.deltas) || c.deltas[i] == nil {
+		return false
+	}
+	raw, ok := c.deltas[i]["tool_calls"]
+	if !ok || isFalsyRaw(raw) {
+		return false
+	}
+	switch b := bytes.TrimSpace(raw); string(b) {
+	case "[]", "null":
+		return false
+	}
+	return true
+}
+
 // finishReason returns choice i's finish_reason ("" when null/absent/empty).
 func (c *chunk) finishReason(i int) string {
 	if i >= len(c.choices) {

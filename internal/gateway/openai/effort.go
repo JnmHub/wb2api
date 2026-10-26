@@ -63,3 +63,65 @@ func (q *request) effort(h *Handler) string {
 	}
 	return q.effortVal
 }
+
+// effortLevels is the vocabulary the upstream accepts for reasoning_effort.
+// Anything else is rejected (11150), so unknown client spellings are folded into
+// the nearest accepted level instead of being forwarded as-is.
+var effortAliases = map[string]string{
+	"none": "none", "off": "none", "disabled": "none", "false": "none", "0": "none",
+	"min": "minimal", "minimum": "minimal", "minimal": "minimal", "lowest": "minimal",
+	"low": "low",
+	"med": "medium", "medium": "medium", "default": "medium", "auto": "medium",
+	"high": "high", "hi": "high", "max": "high", "maximum": "high", "highest": "high",
+	"xhigh": "high", "ultra": "high", "extreme": "high",
+}
+
+// normalizeEffort folds a client spelling into an accepted level. Values
+// already in the accepted set are returned unchanged; an unknown value is
+// dropped ("" means "let the model decide") rather than sent and rejected.
+func normalizeEffort(v string) string {
+	name := strings.ToLower(strings.TrimSpace(v))
+	if name == "" {
+		return ""
+	}
+	if lvl, ok := effortAliases[name]; ok {
+		return lvl
+	}
+	return ""
+}
+
+// applyEffortMap rewrites the outgoing reasoning effort: a model the catalogue
+// pins to one level always sends that level, and a client spelling the upstream
+// does not know is normalised. The client payload itself is untouched, so the
+// streamed/inspected request keeps what the caller asked for.
+func (h *Handler) applyEffortMap(q *request) {
+	body := q.shaped
+	if body == nil || q.model == "" {
+		return
+	}
+	if cat, ok := h.Catalog.(effortCatalog); ok {
+		if fixed := cat.FixedEffort(q.model); fixed != "" {
+			body.Set("reasoning_effort", fixed)
+			deleteKey(body, "reasoningEffort")
+			return
+		}
+	}
+	given := clientEffort(body)
+	if given == "" {
+		return
+	}
+	if lvl := normalizeEffort(given); lvl != given {
+		deleteKey(body, "reasoningEffort")
+		if lvl == "" {
+			deleteKey(body, "reasoning_effort")
+			return
+		}
+		body.Set("reasoning_effort", lvl)
+	}
+}
+
+func deleteKey(o *jsonx.Obj, key string) {
+	if o != nil {
+		o.Delete(key)
+	}
+}

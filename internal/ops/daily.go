@@ -84,28 +84,68 @@ func (c *Client) markCheckin(acc *pool.Account) {
 	c.update(acc, func(r *accountsRecord) { r.LastCheckin = stamp })
 }
 
+// checkinOutcome classifies a daily-checkin answer. The backend reports a
+// duplicate submission as 200 + code 10001 + "请求处理中，请勿重复操作": that is a
+// rejection, not a success, so it stays retryable and must not mark the account
+// as checked in. An "already checked in" answer is an idempotent success.
+func checkinOutcome(status int, code, msg string) (ok, retryable bool) {
+	low := strings.ToLower(msg)
+	switch {
+	case containsAny(low, "已签到", "今日已签", "重复签到", "already checked", "already signed"):
+		return true, false
+	case containsAny(low, "请求处理中", "请勿重复", "操作频繁", "处理中", "processing", "too frequent", "busy"):
+		return false, true
+	}
+	if status/100 == 2 {
+		return code == "" || code == "0", false
+	}
+	if status == http.StatusTooManyRequests || status >= 500 {
+		return false, true
+	}
+	return false, false
+}
+
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Client) checkinUpstream(ctx context.Context, acc *pool.Account) Result {
 	rec := acc.Record()
 	url := c.billingBase(realm.CN) + checkinPath
 	o, err := c.doJSON(ctx, acc, "POST", url, c.billingHeaders(rec), []byte("{}"), 15*time.Second, 3)
 	if err != nil {
 		if he, ok := err.(*HTTPError); ok {
+			code, msg := "", fmt.Sprintf("HTTP %d", he.Status)
 			if body, perr := jsonx.UnmarshalObj([]byte(he.Body)); perr == nil {
-				msg := orStr(body.Get("msg"), fmt.Sprintf("HTTP %d", he.Status))
-				if jsonx.PyStr(body.Get("code")) == "10001" || strings.Contains(msg, "已签到") {
-					c.markCheckin(acc)
-					return Result{OK: true, Msg: msg, Code: plain(body.Get("code"))}
+				code = jsonx.PyStr(body.Get("code"))
+				if m := jsonx.PyStrIfTruthy(body.Get("msg")); m != "" {
+					msg = m
 				}
-				return Result{Error: msg}
 			}
-			return failure("HTTP %d", he.Status)
+			if done, retry := checkinOutcome(he.Status, code, msg); done {
+				c.markCheckin(acc)
+				return Result{OK: true, Msg: msg, Code: plain(code)}
+			} else if retry {
+				return Result{Error: msg + "（稍后重试）"}
+			}
+			return Result{Error: msg}
 		}
 		return Result{Error: err.Error()}
 	}
 	code := jsonx.PyStr(first(o.Get("code"), "-1"))
 	msg := orStr(o.Get("msg"), "ok")
-	c.markCheckin(acc)
-	return Result{OK: code == "0" || code == "10001", Msg: msg, Code: plain(o.Get("code"))}
+	if done, retry := checkinOutcome(http.StatusOK, code, msg); done {
+		c.markCheckin(acc)
+		return Result{OK: true, Msg: msg, Code: plain(o.Get("code"))}
+	} else if retry {
+		return Result{Error: msg + "（稍后重试）"}
+	}
+	return Result{Error: orStr(msg, "签到失败")}
 }
 
 func first(a, b any) any {

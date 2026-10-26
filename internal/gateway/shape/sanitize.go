@@ -209,7 +209,10 @@ func sanitizeMessages(msgs []any, opt *Options) []any {
 		}
 		item := o.Clone()
 		role := item.Get("role")
-		system := role == "system" || role == "developer"
+		// Assistant turns carry the same template sentence as system prompts when
+		// a client replays its own history, and resending it upstream is what the
+		// identity rewrite exists to avoid. User/tool content is left verbatim.
+		system := role == "system" || role == "developer" || role == "assistant"
 		preserveToolResult := opt.PreserveContract && (role == "tool" || role == "function")
 		if item.Has("content") && !preserveToolResult {
 			item.Set("content", sanitizeContent(item.Get("content"), system))

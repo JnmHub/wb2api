@@ -426,3 +426,73 @@ func TestModelsFilteredByKeyWhenEnabled(t *testing.T) {
 		t.Fatalf("filter off must keep the full catalogue: %v", full)
 	}
 }
+
+func TestModelAliasesAreAdvertised(t *testing.T) {
+	settingsJSON := `{"model_aliases":{"claude-sonnet-4":"glm-5.3"}}`
+	e := newInfoEnv(t, settingsJSON, nil, 200)
+	code, out := e.get(t, "/v1/models", nil)
+	if code != 200 {
+		t.Fatalf("status %d", code)
+	}
+	var alias map[string]any
+	for _, m := range out["data"].([]any) {
+		item := m.(map[string]any)
+		if item["id"] == "claude-sonnet-4" {
+			alias = item
+		}
+	}
+	if alias == nil {
+		t.Fatalf("the alias is missing from the catalogue: %v", ids(out))
+	}
+	if alias["alias_of"] != "glm-5.3" {
+		t.Fatalf("alias_of = %v; want glm-5.3", alias["alias_of"])
+	}
+	// The real id stays listed next to it.
+	found := false
+	for _, id := range ids(out) {
+		if id == "glm-5.3" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the real model must stay in the catalogue next to its alias")
+	}
+}
+
+func TestModelsOnlyAvailableToggleHidesNothingWhenOff(t *testing.T) {
+	e := newInfoEnv(t, `{"isolate":true}`, nil, 200)
+	_, out := e.get(t, "/v1/models", nil)
+	full := len(ids(out))
+	e2 := newInfoEnv(t, `{"models_only_available":false}`, nil, 200)
+	_, out2 := e2.get(t, "/v1/models", nil)
+	if got := len(ids(out2)); got != full {
+		t.Fatalf("filter off returned %d models, want the full catalogue (%d)", got, full)
+	}
+}
+func TestModelAliasResolvesBeforeTheUpstream(t *testing.T) {
+	up := newRawUpstream(t, func(n int, r rawReq, c net.Conn) { sseOK(c) })
+	f := newFixture(t, up, accSpec{})
+	f.setSettings(t, `{"model_aliases":{"claude-sonnet-4":"glm-5.3"}}`)
+	code, body, _ := f.post(t, `{"model":"claude-sonnet-4","messages":[{"role":"user","content":"hi"}]}`, nil)
+	if code != 200 {
+		t.Fatalf("alias request failed: %d %s", code, body)
+	}
+	reqs := up.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("upstream calls = %d; want 1", len(reqs))
+	}
+	sent, err := reqs[0].jsonBody(t).Get("model").(string), error(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sent != "glm-5.3" {
+		t.Fatalf("upstream model = %q; want the resolved id glm-5.3", sent)
+	}
+	// A deny-listed real id also blocks its alias, because the check runs after
+	// resolution.
+	f.setSettings(t, `{"model_aliases":{"claude-sonnet-4":"glm-5.3"},"banned_models":["glm-5.3"]}`)
+	code, body, _ = f.post(t, `{"model":"claude-sonnet-4","messages":[{"role":"user","content":"hi"}]}`, nil)
+	if code != 400 {
+		t.Fatalf("alias of a banned model must be refused: %d %s", code, body)
+	}
+}

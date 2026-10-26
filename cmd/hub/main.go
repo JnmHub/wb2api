@@ -157,7 +157,11 @@ func main() {
 		*host = "0.0.0.0"
 	}
 	logRing := logbuf.New(2000)
-	log := slog.New(logbuf.NewHandler(logRing, slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	// stderr goes through a bounded queue: a stalled log reader must never block
+	// a request goroutine. Overflow lines are dropped and counted.
+	stderrSink := logbuf.NewAsyncWriter(os.Stderr, 4000)
+	defer stderrSink.Close()
+	log := slog.New(logbuf.NewHandler(logRing, slog.NewTextHandler(stderrSink, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	slog.SetDefault(log)
 
 	startupCtx, startupCancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -648,6 +652,9 @@ func main() {
 		case <-bg.Done():
 			return
 		}
+		// One pass right after start: a restart must not postpone the discovery
+		// for up to 24 h just because the previous attempt is still "fresh".
+		checker.CheckStartup(bg)
 		t := time.NewTicker(5 * time.Minute)
 		defer t.Stop()
 		for {

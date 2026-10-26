@@ -156,6 +156,18 @@ func (c *Checker) Status() Status {
 // Check performs one discovery pass. manual bypasses the switch and the daily
 // window (the panel's "check now").
 func (c *Checker) Check(ctx context.Context, manual bool) Status {
+	return c.check(ctx, manual, manual)
+}
+
+// CheckStartup performs the discovery pass at process start. The update switch
+// still applies, but the daily window is bypassed: a restart must not hide a
+// release published since the last check, which is what a plain Check would do
+// for up to 24 h.
+func (c *Checker) CheckStartup(ctx context.Context) Status {
+	return c.check(ctx, false, true)
+}
+
+func (c *Checker) check(ctx context.Context, manual, skipDue bool) Status {
 	c.mu.Lock()
 	if c.checking {
 		c.mu.Unlock()
@@ -171,7 +183,7 @@ func (c *Checker) Check(ctx context.Context, manual bool) Status {
 	if !manual && !c.enabled() {
 		return c.Status()
 	}
-	if !manual && !c.due(now) {
+	if !skipDue && !c.due(now) {
 		st := c.Status()
 		st.Skipped = "not due"
 		return st

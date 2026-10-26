@@ -127,11 +127,20 @@ func (r *Record) ordered() ([]string, map[string]any) {
 	for k, v := range r.ModelCaps {
 		caps[k] = v
 	}
+	cool := map[string]float64{}
+	for k, v := range r.ModelCool {
+		cool[k] = v
+	}
 	keys := []string{
 		"uid", "nickname", "domain", "realm", "platform", "product", "enterpriseId",
 		"accessToken", "refreshToken", "expiresAt", "addedAt", "source", "proxySlot",
 		"proxy", "enabled", "weight", "note", "disabledModels", "restrictedUntil",
 		"credits", "lastCheckin", "lastDailyChat", "lastActivityReport", "modelCaps",
+		"modelCool", "tasksEnabled", "tier",
+	}
+	tasks := r.TasksEnabled
+	if tasks == nil {
+		tasks = true
 	}
 	vals := map[string]any{
 		"uid": r.UID, "nickname": r.Nickname, "domain": r.Domain, "realm": r.Realm,
@@ -143,7 +152,10 @@ func (r *Record) ordered() ([]string, map[string]any) {
 		"restrictedUntil": roundTripNumber(r.RestrictedUntil),
 		"credits":         r.Credits, "lastCheckin": r.LastCheckin,
 		"lastDailyChat": r.LastDailyChat, "lastActivityReport": r.LastActivityReport,
-		"modelCaps": caps,
+		"modelCaps":    caps,
+		"modelCool":    cool,
+		"tasksEnabled": tasks,
+		"tier":         r.Tier,
 	}
 	if r.Credits == nil {
 		vals["credits"] = nil

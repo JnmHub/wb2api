@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"wb2api/internal/catalog"
 	"wb2api/internal/jsonx"
@@ -109,6 +110,8 @@ func (i *Info) models(w http.ResponseWriter, r *http.Request) {
 	list := make([]any, 0, len(data))
 	pinned := PinnedFrom(r.Context())
 	filterByKey := i.Chat != nil && i.Chat.Settings != nil && i.Chat.Settings.FilterModelsByKey()
+	onlyAvailable := i.Chat != nil && i.Chat.Settings != nil && i.Chat.Settings.ModelsOnlyAvailable()
+	now := time.Now()
 	for _, d := range data {
 		id, _ := d.Get("id").(string)
 		// a local deny-list keeps blocked models out of every client's picker
@@ -122,7 +125,40 @@ func (i *Info) models(w http.ResponseWriter, r *http.Request) {
 		if pinned != nil && pinned.ModelDisabled(id) {
 			continue
 		}
+		if onlyAvailable && !i.modelReachable(rl, id, boundKey, now) {
+			continue
+		}
 		list = append(list, d)
+	}
+	// Aliases are advertised next to the real ids so a client configured with a
+	// claude-* style name can discover that this gateway serves it.
+	if i.Chat != nil && i.Chat.Settings != nil {
+		for alias, target := range i.Chat.Settings.ModelAliases() {
+			if pinned != nil || (filterByKey && boundKey != nil && !boundKey.AllowsModel(alias)) {
+				continue
+			}
+			var src *jsonx.Obj
+			for _, d := range data {
+				if id, _ := d.Get("id").(string); strings.EqualFold(id, target) {
+					src = d
+					break
+				}
+			}
+			if src == nil {
+				continue
+			}
+			raw, err := jsonx.MarshalPy(src)
+			if err != nil {
+				continue
+			}
+			clone, err := jsonx.UnmarshalObj(raw)
+			if err != nil {
+				continue
+			}
+			clone.Set("id", alias)
+			clone.Set("alias_of", target)
+			list = append(list, clone)
+		}
 	}
 	out := jsonx.NewObj()
 	out.Set("object", "list")
@@ -138,6 +174,31 @@ func (i *Info) models(w http.ResponseWriter, r *http.Request) {
 	}
 	out.Set("catalog", m)
 	writeObj(w, r, http.StatusOK, out)
+}
+
+// modelReachable reports whether some account of this realm — honouring both
+// the key's account allow-list and per-account model state — could serve model
+// right now. Used only when the panel asks /v1/models to hide dead models.
+func (i *Info) modelReachable(realm, model string, key *settings.APIKey, now time.Time) bool {
+	if i.Chat == nil || i.Chat.Pool == nil {
+		return true
+	}
+	var patterns []string
+	if key != nil {
+		patterns = key.Accounts
+	}
+	for _, a := range i.Chat.Pool.All() {
+		if a == nil || a.Realm != realm || a.ModelDisabled(model) {
+			continue
+		}
+		if !accountAllowed(patterns, a.UID) {
+			continue
+		}
+		if a.Ready(model, now) {
+			return true
+		}
+	}
+	return false
 }
 
 func toFloat(v any) (float64, bool) {

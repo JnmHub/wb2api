@@ -91,11 +91,19 @@ func (r *Refresher) now() time.Time {
 	return time.Now()
 }
 
+// lead is how long before expiry a token is renewed. A lead shorter than the
+// scan interval would leave tokens that expire between two scans, so the
+// effective lead is always at least two ticks (the upstream moved from a 2 h to
+// a 48 h lead for exactly this reason).
 func (r *Refresher) lead() time.Duration {
-	if r.Lead > 0 {
-		return r.Lead
+	d := r.Lead
+	if d <= 0 {
+		d = 15 * time.Minute
 	}
-	return 15 * time.Minute
+	if r.Tick > 0 && d <= r.Tick {
+		d = 2 * r.Tick
+	}
+	return d
 }
 
 func (r *Refresher) logger() *slog.Logger {

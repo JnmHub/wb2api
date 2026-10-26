@@ -73,7 +73,8 @@ func (a *Accounts) view(acc *pool.Account, now time.Time, detail bool) map[strin
 		"disabled_models": rec.DisabledModels, "source": rec.Source, "proxy_slot": rec.ProxySlot, "proxy": rec.ProxyLegacy,
 		"expires_at": rec.ExpiresAt, "status": string(status), "need_login": status == pool.StatusNeedLogin,
 		"has_refresh_token": rec.RefreshToken != "", "added_at": rec.AddedAt, "inflight": acc.Inflight(),
-		"today": map[string]any{"requests": today.Requests, "tokens": today.Tokens, "credit": today.Credit},
+		"today":         map[string]any{"requests": today.Requests, "tokens": today.Tokens, "credit": today.Credit},
+		"tasks_enabled": rec.TasksOn(), "tier": tierOf(rec),
 	}
 	if until := acc.CooldownUntil(); until.After(now) {
 		v["cooldown_for"] = int(until.Sub(now).Seconds()) + 1
@@ -114,6 +115,21 @@ func (a *Accounts) view(acc *pool.Account, now time.Time, detail bool) map[strin
 		v["stats"] = map[string]any{"requests": st.Requests, "failures": st.Failures}
 	}
 	return v
+}
+
+// tierOf reports the cached billing tier. A record that never stored one falls
+// back to the credits snapshot the panel already refreshes.
+func tierOf(rec *accounts.Record) string {
+	if rec.Tier != "" {
+		return rec.Tier
+	}
+	if rec.Credits == nil {
+		return ""
+	}
+	if paid, ok := rec.Credits["is_paid_user"].(bool); ok && !paid {
+		return "free"
+	}
+	return ""
 }
 
 func shortID(uid string) string {
@@ -455,6 +471,7 @@ type patch struct {
 	Weight         *int      `json:"weight"`
 	Note           *string   `json:"note"`
 	DisabledModels *[]string `json:"disabled_models"`
+	TasksEnabled   *bool     `json:"tasks_enabled"`
 	ProxySlot      *string   `json:"proxy_slot"`
 	Proxy          *string   `json:"proxy"`
 	Product        *string   `json:"product"`
@@ -493,6 +510,9 @@ func (p patch) apply(r *accounts.Record) {
 			list[i] = m
 		}
 		r.DisabledModels = normaliseModels(list)
+	}
+	if p.TasksEnabled != nil {
+		r.TasksEnabled = *p.TasksEnabled
 	}
 	if p.ProxySlot != nil {
 		r.ProxySlot = strings.TrimSpace(*p.ProxySlot)

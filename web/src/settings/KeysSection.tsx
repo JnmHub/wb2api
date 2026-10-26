@@ -175,6 +175,7 @@ function KeyEditor(props: { initial: KeyView | null; onClose: () => void; onSave
   const [name, setName] = useState(k?.name ?? '')
   const [realm, setRealm] = useState<string>(k?.realm ?? '')
   const [models, setModels] = useState((k?.models ?? []).join('\n'))
+  const [accounts, setAccounts] = useState((k?.accounts ?? []).join('\n'))
   const [tps, setTps] = useState<number>(k?.tps_limit ?? 0)
   const [conc, setConc] = useState<number>(k?.concurrency_limit ?? 0)
   const [secret, setSecret] = useState('')
@@ -184,6 +185,7 @@ function KeyEditor(props: { initial: KeyView | null; onClose: () => void; onSave
         name,
         realm,
         models: models.split(/[\s,]+/).filter(Boolean),
+        accounts: accounts.split(/[\s,]+/).filter(Boolean),
         tps_limit: tps,
         concurrency_limit: conc,
       }
@@ -241,6 +243,10 @@ function KeyEditor(props: { initial: KeyView | null; onClose: () => void; onSave
         <div>
           <Typography.Text type="secondary">允许的模型（每行一条，支持 * 通配；留空 = 不限）</Typography.Text>
           <Input.TextArea className="mono" rows={4} value={models} onChange={(e) => setModels(e.target.value)} placeholder={'glm-*\ndeepseek-v4.1-flash'} />
+        </div>
+        <div>
+          <Typography.Text type="secondary">限定可用账号（每行一个 UID 或短 ID；留空 = 不限，会取消该 Key 的会话粘性）</Typography.Text>
+          <Input.TextArea className="mono" rows={3} value={accounts} onChange={(e) => setAccounts(e.target.value)} placeholder={'u00000001…'} />
         </div>
         {m.isError && <Typography.Text type="danger">{String(m.error)}</Typography.Text>}
       </Space>

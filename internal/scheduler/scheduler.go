@@ -250,6 +250,13 @@ func (s *Scheduler) cycle(ctx context.Context, reason string, force bool) {
 		if !acc.Enabled() || rec.AccessToken == "" {
 			continue
 		}
+		// An account may serve traffic without joining the scheduled chores; the
+		// switch is per account so a "keep it for API use only" account never gets
+		// touched by check-in, activity report or daily chat.
+		if !rec.TasksOn() {
+			s.note("跳过 [%s]：该账号未开启定时任务", uid8)
+			continue
+		}
 		if exp := acc.ExpiresAt(); exp != 0 && time.Until(time.Unix(exp, 0)) < 2*time.Hour && s.Refresher != nil {
 			s.note("账号 [%s] Token 即将到期，执行主动保活刷新...", uid8)
 			if err := s.Refresher.Refresh(ctx, acc); err == nil {

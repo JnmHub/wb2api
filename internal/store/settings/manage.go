@@ -36,6 +36,7 @@ type KeyInput struct {
 	Key              *string // a new secret; nil on create generates one
 	Realm            *string
 	Models           *[]string
+	Accounts         *[]string
 	ConcurrencyLimit *int
 	TPSLimit         *float64
 	Enabled          *bool
@@ -95,6 +96,9 @@ func applyKeyInput(m map[string]any, in KeyInput) {
 	if in.Models != nil {
 		m["models"] = cleanModelPatterns(stringsToAny(*in.Models))
 	}
+	if in.Accounts != nil {
+		m["accounts"] = cleanAccountPatterns(stringsToAny(*in.Accounts))
+	}
 	if in.ConcurrencyLimit != nil {
 		m["concurrency_limit"] = *in.ConcurrencyLimit
 	}
@@ -133,7 +137,7 @@ func (s *Store) CreateKey(in KeyInput) (APIKey, error) {
 			}
 		}
 		id = randHex(6)
-		m := map[string]any{"id": id, "name": "未命名", "key": "", "realm": "", "models": []any{},
+		m := map[string]any{"id": id, "name": "未命名", "key": "", "realm": "", "models": []any{}, "accounts": []any{},
 			"concurrency_limit": 0, "enabled": true, "created_at": stamp(), "deleted_at": ""}
 		applyKeyInput(m, in)
 		d["api_keys"] = append(list, m)
