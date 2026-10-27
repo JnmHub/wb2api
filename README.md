@@ -50,7 +50,8 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
 
 ## 最新发行版
 
-[v2.4.3 更新说明](docs/releases/v2.4.3.md)：签到判定、会话释放、模型别名/白名单、SSE 心跳等 17 项对齐。
+[v2.4.4 更新说明](docs/releases/v2.4.4.md)：修复上游 11128 渠道校验拦截（DSH `@` 路径段落指纹）。
+[v2.4.3](docs/releases/v2.4.3.md)：签到判定、会话释放、模型别名/白名单、SSE 心跳等 17 项对齐。
 上一版 [v2.4.2](docs/releases/v2.4.2.md)：每日任务独立排程（国际版每日活跃对话可单独设时间）。
 [v2.4.1](docs/releases/v2.4.1.md)：修复超长对话绕开会话亲和导致的缓存失效。
 [v2.4.0](docs/releases/v2.4.0.md)：高并发调度、可靠记账与三协议流式修复。

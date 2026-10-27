@@ -172,3 +172,61 @@ func TestDSHBrandIsAFingerprint(t *testing.T) {
 		t.Fatalf("sanitized text still has a fingerprint: %q", got)
 	}
 }
+
+// The upstream WAF matches the official client's "@ path" paragraph verbatim and
+// answers 11-128 when it is absent/present depending on the wording it expects.
+// The rewrite must keep the instructions usable while losing the template.
+func TestDSHPathsParagraphIsRewritten(t *testing.T) {
+	const buildWording = "Tokens prefixed with @ are paths the user explicitly referenced. " +
+		"Relative paths resolve from the workspace root; absolute paths identify files or " +
+		"directories on the host. A trailing slash marks a directory: list it when its " +
+		"contents matter. Anything else is a file: use the read tool when its contents are " +
+		"needed, and do not claim to have inspected it before reading. " +
+		"@\"...\" quotes a path containing spaces."
+	const upstreamExpectation = "Tokens prefixed with @ are paths the user explicitly referenced. " +
+		"Relative paths resolve from the workspace root; absolute paths point to files or " +
+		"directories on the host. A trailing slash marks a directory, so list it when its " +
+		"contents matter. Anything else is a file: open it with the read tool when its " +
+		"contents are needed, and never claim to have inspected it before reading. " +
+		"The @\"...\" form only quotes a path containing spaces."
+	for _, in := range []string{buildWording, upstreamExpectation} {
+		got := sanitizeSystemText(in)
+		if strings.Contains(got, "@ are paths the user explicitly referenced") {
+			t.Fatalf("fingerprint survived: %q", got)
+		}
+		for _, want := range []string{"@", "workspace root", "trailing slash", "read tool", "spaces"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("rewrite lost %q: %q", want, got)
+			}
+		}
+		if again := sanitizeSystemText(got); again != got {
+			t.Fatalf("rewrite is not idempotent:\n1: %q\n2: %q", got, again)
+		}
+	}
+}
+
+func TestDSHPathsRewriteKeepsSurroundingPrompt(t *testing.T) {
+	in := "You are an AI agent powered by DeepSeek Harness.\n\n" +
+		"Tokens prefixed with @ are paths the user explicitly referenced. Relative paths " +
+		"resolve from the workspace root; absolute paths identify files or directories on " +
+		"the host. A trailing slash marks a directory: list it when its contents matter. " +
+		"Anything else is a file: use the read tool when its contents are needed, and do " +
+		"not claim to have inspected it before reading. @\"...\" quotes a path containing spaces.\n\n" +
+		"Working directory: C:\\work\n"
+	got := sanitizeSystemText(in)
+	if strings.Contains(got, "@ are paths the user explicitly referenced") {
+		t.Fatalf("paragraph survived: %q", got)
+	}
+	if !strings.Contains(got, "Working directory: C:\\work") {
+		t.Fatalf("surrounding prompt lost: %q", got)
+	}
+	if strings.Contains(strings.ToLower(got), "deepseek harness") {
+		t.Fatalf("brand survived: %q", got)
+	}
+}
+
+func TestDSHPathsIsAFingerprint(t *testing.T) {
+	if !hasFingerprint(sanitizeDSHPathsNeedle) {
+		t.Fatal("paths paragraph must enter the sanitizer on its own")
+	}
+}

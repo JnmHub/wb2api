@@ -20,6 +20,10 @@ var sanitizeFeatures = []string{
 	"github.com/anthropics/",
 	"11128",
 	"DeepSeek Harness",
+	// 11-128 round four: the upstream WAF matches the "Paths prefixed with @"
+	// paragraph that the official client injects verbatim. It is a plain
+	// prompt-boilerplate sentence, so nothing else in the list catches it.
+	sanitizeDSHPathsNeedle,
 }
 
 // Case-insensitive fingerprints are checked on the lowercased copy; their
@@ -55,6 +59,27 @@ var (
 	// Harness implementation checkout" and similar lines). This runs only for
 	// system/developer messages.
 	sanitizeDSHBrandRe = regexp.MustCompile(`(?i)DeepSeek[ \t_-]*Harness`)
+)
+
+// The official client injects a fixed paragraph explaining how to read "@"
+// path references. The upstream WAF treats that paragraph as an "official
+// client" fingerprint and answers 11-128 ("Illegal API invocation from an
+// unapproved channel") when it is missing, while sending the client's own
+// wording unchanged. Rewrite it into an equivalent paraphrase: the model keeps
+// the same instructions, the upstream no longer sees its template.
+const (
+	sanitizeDSHPathsNeedle = "Tokens prefixed with @ are paths the user explicitly referenced"
+
+	sanitizeDSHPathsReplacement = "Paths that begin with @ point at files the user named explicitly. " +
+		"Relative ones resolve against the workspace root; absolute ones point to files " +
+		"or directories on the host. A trailing slash means a directory, so list it when " +
+		"the contents matter. Anything else is a file: open it with the read tool when you " +
+		"need its contents, and never claim to have inspected it before reading. " +
+		"The @\"...\" form only quotes a path that contains spaces."
+)
+
+var sanitizeDSHPathsRe = regexp.MustCompile(
+	`(?is)` + regexp.QuoteMeta(sanitizeDSHPathsNeedle) + `.{0,900}?spaces\.`,
 )
 
 const (
@@ -127,6 +152,7 @@ func sanitizeBase(text string) string {
 		}
 	}
 	text = sanitizeBareHdrRe.ReplaceAllLiteralString(text, "x-anthropic-billing-hdr")
+	text = sanitizeDSHPathsRe.ReplaceAllString(text, sanitizeDSHPathsReplacement)
 	return strings.TrimSpace(text)
 }
 
