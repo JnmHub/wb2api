@@ -50,6 +50,7 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
 
 ## 最新发行版
 
+[v2.4.7 更新说明](docs/releases/v2.4.7.md)：面板「清除冷却」现在也解除额度耗尽 park（此前要等 04:00）。
 [v2.4.6 更新说明](docs/releases/v2.4.6.md)：额度耗尽（429 `14018`）按账号停用而不是 60 秒模型限流；`code` 支持嵌套解析；面板「冷却」与「模型冷却」分开计数。
 [v2.4.5 更新说明](docs/releases/v2.4.5.md)：风控只封命中账号，不再暂停整个区域。
 [v2.4.4 更新说明](docs/releases/v2.4.4.md)：修复上游 11128 渠道校验拦截（DSH `@` 路径段落指纹）。

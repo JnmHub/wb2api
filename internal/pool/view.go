@@ -191,13 +191,22 @@ func (a *Account) State(now time.Time) Status {
 	return StatusReady
 }
 
-// ClearCooldowns lifts the account-wide and per-model cooldowns. A risk-control
-// restriction is only lifted when includeRestriction is set (an operator who
-// knows it was resolved); the updated record is then returned for persistence.
+// ClearCooldowns lifts every local timer that keeps an account out of service:
+// the soft-limit cooldown, the per-model windows, the 5xx breaker/degrade
+// timers and the "parked until the daily reset" balance timer (402 and the 429
+// exhausted-quota verdict). An operator pressing "clear cooling" means "make
+// this account selectable again", so a partially cleared account would be a
+// trap. A risk-control restriction is only lifted when includeRestriction is
+// set (an operator who knows it was resolved); the updated record is then
+// returned for persistence.
 func (a *Account) ClearCooldowns(includeRestriction bool) *accounts.Record {
 	a.cooldownTo.Store(0)
+	a.breakerTo.Store(0)
+	a.degradeTo.Store(0)
+	a.balanceTo.Store(0)
 	a.mu.Lock()
 	a.modelCool = nil
+	a.g.lastError, a.g.lastErrorDetail = "", ""
 	a.mu.Unlock()
 	var rec *accounts.Record
 	if includeRestriction && a.restrictedTo.Load() != 0 {

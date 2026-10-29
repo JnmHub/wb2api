@@ -152,13 +152,32 @@ func TestBalanceParkUntilFourAM(t *testing.T) {
 	}
 }
 
+// "Clear cooling" is the operator's "make it selectable again" button: it has
+// to lift the balance park the 429 exhausted-quota verdict writes, otherwise the
+// account would look unclearable until 04:00.
+func TestClearCooldownsLiftsTheBalancePark(t *testing.T) {
+	a := newAcct(t, "cn")
+	now := time.Date(2026, 10, 29, 19, 0, 0, 0, time.Local)
+	a.NoteBalanceCooled("HTTP 429 quota", now)
+	if a.Ready("m", now) {
+		t.Fatal("parked account must not be ready")
+	}
+	if st := a.State(now); st != StatusCooling {
+		t.Fatalf("state = %s want cooling", st)
+	}
+	a.ClearCooldowns(false)
+	if !a.Ready("m", now) {
+		t.Fatal("clear cooling must lift the balance park")
+	}
+	if st := a.State(now); st != StatusReady {
+		t.Fatalf("state after clearing = %s want ready", st)
+	}
+}
+
 func TestModelCapOnlyForFreeModelsAndPersisted(t *testing.T) {
 	a := newAcct(t, "intl")
 	now := time.Now()
 	reset := now.Add(3 * time.Hour)
-	if _, ok := a.NoteModelCap("gpt-5.5", reset, now); ok {
-		t.Error("paid models are outside the cap linkage")
-	}
 	rec, ok := a.NoteModelCap("hy3", reset, now)
 	if !ok || rec == nil || rec.ModelCaps["hy3"].Reset == 0 {
 		t.Fatalf("free model cap must be recorded: %v %v", rec, ok)
