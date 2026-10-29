@@ -483,19 +483,38 @@ func TestFullCreditSweepDetection(t *testing.T) {
 	}
 }
 
-func TestCoolingFilterIncludesModelCooldowns(t *testing.T) {
+// A per-model window is reported separately: the account still serves every
+// other model, so it must not land in the account-wide "cooling" bucket.
+func TestCoolingIsAccountWideAndModelWindowsAreSeparate(t *testing.T) {
 	f := newFixture(t, 2)
 	f.acc.Pool.All()[0].CoolDownModel("m", time.Now().Add(time.Hour))
+
 	code, out := f.do(t, "GET", "/api/v2/accounts?status=cooling", "")
-	if code != http.StatusOK || out["total"].(float64) != 1 {
-		t.Fatalf("cooling filter: %d %v", code, out)
+	if code != http.StatusOK || out["total"].(float64) != 0 {
+		t.Fatalf("model window must not match the account-wide filter: %d %v", code, out)
 	}
-	id := out["items"].([]any)[0].(map[string]any)["uid"].(string)
-	if id != "acct-0000" {
+
+	code, out = f.do(t, "GET", "/api/v2/accounts?status=model_cooling", "")
+	if code != http.StatusOK || out["total"].(float64) != 1 {
+		t.Fatalf("model_cooling filter: %d %v", code, out)
+	}
+	if id := out["items"].([]any)[0].(map[string]any)["uid"].(string); id != "acct-0000" {
 		t.Fatalf("wrong account: %s", id)
 	}
+
 	_, sum := f.do(t, "GET", "/api/v2/accounts/summary", "")
-	if sum["model_cooling"].(float64) != 1 || sum["cooling_total"].(float64) != 1 {
+	if sum["model_cooling"].(float64) != 1 || sum["cooling_total"].(float64) != 0 {
 		t.Fatalf("summary: model_cooling=%v cooling_total=%v", sum["model_cooling"], sum["cooling_total"])
+	}
+
+	// An account-wide park is the only thing that fills the cooling bucket.
+	f.acc.Pool.All()[1].CoolDown(time.Now().Add(time.Hour))
+	_, sum = f.do(t, "GET", "/api/v2/accounts/summary", "")
+	if sum["cooling_total"].(float64) != 1 {
+		t.Fatalf("account-wide cooling must count once, got %v", sum["cooling_total"])
+	}
+	_, out = f.do(t, "GET", "/api/v2/accounts?status=cooling", "")
+	if out["total"].(float64) != 1 {
+		t.Fatalf("account-wide filter total = %v", out["total"])
 	}
 }

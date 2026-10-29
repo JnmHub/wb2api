@@ -58,6 +58,7 @@ export const statusLabel: Record<string, string> = {
   need_login: '需重新登录',
   disabled: '已停用',
   no_credit: '无积分',
+  model_cooling: '模型冷却',
 }
 
 export const realmLabel: Record<string, string> = { intl: '国际版', cn: '国内版' }

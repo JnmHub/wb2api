@@ -194,11 +194,6 @@ func parseQuery(r *http.Request) (query, error) {
 			default:
 				return q, fmt.Errorf("unknown status %q", p)
 			}
-			// The console's "冷却" chip means "cannot serve right now": account-wide
-			// cooldown or one or more models in their per-model cooldown window.
-			if pool.Status(p) == pool.StatusCooling {
-				q.modelCooling = true
-			}
 		}
 	}
 	if s := v.Get("enabled"); s != "" {
@@ -410,7 +405,11 @@ func (a *Accounts) summary(w http.ResponseWriter, r *http.Request) {
 		if hasModelCool {
 			modelCooling++
 		}
-		if st == string(pool.StatusCooling) || hasModelCool {
+		// cooling_total counts accounts that cannot serve at all (any status is
+		// account-wide); model_cooling counts the narrower per-model windows.
+		// They are reported separately so the console never mixes a 60-second
+		// model window with an account-wide park.
+		if st == string(pool.StatusCooling) {
 			coolingTotal++
 		}
 

@@ -800,6 +800,16 @@ func (h *Handler) classify(q *request, acc *pool.Account, status int, body []byt
 		reset, hasReset := ratelimit.ParseReset(detail)
 		q.at.last429, q.at.last429Detail = true, detail
 		q.demote(h, acc)
+		if ratelimit.IsQuotaExhausted(detail) {
+			// The credential has no quota left (429 / 14018 "额度已用尽"): that is
+			// not a rate limit, so a one-minute model window would only re-burn
+			// the next request. Park the whole account until the daily reset so
+			// the console shows it as cooling instead of "available".
+			until := acc.NoteBalanceCooled("HTTP 429 "+detail, now)
+			h.logger().Warn("account out of quota (429), parked until the daily reset",
+				"account", short(acc.UID), "until", until.Format(time.RFC3339))
+			return result{kind: retry, status: status, body: body}
+		}
 		if ratelimit.IsAccountLevel(detail, hasReset) {
 			wait := acc.NoteSoftRate("HTTP 429 (account soft rate)", now)
 			soft, _, _, _ := acc.Streaks()

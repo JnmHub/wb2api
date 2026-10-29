@@ -6,6 +6,7 @@ package ratelimit
 import (
 	"encoding/json"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -69,7 +70,9 @@ func ScopePhrase(detail string) string {
 }
 
 // code returns the integer `code` of a JSON body (ok=false when absent, not
-// JSON, or not an integer-like value).
+// JSON, or not an integer-like value). The upstream nests it in more than one
+// place — top level, error.code, error.data.code, data.code — so every shape
+// carrying an integer-like code is accepted.
 func code(detail string) (int, bool) {
 	var obj map[string]any
 	dec := json.NewDecoder(strings.NewReader(detail))
@@ -77,20 +80,108 @@ func code(detail string) (int, bool) {
 	if dec.Decode(&obj) != nil {
 		return 0, false
 	}
-	switch v := obj["code"].(type) {
+	if c, ok := codeValue(obj["code"]); ok {
+		return c, true
+	}
+	return scanCode(obj, 1)
+}
+
+// codeValue reads an integer-like JSON value (number or numeric string).
+func codeValue(v any) (int, bool) {
+	switch t := v.(type) {
 	case json.Number:
-		if i, err := v.Int64(); err == nil {
+		if i, err := t.Int64(); err == nil {
 			return int(i), true
 		}
-		if f, err := v.Float64(); err == nil {
+		if f, err := t.Float64(); err == nil {
 			return int(f), true
 		}
 	case string:
-		if i, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+		if i, err := strconv.Atoi(strings.TrimSpace(t)); err == nil {
 			return i, true
 		}
 	}
 	return 0, false
+}
+
+// codeKeys are the wrappers the upstream puts around `code`, most specific
+// first. Other keys are only walked afterwards, in sorted order, so the answer
+// never depends on Go's map iteration order.
+var codeKeys = []string{"error", "data", "body", "detail", "response"}
+
+// scanCode looks for a nested integer-like "code" (bounded depth).
+func scanCode(v any, depth int) (int, bool) {
+	if depth > 4 {
+		return 0, false
+	}
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return 0, false
+	}
+	if c, ok := codeValue(obj["code"]); ok {
+		return c, true
+	}
+	for _, k := range codeKeys {
+		child, ok := obj[k].(map[string]any)
+		if !ok {
+			continue
+		}
+		if c, ok := codeValue(child["code"]); ok {
+			return c, true
+		}
+		if c, ok := scanCode(child, depth+1); ok {
+			return c, true
+		}
+	}
+	rest := make([]string, 0, len(obj))
+	for k := range obj {
+		known := false
+		for _, ck := range codeKeys {
+			if k == ck {
+				known = true
+				break
+			}
+		}
+		if !known {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	for _, k := range rest {
+		child, ok := obj[k].(map[string]any)
+		if !ok {
+			continue
+		}
+		if c, ok := scanCode(child, depth+1); ok {
+			return c, true
+		}
+	}
+	return 0, false
+}
+
+// QuotaCode is the upstream's "this account has no quota left, buy more
+// capacity" answer (429 / code 14018). It is not a rate limit: the account does
+// not recover in a minute, so a model cooldown would only re-burn the next
+// request.
+const QuotaCode = 14018
+
+var quotaMarkers = []string{
+	"额度已用尽", "购买加量包", "insufficient quota", "quota exhausted",
+	"no quota left", "out of quota", "余额不足",
+}
+
+// IsQuotaExhausted reports the 429 that says the account's quota is gone.
+func IsQuotaExhausted(detail string) bool {
+	if c, ok := code(detail); ok && c == QuotaCode {
+		return true
+	}
+	text := strings.ToLower(detail)
+	for _, m := range quotaMarkers {
+		if strings.Contains(text, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsSoftShape: the body names a rate limit, whatever its scope.

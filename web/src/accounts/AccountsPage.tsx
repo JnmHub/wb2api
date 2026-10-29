@@ -35,10 +35,13 @@ import { DesktopImportModal } from './DesktopImportModal'
 import { ExportModal } from './ExportModal'
 import { ImportModal } from './ImportModal'
 
+/** Account-wide statuses plus the per-model window the API reports separately. */
+export type StatusFilter = Status | 'model_cooling' | ''
+
 export interface Filters {
   q: string
   realm: '' | 'intl' | 'cn'
-  status: Status | ''
+  status: StatusFilter
   sort: string
   order: 'asc' | 'desc'
 }
@@ -109,10 +112,11 @@ export function AccountsPage() {
   const selected = selection.uids
   const rows = useMemo(() => items.map((a) => ({ ...a, key: a.uid })), [items])
 
-  const statusOptions: { value: Status | ''; label: string }[] = [
+  const statusOptions: { value: StatusFilter; label: string }[] = [
     { value: '', label: `全部 ${sum?.total ?? 0}` },
     { value: 'ready', label: `可用 ${count('ready')}` },
     { value: 'cooling', label: `冷却 ${sum?.cooling_total ?? count('cooling')}` },
+    { value: 'model_cooling', label: `模型冷却 ${sum?.model_cooling ?? 0}` },
     { value: 'restricted', label: `风控 ${count('restricted')}` },
     { value: 'no_credit', label: `无积分 ${count('no_credit')}` },
     { value: 'need_login', label: `需登录 ${count('need_login')}` },
@@ -349,7 +353,7 @@ export function AccountsPage() {
           <span className="spacer" />
           <Segmented
             value={filters.status}
-            onChange={(v) => setFilters((f) => ({ ...f, status: v as Status | '' }))}
+            onChange={(v) => setFilters((f) => ({ ...f, status: v as StatusFilter }))}
             options={statusOptions}
           />
         </Space>
