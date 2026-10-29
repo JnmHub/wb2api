@@ -327,7 +327,11 @@ func TestFailoverOn429CoolsOnlyThatModel(t *testing.T) {
 	}
 }
 
-func TestForbiddenIsPassedThroughWithoutRotation(t *testing.T) {
+// Opt-in legacy behaviour: with rotation disabled a restriction is returned to
+// the client at once. The default (rotation enabled, realm never paused) is
+// covered by TestRestrictionTagsAccountAndKeepsServing.
+func TestForbiddenIsPassedThroughWhenRotationDisabled(t *testing.T) {
+	t.Setenv("WB_RESTRICTED_403_ROTATE_MAX", "0")
 	var calls atomic.Int32
 	up := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -341,7 +345,7 @@ func TestForbiddenIsPassedThroughWithoutRotation(t *testing.T) {
 		t.Fatalf("got %d %s", resp.StatusCode, b)
 	}
 	if calls.Load() != 1 {
-		t.Fatalf("a 403 must not be replayed on other accounts, upstream saw %d calls", calls.Load())
+		t.Fatalf("with rotation disabled a 403 must not be replayed, upstream saw %d calls", calls.Load())
 	}
 }
 

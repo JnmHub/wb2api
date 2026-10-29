@@ -50,6 +50,7 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
 
 ## 最新发行版
 
+[v2.4.5 更新说明](docs/releases/v2.4.5.md)：风控只封命中账号，不再暂停整个区域。
 [v2.4.4 更新说明](docs/releases/v2.4.4.md)：修复上游 11128 渠道校验拦截（DSH `@` 路径段落指纹）。
 [v2.4.3](docs/releases/v2.4.3.md)：签到判定、会话释放、模型别名/白名单、SSE 心跳等 17 项对齐。
 上一版 [v2.4.2](docs/releases/v2.4.2.md)：每日任务独立排程（国际版每日活跃对话可单独设时间）。
@@ -179,6 +180,16 @@ services:
 | `-sched-top-k` / `WB_SCHED_TOP_K` | `1` | 从评分最优的 K 个可用账号中选择；1 = 严格最优 |
 | `-no-modelsdev` | 关 | 不访问 models.dev 的额度数据 |
 | `-debug` | 关 | 暴露 `/debug/runtime` |
+
+风控（403 / `11140`）默认策略是**只封该账号，不封网关**：命中的账号写入 `restrictedUntil`（约 2 小时，重启后仍在，面板可见）并被选择器跳过，当前请求继续用其它账号完成；不会把整个区域暂停。需要恢复旧的「连坐保护」（同区域多个账号受限就整体暂停）时显式开启：
+
+| 环境变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `WB_RESTRICTED_403_ROTATE_MAX` | `2` | 一次请求在撞到受限账号后还可以换几个账号；0 = 立刻把 403 返回客户端 |
+| `WB_RESTRICTION_HOLD_SECONDS` | `0` | 区域暂停秒数；0 = 不暂停（推荐）。设为正数才启用连坐暂停 |
+| `WB_RESTRICTION_WAVE_MIN` | `2` | 窗口内多少个不同账号受限才触发暂停（仅在上一项 > 0 时生效） |
+| `WB_RESTRICTION_WAVE_WINDOW` | `900` | 上述窗口秒数 |
+
 
 用量完成事件先写入本地持久化 outbox，再异步交付 SQLite/PostgreSQL 汇总。远端故障时可继续记账，直到本地容量或存储不可用；`/api/v2/usage/summary` 的 `durability` 区分本地可写状态、待交付事件与远端错误。配额读取的是已交付汇总，因此远端长时间中断时并非实时硬配额。完整边界、迁移和恢复要求见 [用量持久化契约](internal/usagedb/DURABILITY.md)。HA 配置为每个副本提供独立 outbox 卷；不要删除这些卷或使用 `down -v` 来升级。
 

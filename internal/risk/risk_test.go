@@ -71,3 +71,47 @@ func TestHoldZeroDisablesPause(t *testing.T) {
 		t.Fatal("Hold=0 turns the pause off")
 	}
 }
+
+// Defaults must match the "tag the account, never lock the gateway" policy:
+// a restricted account is parked by the gateway and skipped, but dispatch to
+// its realm keeps running, and the request may still rotate to another account.
+func TestDefaultPolicyParksTheAccountNotTheGateway(t *testing.T) {
+	for _, k := range []string{"WB_RESTRICTION_HOLD_SECONDS", "WB_RESTRICTED_403_ROTATE_MAX", "WB_RESTRICTION_WAVE_MIN", "WB_RESTRICTION_WAVE_WINDOW"} {
+		t.Setenv(k, "")
+	}
+	cfg := ConfigFromEnv()
+	if cfg.Hold != 0 {
+		t.Fatalf("realm pause must be opt-in, got Hold=%v", cfg.Hold)
+	}
+	if cfg.RotateMax != 2 {
+		t.Fatalf("one restriction should still be able to rotate to another account, got RotateMax=%d", cfg.RotateMax)
+	}
+	now := time.Unix(1_800_000_000, 0)
+	g := &Guard{Cfg: cfg, Now: func() time.Time { return now }}
+	for _, uid := range []string{"a", "b", "c", "d"} {
+		if until := g.Note("intl", uid); !until.IsZero() {
+			t.Fatalf("default policy must never pause the realm, paused until %v", until)
+		}
+	}
+	if rem := g.HoldRemaining("intl"); rem != 0 {
+		t.Fatalf("HoldRemaining = %v, want 0", rem)
+	}
+}
+
+func TestOperatorsCanTurnTheRealmPauseBackOn(t *testing.T) {
+	t.Setenv("WB_RESTRICTION_HOLD_SECONDS", "600")
+	t.Setenv("WB_RESTRICTION_WAVE_MIN", "2")
+	cfg := ConfigFromEnv()
+	if cfg.Hold != 10*time.Minute {
+		t.Fatalf("Hold = %v, want 10m", cfg.Hold)
+	}
+	now := time.Unix(1_800_000_000, 0)
+	g := &Guard{Cfg: cfg, Now: func() time.Time { return now }}
+	g.Note("intl", "a")
+	if until := g.Note("intl", "b"); until.IsZero() {
+		t.Fatal("opt-in pause must trigger on a wave")
+	}
+	if rem := g.HoldRemaining("intl"); rem != 10*time.Minute {
+		t.Fatalf("HoldRemaining = %v, want 10m", rem)
+	}
+}

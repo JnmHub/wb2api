@@ -1,12 +1,17 @@
-// Package risk implements the gateway's protection against upstream
-// risk-control sweeps (port of the "风控连坐保护" logic in legacy wb_proxy.py).
+// Package risk implements the gateway's reaction to upstream risk-control
+// restrictions (port of the "风控连坐保护" logic in legacy wb_proxy.py).
 //
-// When the upstream answers 403 / code 11140 ("account restricted due to
-// unusual activity") the account is parked and the request is NOT replayed on
-// other accounts: all accounts of one deployment share a device/exit, and
-// spraying the same request over the pool is what got whole pools banned.
-// If several different accounts of one realm get restricted within a window,
-// dispatch to that realm is paused altogether.
+// Default policy: park the account, never the gateway. When the upstream
+// answers 403 / code 11140 ("account restricted due to unusual activity") the
+// offending account is tagged (RestrictedUntil, persisted, skipped by the
+// picker) and the request continues on the remaining accounts. One bad account
+// therefore costs that account, not the deployment.
+//
+// Optional policy (WB_RESTRICTION_HOLD_SECONDS > 0): if several distinct
+// accounts of one realm get restricted within a window, pause dispatch to that
+// realm altogether. Accounts of one deployment share a device/exit, so a sweep
+// can take the whole pool; operators who prefer stopping early over losing the
+// pool can switch the pause back on.
 package risk
 
 import (
@@ -56,28 +61,35 @@ func envFloat(name string, def float64) float64 {
 // Config holds the tunables (same environment variables as the legacy gateway).
 type Config struct {
 	// RotateMax is how many more accounts one request may try after a
-	// restriction (WB_RESTRICTED_403_ROTATE_MAX, default 0 = stop at once).
+	// restriction (WB_RESTRICTED_403_ROTATE_MAX, default 2).
 	RotateMax int
-	// WaveMin distinct restricted accounts within WaveWindow pause the realm
-	// (WB_RESTRICTION_WAVE_MIN, default 2).
+	// WaveMin distinct restricted accounts within WaveWindow can pause the
+	// realm (WB_RESTRICTION_WAVE_MIN, default 2). Only effective while Hold is
+	// positive.
 	WaveMin int
 	// WaveWindow is the sliding window (WB_RESTRICTION_WAVE_WINDOW, 900 s).
 	WaveWindow time.Duration
-	// Hold is the pause length (WB_RESTRICTION_HOLD_SECONDS, 1800 s; 0 = off).
+	// Hold is the pause length (WB_RESTRICTION_HOLD_SECONDS, default 0 = off:
+	// a restricted account is tagged and skipped, dispatch never pauses).
 	Hold time.Duration
 }
 
-// ConfigFromEnv reads the tunables.
+// ConfigFromEnv reads the tunables. The defaults tag the restricted account and
+// keep the rest of the pool serving; the realm-wide pause is opt-in.
 func ConfigFromEnv() Config {
 	min := int(envFloat("WB_RESTRICTION_WAVE_MIN", 2))
 	if min < 1 {
 		min = 1
 	}
+	rotate := int(envFloat("WB_RESTRICTED_403_ROTATE_MAX", 2))
+	if rotate < 0 {
+		rotate = 0
+	}
 	return Config{
-		RotateMax:  int(envFloat("WB_RESTRICTED_403_ROTATE_MAX", 0)),
+		RotateMax:  rotate,
 		WaveMin:    min,
 		WaveWindow: time.Duration(envFloat("WB_RESTRICTION_WAVE_WINDOW", 900) * float64(time.Second)),
-		Hold:       time.Duration(envFloat("WB_RESTRICTION_HOLD_SECONDS", 1800) * float64(time.Second)),
+		Hold:       time.Duration(envFloat("WB_RESTRICTION_HOLD_SECONDS", 0) * float64(time.Second)),
 	}
 }
 

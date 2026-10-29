@@ -888,8 +888,10 @@ func (h *Handler) classify(q *request, acc *pool.Account, status int, body []byt
 	case status == http.StatusForbidden:
 		detail := truncate(string(body), 600)
 		if ratelimit.IsRestriction(detail) {
-			// Account-level restriction: park the account (persisted) and do NOT
-			// replay the request on other accounts - they share the device.
+			// Account-level restriction: tag the account (persisted, the picker
+			// stops choosing it) and keep serving from the rest of the pool. The
+			// realm-wide pause is opt-in (WB_RESTRICTION_HOLD_SECONDS), so one
+			// restricted account never stops the whole gateway.
 			if rec := acc.NoteRestricted(now, risk.RestrictedAccountCooldown); rec != nil {
 				h.persistRecord(rec)
 			}
