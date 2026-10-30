@@ -295,6 +295,10 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	fallbackTried := false
 	for {
 		aborted := false
+		// Adopt windows other replicas learned for this model, so a cooldown is
+		// cluster-wide instead of per process. A chain step is forced fresh:
+		// the model just changed.
+		h.refreshSharedWindows(q.r.Context(), q.realm, q.model, h.Pool.All(), q.chainPos > 0)
 		for attempt := 0; attempt < max+2; attempt++ {
 			if r.Context().Err() != nil {
 				return
@@ -466,6 +470,7 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 			res := h.try(q, acc)
 			localRelease()
 			release()
+			h.publishModelWindows(acc, q.model, res.kind == done)
 			switch res.kind {
 			case done:
 				return
@@ -482,6 +487,12 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 			if aborted {
 				break
 			}
+		}
+		// This model is used up on every account that could serve it: try the
+		// next model of the configured chain before giving up.
+		if !aborted && h.advanceModelChain(q) {
+			forced = nil
+			continue
 		}
 		// The free model was used up on every account: move to its paid sibling
 		// and run the whole selection again (legacy open_upstream recursion).
@@ -667,9 +678,9 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 	if q.sink != nil {
 		q.sink(q, acc, cancel, idle, body)
 	} else if q.stream {
-		h.pipeStream(q.w, q.r, cancel, idle, body, acc, q.model, q.keyID, q.effort(h), q.start, q.maxTPS)
+		h.pipeStream(q.w, q.r, cancel, idle, body, acc, q.viewModel(), q.keyID, q.effort(h), q.start, q.maxTPS)
 	} else {
-		h.aggregate(q.w, q.r, cancel, idle, body, acc, q.model, q.keyID, q.effort(h), q.start)
+		h.aggregate(q.w, q.r, cancel, idle, body, acc, q.viewModel(), q.keyID, q.effort(h), q.start)
 	}
 	return result{kind: done}
 }

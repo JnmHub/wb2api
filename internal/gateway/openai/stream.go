@@ -81,6 +81,7 @@ func (t *tokenEstimator) tokens() int {
 type streamMeta struct {
 	id      string
 	model   string
+	pin     string // client-visible model name; overrides the upstream id
 	created int64
 }
 
@@ -96,6 +97,11 @@ func (m *streamMeta) update(top rawObj) {
 		if json.Unmarshal(v, &s) == nil && s != "" {
 			m.model = s
 		}
+	}
+	// pin wins over the upstream id: a request that was served by a fallback
+	// model still answers with the model the client asked for.
+	if m.pin != "" {
+		m.model = m.pin
 	}
 	if v, ok := top["created"]; ok {
 		var n int64
@@ -201,7 +207,7 @@ func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp fu
 	var (
 		br            *bufio.Reader
 		acc2          []byte
-		meta          = streamMeta{model: model}
+		meta          = streamMeta{model: model, pin: model}
 		est           tokenEstimator
 		lastUsage     json.RawMessage
 		pendingFin    string
@@ -298,6 +304,9 @@ loop:
 					emitted = true
 				} else {
 					meta.update(c.top)
+					if meta.pin != "" && c.top != nil {
+						c.top["model"] = json.RawMessage(strconv.Quote(meta.pin))
+					}
 					if u := c.usage(); u != nil && (lastUsage == nil || usageTotal(u) >= usageTotal(lastUsage)) {
 						lastUsage = append(json.RawMessage(nil), u...)
 					}

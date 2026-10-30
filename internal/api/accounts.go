@@ -88,7 +88,7 @@ func (a *Accounts) view(acc *pool.Account, now time.Time, detail bool) map[strin
 	if mc := acc.ModelCooldowns(now); len(mc) > 0 {
 		list := make([]map[string]any, 0, len(mc))
 		for _, m := range mc {
-			list = append(list, map[string]any{"model": m.Model, "expires_at": m.Until.Unix()})
+			list = append(list, map[string]any{"model": m.Model, "expires_at": m.Until.Unix(), "reason": m.Reason})
 		}
 		v["model_cooldowns"] = list
 	}
@@ -901,6 +901,7 @@ func (a *Accounts) Register(mux *http.ServeMux, wrap func(http.Handler) http.Han
 	h := func(f http.HandlerFunc) http.Handler { return wrap(f) }
 	mux.Handle("GET /api/v2/accounts", h(a.list))
 	mux.Handle("GET /api/v2/accounts/summary", h(a.summary))
+	mux.Handle("GET /api/v2/models/cooldowns", h(a.modelCooling))
 	mux.Handle("POST /api/v2/accounts/batch", h(a.batch))
 	mux.Handle("GET /api/v2/accounts/{uid}", h(a.get))
 	mux.Handle("PATCH /api/v2/accounts/{uid}", h(a.patch))

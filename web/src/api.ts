@@ -99,7 +99,7 @@ export interface Account {
   cooldown_for?: number
   restricted_for?: number
   unavailable_reason?: string
-  model_cooldowns?: { model: string; expires_at: number }[]
+  model_cooldowns?: { model: string; expires_at: number; reason?: string }[]
   credits?: { remain?: number; total?: number }
   refresh?: { failures: number; next_try: number; last_error: string }
   // detail only
@@ -332,6 +332,7 @@ export interface SettingsView {
   output_tps_limit: number
   model_aliases: Record<string, string>
   models_only_available: boolean
+  model_fallbacks?: Record<string, string[]>
   proxy_slots: ProxySlot[]
   catalog?: CatalogStatus[]
 }
@@ -613,4 +614,14 @@ export interface AgentsView {
   clients: AgentClient[]
   loopback: boolean
   base_url: string
+}
+
+export interface ModelCoolingRow {
+  model: string
+  realm: string
+  cooling: number
+  available: number
+  earliest_expiry: number
+  latest_expiry: number
+  reasons: Record<string, number>
 }

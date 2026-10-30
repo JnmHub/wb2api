@@ -389,9 +389,12 @@ function ModelsSection({ s }: { s: SettingsView }) {
 function ModelRoutingSection({ s }: { s: SettingsView }) {
   const save = useSaveSettings()
   const asText = (m: Record<string, string> | undefined) => Object.entries(m ?? {}).map(([k, v]) => `${k}=${v}`).join('\n')
+  const chainText = (m: Record<string, string[]> | undefined) =>
+    Object.entries(m ?? {}).map(([k, v]) => `${k}: ${v.join(', ')}`).join('\n')
   const [alias, setAlias] = useState(asText(s.model_aliases))
+  const [chain, setChain] = useState(chainText(s.model_fallbacks))
   const [onlyAvailable, setOnlyAvailable] = useState<boolean>(s.models_only_available ?? false)
-  const dirty = alias !== asText(s.model_aliases) || onlyAvailable !== (s.models_only_available ?? false)
+  const dirty = alias !== asText(s.model_aliases) || chain !== chainText(s.model_fallbacks) || onlyAvailable !== (s.models_only_available ?? false)
   const saveAll = () => {
     const map: Record<string, string> = {}
     for (const line of alias.split(/\r?\n/)) {
@@ -401,7 +404,15 @@ function ModelRoutingSection({ s }: { s: SettingsView }) {
       const v = line.slice(i + 1).trim()
       if (k && v) map[k] = v
     }
-    save.mutate({ model_aliases: map, models_only_available: onlyAvailable })
+    const chains: Record<string, string[]> = {}
+    for (const line of chain.split(/\r?\n/)) {
+      const i = line.indexOf(':')
+      if (i <= 0) continue
+      const k = line.slice(0, i).trim().toLowerCase()
+      const v = line.slice(i + 1).split(',').map((x) => x.trim().toLowerCase()).filter(Boolean)
+      if (k && v.length > 0) chains[k] = v.slice(0, 8)
+    }
+    save.mutate({ model_aliases: map, model_fallbacks: chains, models_only_available: onlyAvailable })
   }
   return (
     <Card
@@ -416,6 +427,12 @@ function ModelRoutingSection({ s }: { s: SettingsView }) {
         别名把客户端发来的模型名映射成真实模型（每行 <code>别名=真实模型</code>，大小写不敏感）。别名在封锁 / 限额 / 选号之前解析，所以整条链路只看到真实模型；带别名的模型也会出现在 `/v1/models` 里（`alias_of` 指向真实 id）。
       </Typography.Paragraph>
       <Input.TextArea className="mono" rows={4} value={alias} onChange={(e) => setAlias(e.target.value)} placeholder={'claude-sonnet-4=glm-4.7\nclaude-3-5-haiku=deepseek-v4.1-flash'} />
+      <div style={{ marginTop: 12 }}>
+        <Typography.Paragraph type="secondary">
+          模型后备链（每行 <code>模型: 后备1, 后备2</code>）。只有当前模型在<strong>所有</strong>账号上都被限流 / 冷却 / 失去权限时才会往下走一步，最多 8 段；返回体里的 <code>model</code> 仍然是客户端请求的名字。
+        </Typography.Paragraph>
+        <Input.TextArea className="mono" rows={4} value={chain} onChange={(e) => setChain(e.target.value)} placeholder={'deepseek-v4.1-flash: space-bunny, glm-4.7'} />
+      </div>
       <div style={{ marginTop: 12 }}>
         <Space>
           <Switch checked={onlyAvailable} onChange={setOnlyAvailable} />

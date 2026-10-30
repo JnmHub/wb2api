@@ -81,6 +81,18 @@ type Handler struct {
 	// Persist stores a changed account record (nil = memory only).
 	Persist func(*accounts.Record) error
 
+	// ModelWindows shares per-model cooldowns between replicas (nil = local
+	// only). See sharedmodel.go.
+	ModelWindows ModelWindowStore
+
+	winMu    sync.Mutex
+	winCache map[string]windowEntry
+
+	// winPubMu throttles shared-window writes per account and model so an
+	// upstream 429 storm cannot spawn one goroutine per attempt.
+	winPubMu sync.Mutex
+	winPubAt map[string]time.Time
+
 	// UpstreamOverride replaces the realm's chat upstream (tests, mock).
 	UpstreamOverride string
 	// MaxBody is the request body ceiling (0 = 16 MiB).
@@ -308,7 +320,9 @@ type request struct {
 	start               time.Time
 	payload             *jsonx.Obj
 	model               string
-	clientModel         string // the name the client asked for, when it is an alias
+	clientModel         string // the name the client asked for, when it is an alias or a chain head
+	chain               []string
+	chainPos            int
 	keyAccounts         []string
 	keyDenied           map[string]struct{}
 	stream              bool

@@ -94,9 +94,9 @@ func (rh *Responses) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	wantStream := jsonx.Truthy(payload.Get("stream"))
 	sink := func(q *request, acc *pool.Account, cancel context.CancelFunc, idle time.Duration, body io.Reader) {
 		if wantStream {
-			h.responsesStream(q, acc, cancel, idle, body, model, info)
+			h.responsesStream(q, acc, cancel, idle, body, q.viewModel(), info)
 		} else {
-			h.responsesWhole(q, acc, cancel, idle, body, model, info)
+			h.responsesWhole(q, acc, cancel, idle, body, q.viewModel(), info)
 		}
 	}
 	h.run(w, r, start, key, chat, runOpts{forceStream: true, stream: wantStream,

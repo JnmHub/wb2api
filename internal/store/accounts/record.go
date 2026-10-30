@@ -54,6 +54,9 @@ type Record struct {
 	// ModelCool holds model-scoped cooldowns (unix seconds) so a 429 window
 	// survives a restart instead of being forgotten with the process' memory.
 	ModelCool map[string]float64
+	// ModelCoolWhy explains each ModelCool entry ("soft", "cap",
+	// "entitlement", "manual"). Diagnostics only: nothing schedules from it.
+	ModelCoolWhy map[string]string
 	// TasksEnabled keeps an account out of scheduled chores (check-in, activity
 	// report, daily chat, keepalive) while it keeps serving traffic. nil/absent
 	// means enabled, so existing files behave exactly as before.
@@ -124,7 +127,7 @@ var knownKeys = map[string]bool{
 	"expiresAt": true, "addedAt": true, "source": true, "proxySlot": true, "proxy": true,
 	"enabled": true, "weight": true, "note": true, "disabledModels": true,
 	"restrictedUntil": true, "credits": true, "lastCheckin": true, "lastDailyChat": true,
-	"lastActivityReport": true, "modelCaps": true, "modelCool": true,
+	"lastActivityReport": true, "modelCaps": true, "modelCool": true, "modelCoolWhy": true,
 	"tasksEnabled": true, "tier": true,
 	// runtime-only: legacy files may still contain them; never trusted on load
 	// and never written back.
@@ -306,6 +309,21 @@ func FromMap(data map[string]any, path string, now time.Time) *Record {
 				r.ModelCool = map[string]float64{}
 			}
 			r.ModelCool[mid] = until
+		}
+	}
+
+	// modelCoolWhy is purely informational: it explains why a model window is
+	// running (soft 429 / upstream quota / entitlement). Absent in older files.
+	if why, ok := data["modelCoolWhy"].(map[string]any); ok {
+		for mid, v := range why {
+			s, ok := v.(string)
+			if !ok || mid == "" || s == "" {
+				continue
+			}
+			if r.ModelCoolWhy == nil {
+				r.ModelCoolWhy = map[string]string{}
+			}
+			r.ModelCoolWhy[mid] = s
 		}
 	}
 

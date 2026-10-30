@@ -210,6 +210,7 @@ func (a *Account) NoteModelError(model string, until time.Time, wait time.Durati
 	}
 	extended := a.modelCool[model] < end.UnixNano()
 	a.modelCool[model] = end.UnixNano()
+	a.setCoolWhyLocked(model, "soft")
 	a.g.coolAt[model] = now
 	a.mu.Unlock()
 	a.touch()
@@ -233,6 +234,7 @@ func (a *Account) BlockModel(model string, until, now time.Time) (*accounts.Reco
 	extended := a.modelCool[model] < until.UnixNano()
 	if extended {
 		a.modelCool[model] = until.UnixNano()
+		a.setCoolWhyLocked(model, "entitlement")
 	}
 	a.mu.Unlock()
 	if !extended {
@@ -247,14 +249,19 @@ func (a *Account) persistCool() *accounts.Record {
 	now := time.Now()
 	a.mu.Lock()
 	cool := make(map[string]float64, len(a.modelCool))
+	why := make(map[string]string, len(a.modelWhy))
 	for m, ns := range a.modelCool {
 		if ns > now.UnixNano() {
 			cool[m] = float64(ns) / 1e9
+			if w := a.modelWhy[m]; w != "" {
+				why[m] = w
+			}
 		}
 	}
 	a.mu.Unlock()
 	next := *a.Record()
 	next.ModelCool = cool
+	next.ModelCoolWhy = why
 	a.rec.Store(&next)
 	a.touch()
 	return &next
@@ -407,17 +414,19 @@ func (a *Account) ClearError(model string, keepCaps bool, now time.Time) {
 	case model != "":
 		if !(keepCaps && a.capUntilLocked(model, now).After(now)) {
 			delete(a.modelCool, model)
+			delete(a.modelWhy, model)
 			delete(a.g.coolAt, model)
 		}
 	case keepCaps:
 		for m := range a.modelCool {
 			if !a.capUntilLocked(m, now).After(now) {
 				delete(a.modelCool, m)
+				delete(a.modelWhy, m)
 				delete(a.g.coolAt, m)
 			}
 		}
 	default:
-		a.modelCool, a.g.coolAt = nil, nil
+		a.modelCool, a.modelWhy, a.g.coolAt = nil, nil, nil
 	}
 	a.g.lastError, a.g.lastErrorDetail = "", ""
 	a.mu.Unlock()
@@ -433,6 +442,7 @@ func (a *Account) ClearModelCooldown(model string) {
 	}
 	a.mu.Lock()
 	delete(a.modelCool, model)
+	delete(a.modelWhy, model)
 	a.mu.Unlock()
 	a.touch()
 }
@@ -480,6 +490,7 @@ func (a *Account) NoteModelCap(model string, reset, now time.Time) (*accounts.Re
 		if a.modelCool[model] < reset.UnixNano() {
 			a.modelCool[model] = reset.UnixNano()
 		}
+		a.setCoolWhyLocked(model, "cap")
 		a.mu.Unlock()
 		return nil, false
 	}
@@ -493,6 +504,7 @@ func (a *Account) NoteModelCap(model string, reset, now time.Time) (*accounts.Re
 	if a.modelCool[model] < reset.UnixNano() {
 		a.modelCool[model] = reset.UnixNano()
 	}
+	a.setCoolWhyLocked(model, "cap")
 	a.mu.Unlock()
 	return a.persistCaps(), true
 }
@@ -531,6 +543,9 @@ func (a *Account) restoreCaps(rec *accounts.Record, now time.Time) {
 		if a.modelCool[m] < end.UnixNano() {
 			a.modelCool[m] = end.UnixNano()
 		}
+		if w := rec.ModelCoolWhy[m]; w != "" {
+			a.setCoolWhyLocked(m, w)
+		}
 	}
 	for m, c := range rec.ModelCaps {
 		if !realm.IsFreeCapModel(a.Realm, m) || c.Reset <= 0 {
@@ -547,6 +562,9 @@ func (a *Account) restoreCaps(rec *accounts.Record, now time.Time) {
 			}
 			if a.modelCool[m] < reset.UnixNano() {
 				a.modelCool[m] = reset.UnixNano()
+			}
+			if a.modelWhy[m] == "" {
+				a.setCoolWhyLocked(m, "cap")
 			}
 		}
 	}

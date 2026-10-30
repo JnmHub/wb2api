@@ -3,8 +3,63 @@ import { useQuery } from '@tanstack/react-query'
 import { Button, Card, Input, Segmented, Space, Table, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { RefreshCw, Search } from 'lucide-react'
-import { get, type CatalogModel, type ModelCatalogue } from '../api'
+import { get, type CatalogModel, type ModelCatalogue, type ModelCoolingRow } from '../api'
 import { num, tokens } from '../format'
+
+const REASON_LABEL: Record<string, string> = {
+  soft: '上游限流',
+  cap: '额度窗口',
+  entitlement: '无权限',
+  shared: '其他副本',
+  manual: '手动',
+  unknown: '未知',
+}
+
+/** Per-model cooldown board: which model is short, on how many accounts, until when and why. */
+function ModelCoolingBoard({ realm }: { realm: string }) {
+  const q = useQuery({
+    queryKey: ['model-cooling'],
+    queryFn: () => get<{ models: ModelCoolingRow[]; enabled: Record<string, number> }>('/api/v2/models/cooldowns'),
+    refetchInterval: 5_000,
+    retry: false,
+  })
+  const rows = (q.data?.models ?? []).filter((r) => r.realm === realm)
+  if (rows.length === 0) return null
+  return (
+    <Card title="模型冷却" size="small" extra={<Typography.Text type="secondary">{rows.length} 个模型受影响</Typography.Text>}>
+      <Table<ModelCoolingRow>
+        rowKey={(r) => `${r.realm}/${r.model}`}
+        size="small"
+        pagination={false}
+        dataSource={rows}
+        columns={[
+          { title: '模型', dataIndex: 'model', render: (v: string) => <b className="mono">{v}</b> },
+          { title: '冷却账号', dataIndex: 'cooling', width: 100, align: 'right' },
+          { title: '仍可用', dataIndex: 'available', width: 90, align: 'right' },
+          {
+            title: '最早解除',
+            dataIndex: 'earliest_expiry',
+            width: 170,
+            render: (v: number) => (v ? new Date(v * 1000).toLocaleTimeString() : '—'),
+          },
+          {
+            title: '原因',
+            dataIndex: 'reasons',
+            render: (r: Record<string, number>) => (
+              <Space wrap size={4}>
+                {Object.entries(r ?? {}).map(([k, n]) => (
+                  <Tag key={k} color={k === 'entitlement' ? 'red' : k === 'cap' ? 'gold' : 'default'}>
+                    {REASON_LABEL[k] ?? k} ×{n}
+                  </Tag>
+                ))}
+              </Space>
+            ),
+          },
+        ]}
+      />
+    </Card>
+  )
+}
 
 const SOURCE_LABEL: Record<string, string> = {
   remote: '上游 /v3/config',
@@ -124,6 +179,7 @@ export function ModelsPage() {
       </div>
 
       {query.isError && <Card>{String(query.error)}</Card>}
+      <ModelCoolingBoard realm={realm} />
       <Card styles={{ body: { padding: 0 } }}>
         <Table<CatalogModel>
           rowKey="id"

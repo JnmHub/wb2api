@@ -117,10 +117,48 @@ func (a *Account) CooldownUntil() time.Time {
 type ModelCooldown struct {
 	Model string
 	Until time.Time
+	// Reason explains why the window is running: "soft" (per-model 429),
+	// "cap" (upstream 6004 quota clock), "entitlement" (11158: the account
+	// does not own the model) or "manual". Empty for windows persisted by
+	// versions that did not record it.
+	Reason string
 }
 
-// HasModelCooldown reports whether any model on this account is still in its
-// cooldown window. Unlike ModelCooldowns it does not allocate or sort; list and
+// ModelBlocked reports whether this model cannot be dispatched to the account
+// right now, either through its own soft window or an upstream quota clock.
+func (a *Account) ModelBlocked(model string, now time.Time) bool {
+	if model == "" {
+		return false
+	}
+	a.mu.Lock()
+	until := a.modelCool[model]
+	capEnd := a.capUntilLocked(model, now)
+	a.mu.Unlock()
+	return until > now.UnixNano() || capEnd.After(now)
+}
+
+// ModelCoolUntil is the moment this account may serve model again: the later
+// of the per-model window and a persisted quota window. Zero means the account
+// is not blocked for that model.
+func (a *Account) ModelCoolUntil(model string, now time.Time) time.Time {
+	if model == "" {
+		return time.Time{}
+	}
+	a.mu.Lock()
+	end := a.modelCool[model]
+	capEnd := a.capUntilLocked(model, now)
+	a.mu.Unlock()
+	out := time.Unix(0, end)
+	if capEnd.After(out) {
+		out = capEnd
+	}
+	if !out.After(now) {
+		return time.Time{}
+	}
+	return out
+}
+
+// HasModelCooldown reports whether any model on this account is still in its// cooldown window. Unlike ModelCooldowns it does not allocate or sort; list and
 // summary endpoints call it once per account.
 func (a *Account) HasModelCooldown(now time.Time) bool {
 	a.mu.Lock()
@@ -141,7 +179,7 @@ func (a *Account) ModelCooldowns(now time.Time) []ModelCooldown {
 	var out []ModelCooldown
 	for m, ns := range a.modelCool {
 		if ns > now.UnixNano() {
-			out = append(out, ModelCooldown{m, time.Unix(0, ns)})
+			out = append(out, ModelCooldown{m, time.Unix(0, ns), a.modelWhy[m]})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -206,6 +244,7 @@ func (a *Account) ClearCooldowns(includeRestriction bool) *accounts.Record {
 	a.balanceTo.Store(0)
 	a.mu.Lock()
 	a.modelCool = nil
+	a.modelWhy = nil
 	a.g.lastError, a.g.lastErrorDetail = "", ""
 	a.mu.Unlock()
 	var rec *accounts.Record

@@ -113,6 +113,7 @@ func (s *Settings) snapshot() map[string]any {
 		"output_tps_limit":        s.Store.OutputTPSLimit(),
 		"model_aliases":           s.Store.ModelAliases(),
 		"models_only_available":   s.Store.ModelsOnlyAvailable(),
+		"model_fallbacks":         s.Store.ModelFallbacks(),
 	}
 	if s.Catalog != nil {
 		out["catalog"] = s.Catalog.Status()
@@ -185,6 +186,7 @@ type settingsPatch struct {
 	OutputTPSLimit       *float64               `json:"output_tps_limit"`
 	ModelAliases         *map[string]string     `json:"model_aliases"`
 	ModelsOnlyAvailable  *bool                  `json:"models_only_available"`
+	ModelFallbacks       *map[string][]string   `json:"model_fallbacks"`
 }
 
 type limitChange struct {
@@ -333,6 +335,12 @@ func (s *Settings) patch(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.ModelsOnlyAvailable != nil {
 		if err := s.Store.SetModelsOnlyAvailable(*p.ModelsOnlyAvailable); err != nil {
+			fail(err)
+			return
+		}
+	}
+	if p.ModelFallbacks != nil {
+		if err := s.Store.SetModelFallbacks(*p.ModelFallbacks); err != nil {
 			fail(err)
 			return
 		}

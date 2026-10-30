@@ -114,13 +114,12 @@ func (m *Messages) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(append(b, '\n'))
 		return
 	}
-	model, _ := chat.Get("model").(string)
 	wantStream := jsonx.Truthy(chat.Get("stream"))
 	sink := func(q *request, acc *pool.Account, cancel context.CancelFunc, idle time.Duration, body io.Reader) {
 		if wantStream {
-			h.messagesStream(q, acc, cancel, idle, body, model)
+			h.messagesStream(q, acc, cancel, idle, body, q.viewModel())
 		} else {
-			h.messagesWhole(q, acc, cancel, idle, body, model)
+			h.messagesWhole(q, acc, cancel, idle, body, q.viewModel())
 		}
 	}
 	h.run(w, r, start, key, chat, runOpts{forceStream: true, stream: wantStream, anthropic: true,

@@ -45,7 +45,8 @@ type Account struct {
 	updMu sync.Mutex           // serialises read-modify-write of the record (Pool.Update)
 
 	mu         sync.Mutex
-	modelCool  map[string]int64 // model -> unix nanoseconds
+	modelCool  map[string]int64  // model -> unix nanoseconds
+	modelWhy   map[string]string // model -> reason for the window (diagnostics)
 	g          governState
 	disabledMd map[string]bool // manual per-model deny list (lower-case)
 	stats      Stats
@@ -199,13 +200,32 @@ func (a *Account) CoolDown(until time.Time) { a.cooldownTo.Store(until.UnixNano(
 
 // CoolDownModel parks one model on this account until t.
 func (a *Account) CoolDownModel(model string, until time.Time) {
+	a.CoolDownModelWhy(model, until, "manual")
+}
+
+// CoolDownModelWhy is CoolDownModel with an explicit provenance string, used
+// for diagnostics and to distinguish a local window from a shared one adopted
+// from another replica.
+func (a *Account) CoolDownModelWhy(model string, until time.Time, why string) {
 	a.mu.Lock()
 	if a.modelCool == nil {
 		a.modelCool = map[string]int64{}
 	}
 	a.modelCool[model] = until.UnixNano()
+	a.setCoolWhyLocked(model, why)
 	a.mu.Unlock()
 	a.touch()
+}
+
+// setCoolWhyLocked records why the model window runs. Caller holds a.mu.
+func (a *Account) setCoolWhyLocked(model, why string) {
+	if model == "" || why == "" {
+		return
+	}
+	if a.modelWhy == nil {
+		a.modelWhy = map[string]string{}
+	}
+	a.modelWhy[model] = why
 }
 
 // MarkTokenBad flags the credential as unusable (needs re-login or refresh).

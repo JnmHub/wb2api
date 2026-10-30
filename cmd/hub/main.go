@@ -329,6 +329,9 @@ func main() {
 		// Conversation affinity is best-effort cross-replica state: a missed
 		// binding only costs a cold prompt cache on another replica.
 		p.Affinity().SetStore(redisx.NewAffinityStore(rdb.Client))
+		// Per-model cooldowns are shared so one replica's 429 stops the other
+		// replica from dispatching the same model to the same account.
+		h.ModelWindows = redisx.NewModelWindows(rdb)
 		replica := fmt.Sprintf("pid-%d", os.Getpid())
 		if host, err := os.Hostname(); err == nil && host != "" {
 			replica = fmt.Sprintf("%s-%d", host, os.Getpid())

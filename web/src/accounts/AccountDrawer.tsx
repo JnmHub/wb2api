@@ -20,8 +20,16 @@ import { applyPatch } from '../events'
 import { credit, num, realmLabel, span, statusLabel, tokens, until } from '../format'
 import { JobToast } from './BatchBar'
 
-const actionLabel: Record<string, string> = {
-  credits: '刷新积分',
+// Why a model window is running, as recorded by the gateway.
+const REASON_LABEL: Record<string, string> = {
+  soft: '上游限流',
+  cap: '额度窗口',
+  entitlement: '无权限',
+  shared: '其他副本',
+  manual: '手动',
+}
+
+const actionLabel: Record<string, string> = {  credits: '刷新积分',
   checkin: '签到',
   'report-activity': '活跃上报',
   'daily-chat': '每日活跃',
@@ -207,8 +215,9 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
                 <div style={{ marginTop: 4 }}>
                   <Space wrap size={4}>
                     {a.model_cooldowns.map((m) => (
-                      <Tag key={m.model} color="warning">
+                      <Tag key={m.model} color="warning" title={m.reason ? REASON_LABEL[m.reason] ?? m.reason : undefined}>
                         {m.model} · {span(m.expires_at - Date.now() / 1000)}
+                        {m.reason ? ` · ${REASON_LABEL[m.reason] ?? m.reason}` : ''}
                       </Tag>
                     ))}
                   </Space>
