@@ -3,8 +3,6 @@ package openai
 import (
 	"strings"
 	"time"
-
-	"wb2api/internal/pool"
 )
 
 // viewModel is the model name the client sees: the one it asked for, even when
@@ -17,10 +15,12 @@ func (q *request) viewModel() string {
 }
 
 // modelBlockedForRealm reports whether no account in the realm can serve model
-// right now. An account counts as able only when it is otherwise ready (not
-// disabled, restricted, out of credits or cooling) and the model itself is not
-// blocked on it: the per-model 429 ladder, a persisted 6004 window, or a lost
-// entitlement.
+// right now. The test is HealthReady, the same predicate the picker uses before
+// dispatching (minus local capacity): it already covers a disabled account, an
+// upstream restriction, an exhausted balance, every cooldown, the manual
+// per-model deny list, the per-model 429 ladder, a persisted 6004 window and a
+// lost entitlement. Using anything narrower here makes the chain miss the
+// common "the pool cannot serve this model" case and end in a 503 instead.
 //
 // Concurrency saturation is deliberately not part of this: a busy pool is
 // transient and must not burn a chain step.
@@ -35,12 +35,7 @@ func (h *Handler) modelBlockedForRealm(realmName, model string, now time.Time) b
 			continue
 		}
 		seen++
-		switch a.State(now) {
-		case pool.StatusReady, pool.StatusExpiring:
-		default:
-			continue // cannot serve anything right now
-		}
-		if !a.ModelBlocked(model, now) {
+		if a.HealthReady(model, now) {
 			return false
 		}
 	}
