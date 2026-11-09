@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
+	"wb2api/internal/fingerprint"
 	"wb2api/internal/jsonx"
 	"wb2api/internal/pool"
 	"wb2api/internal/realm"
+	"wb2api/internal/store/accounts"
 	"wb2api/internal/upstream/identity"
 )
 
@@ -61,26 +65,42 @@ type taskSpec struct {
 	deskHint string
 	unforge  bool
 	reason   string
+	// expert pins the agent a task has to be reported against (the upstream
+	// dedupes by (eventCode, id) and only counts the agent the task names).
+	expert *expert
 }
 
+// growthSpecs is the port of TASK_SPECS in legacy wb_tasks.py. A code missing
+// here is still attempted when the task names an expert (see
+// extractExpertFromTask); everything else has no event model and is skipped.
 var growthSpecs = map[string]taskSpec{
-	"create_canvas":               {kind: "canvas", target: 1, reward: 300},
-	"template_5":                  {kind: "template", target: 5, reward: 200},
-	"expert_5":                    {kind: "expert", target: 5, reward: 200},
-	"Expert_team_use_3":           {kind: "team", target: 3, reward: 150},
-	"skill_1":                     {kind: "skill", target: 1, reward: 100},
-	"automation_1":                {kind: "automation", target: 1, reward: 100},
-	"playbook_prompt":             {kind: "playbook", target: 1, reward: 100},
-	"Expert_lighthouse":           {kind: "lighthouse", target: 1, reward: 100},
-	"WorkBuddy_Valorant":          {kind: "valorant", target: 1, reward: 100},
-	"Buddy_App":                   {kind: "buddy5", target: 1, reward: 100, desktop: true, deskHint: "在桌面端左上角「发现应用」进入任意一个 Buddy 应用"},
-	"Buddy_App_QQ":                {kind: "buddy5", target: 1, reward: 100, desktop: true, deskHint: "在桌面端「发现应用」进入「企鹅教师助手」"},
-	"Hp_Appearance":               {kind: "skin", target: 1, reward: 100},
-	"chat_5":                      {kind: "chat", target: 5, reward: 100},
-	"Model_chat_GLM5.2":           {kind: "glmchat", target: 1, reward: 100},
-	"black_cat":                   {kind: "cat", target: 3, reward: 100},
-	"RichMeow_Chat":               {kind: "richmeow", target: 1, reward: 100, desktop: true, deskHint: "在桌面端发起 1 次对话"},
-	"Library_read":                {kind: "library", target: 1, reward: 100, desktop: true, deskHint: "在桌面端打开「资料库」并读完介绍文档"},
+	"create_canvas":                 {kind: "canvas", target: 1, reward: 300},
+	"template_5":                    {kind: "template", target: 5, reward: 200},
+	"expert_5":                      {kind: "expert", target: 5, reward: 200},
+	"Expert_team_use_3":             {kind: "team", target: 3, reward: 150},
+	"skill_1":                       {kind: "skill", target: 1, reward: 100},
+	"automation_1":                  {kind: "automation", target: 1, reward: 100},
+	"playbook_prompt":               {kind: "playbook", target: 1, reward: 100},
+	"Expert_lighthouse":             {kind: "lighthouse", target: 1, reward: 100},
+	"WorkBuddy_Valorant":            {kind: "expert", target: 1, reward: 100, expert: &expert{"ex_xQHHD1u5Jkua", "无畏契约拼豆专家"}},
+	"workstation_expert":            {kind: "expert", target: 1, reward: 100, expert: &expert{"WorkspaceBuilder", "工作台搭建师"}},
+	"expert_use_maidehao":           {kind: "expert", target: 1, reward: 100, expert: &expert{"ex_GDl31WahyIH0", "中国电商运营专家"}},
+	"expert_use_douyinyin":          {kind: "expert", target: 1, reward: 100, expert: &expert{"ex_FbY5nlWTqDod", "抖音策略师"}},
+	"expert_use_shangjia_xuanchuan": {kind: "expert", target: 1, reward: 100, expert: &expert{"ex_Weo3x2EZuSDm", "商家宣传页与海报设计师"}},
+	"expert_use_bowangwang":         {kind: "expert", target: 1, reward: 100, expert: &expert{"ex_WZY136wV5aMt", "直播电商教练"}},
+	// PC 灵感功能就是灵感案例（playbook）的 PC 版埋点。
+	"Sequential_Tasks_7": {kind: "playbook", target: 1, reward: 100},
+	"Buddy_App":          {kind: "buddy5", target: 1, reward: 100, desktop: true, deskHint: "在桌面端左上角「发现应用」进入任意一个 Buddy 应用"},
+	"Buddy_App_QQ":       {kind: "buddy5", target: 1, reward: 100, desktop: true, deskHint: "在桌面端「发现应用」进入「企鹅教师助手」"},
+	"Hp_Appearance":      {kind: "skin", target: 1, reward: 100},
+	"chat_5":             {kind: "chat", target: 5, reward: 100},
+	"Model_chat_GLM5.2":  {kind: "glmchat", target: 1, reward: 100},
+	"black_cat":          {kind: "cat", target: 3, reward: 100},
+	// 桌面对话事件链 / 资料库都只是**桌面端埋点**，不是人工操作：上游认的是
+	// 6 连成功对话事件与 web_element_click，伪造这两组事件就能拿分（legacy
+	// 实测）。标记成 desktop 跳过等于白丢 200 积分。
+	"RichMeow_Chat":               {kind: "richmeow", target: 1, reward: 100},
+	"Library_read":                {kind: "library", target: 1, reward: 100},
 	"first_buddy":                 {kind: "chat", target: 1, reward: 300},
 	"wb_wechat_oa_subscribe_task": {unforge: true, reason: "需在微信关注「腾讯 WorkBuddy」公众号满 24 小时", reward: 100},
 	"Expert_Philanthropy":         {unforge: true, reason: "真实捐款动作", reward: 0},
@@ -456,8 +476,10 @@ func (c *Client) heatmapScore(ctx context.Context, acc *pool.Account, day string
 
 // ------------------------------------------------------------------ growth run
 
-// RunGrowthTasks runs the whole CN growth flow once: auto tasks first, then
-// acceptance, then progress reports, travel, and a balance refresh. It is only
+// RunGrowthTasks runs the whole CN growth flow once, in the same order as
+// legacy run_growth_tasks: auto tasks first (first_buddy is the prerequisite of
+// everything else), acceptance, the single tasks, the mini-program chain, cat
+// travel with the Buddy blind boxes, and finally a balance refresh. It is only
 // called from the panel (never scheduled).
 func (c *Client) RunGrowthTasks(ctx context.Context, acc *pool.Account) (logs []string, earned int) {
 	rec := acc.Record()
@@ -467,67 +489,217 @@ func (c *Client) RunGrowthTasks(ctx context.Context, acc *pool.Account) (logs []
 	if IsEnterprise(rec) {
 		return []string{"企业版账号无成长体系，跳过"}, 0
 	}
+	name := rec.Nickname
+	if name == "" {
+		name = short(rec.UID)
+	}
+	logs = append(logs, fmt.Sprintf("开始为账号 %s 运行成长任务自动化...", name))
 	tasks, err := c.GrowthTasks(ctx, acc)
 	if err != nil || len(tasks) == 0 {
-		return []string{"未能获取到任务清单，请检查网络或账号状态"}, 0
+		logs = append(logs, "未能获取到任务清单，请检查网络或账号状态")
+		return logs, 0
 	}
 	logs = append(logs, fmt.Sprintf("获取到 %d 个成长任务", len(tasks)))
+
+	// 0. auto 类任务不需要接取（first_buddy 的奖励就是 Buddy 实例），而且
+	//    single 任务与猫猫旅行都以它为前置，所以必须最先点亮。
 	for _, t := range tasks {
 		if t.Type == "auto" {
 			earned += c.progressTask(ctx, acc, t, 1.0, &logs)
 		}
 	}
+
+	// 1. 批量接取，并复核补接一次 —— 未接取的任务上报事件不会计入进度。
 	c.acceptPending(ctx, acc, &logs)
-	tasks, _ = c.GrowthTasks(ctx, acc)
+	if fresh, err := c.GrowthTasks(ctx, acc); err == nil {
+		tasks = fresh
+	}
+
+	// 2. 逐个点亮
 	for _, t := range tasks {
-		if t.Type != "auto" {
-			earned += c.progressTask(ctx, acc, t, 1.0, &logs)
+		if t.Type == "auto" {
+			continue
 		}
+		earned += c.progressTask(ctx, acc, t, 1.0, &logs)
 	}
-	if res := c.CatTravel(ctx, acc); res.OK && res.Extra != nil {
-		if credit, ok := res.Extra["credit"].(int); ok {
-			earned += credit
+
+	// 2b. 微信小程序链式成长任务（Sequential_Tasks 系列与校园日活动）
+	mpCredit, mpLogs := c.RunMiniProgramTasks(ctx, acc, 1.0)
+	earned += mpCredit
+	logs = append(logs, mpLogs...)
+
+	// 3. 猫猫旅行 → Buddy 盲盒 → 归来领奖后再出发
+	travel := c.CatTravel(ctx, acc)
+	if travel.Msg != "" {
+		logs = append(logs, "猫猫日常: "+travel.Msg)
+	}
+	if credit, ok := extraInt(travel.Extra, "credit"); ok {
+		earned += credit
+	}
+	if extraStr(travel.Extra, "action") == "claim" {
+		if opened, msg := c.OpenBuddyBoxes(ctx, acc); opened > 0 {
+			logs = append(logs, "Buddy 盲盒: "+msg)
 		}
-		logs = append(logs, "猫猫日常: "+res.Msg)
+		c.pause(time.Second)
+		if again := c.CatTravel(ctx, acc); extraStr(again.Extra, "action") == "depart" {
+			logs = append(logs, "猫猫日常: "+again.Msg)
+		}
+	} else if opened, msg := c.OpenBuddyBoxes(ctx, acc); opened > 0 {
+		logs = append(logs, "Buddy 盲盒: "+msg)
 	}
+
 	c.FetchCredits(ctx, acc)
+	logs = append(logs, fmt.Sprintf("🎉 全部完成！本次累计新增到账: +%d 积分，当前总剩余: %s 积分", earned, creditRemain(acc.Record())))
 	return logs, earned
 }
 
+func creditRemain(rec *accounts.Record) string {
+	if rec == nil || rec.Credits == nil {
+		return "0"
+	}
+	if v, ok := rec.Credits["remain"]; ok {
+		return jsonx.PyStr(v)
+	}
+	return "0"
+}
+
+func extraInt(extra map[string]any, key string) (int, bool) {
+	if extra == nil {
+		return 0, false
+	}
+	v, ok := extra[key]
+	if !ok {
+		return 0, false
+	}
+	n, ok := v.(int)
+	return n, ok
+}
+
+func extraStr(extra map[string]any, key string) string {
+	if extra == nil {
+		return ""
+	}
+	s, _ := extra[key].(string)
+	return s
+}
+
+// acceptPending accepts every task that still needs it and reports what stayed
+// unaccepted: progress reports sent against an unaccepted task never count.
 func (c *Client) acceptPending(ctx context.Context, acc *pool.Account, logs *[]string) {
-	rec := acc.Record()
+	pendingCodes := func(tasks []GrowthTask) []string {
+		var codes []string
+		for _, t := range tasks {
+			if t.Status != "not_accepted" || t.Type == "auto" {
+				continue
+			}
+			if spec, known := growthSpecs[t.Code]; known && (spec.unforge || spec.desktop) {
+				continue
+			}
+			codes = append(codes, t.Code)
+		}
+		return codes
+	}
 	tasks, err := c.GrowthTasks(ctx, acc)
 	if err != nil {
 		return
 	}
-	var codes []string
-	for _, t := range tasks {
-		if t.Status != "not_accepted" || t.Type == "auto" {
-			continue
-		}
-		if spec, known := growthSpecs[t.Code]; known && spec.unforge {
-			continue
-		}
-		codes = append(codes, t.Code)
+	codes := pendingCodes(tasks)
+	if len(codes) == 0 {
+		return
 	}
-	for start := 0; start < len(codes); start += 20 {
-		end := start + 20
-		if end > len(codes) {
-			end = len(codes)
+	if logs != nil {
+		*logs = append(*logs, fmt.Sprintf("发现 %d 个待接取任务，正在批量接取...", len(codes)))
+	}
+	c.acceptBatch(ctx, acc, codes, logs)
+	c.pause(time.Second)
+	tasks, err = c.GrowthTasks(ctx, acc)
+	if err != nil {
+		return
+	}
+	// The upstream sometimes rejects a whole batch transiently; re-check and
+	// retry once, otherwise every later report lands on an unaccepted task.
+	still := pendingCodes(tasks)
+	if len(still) > 0 {
+		if logs != nil {
+			*logs = append(*logs, fmt.Sprintf("仍有 %d 个未接取，重试接取一次...", len(still)))
 		}
+		c.acceptBatch(ctx, acc, still, logs)
+		c.pause(time.Second)
+		tasks, err = c.GrowthTasks(ctx, acc)
+	}
+	if err == nil && logs != nil {
+		if left := pendingCodes(tasks); len(left) > 0 {
+			*logs = append(*logs, fmt.Sprintf("! 仍有 %d 个任务处于未接取状态，对未接取任务上报事件不会计入进度，本轮跳过这些任务", len(left)))
+		}
+	}
+}
+
+func (c *Client) acceptBatch(ctx context.Context, acc *pool.Account, codes []string, logs *[]string) {
+	rec := acc.Record()
+	accepted, rejected := 0, 0
+	for start := 0; start < len(codes); start += 20 {
+		end := min(start+20, len(codes))
 		body := jsonx.NewObj()
 		body.Set("task_codes", stringSliceAny(codes[start:end]))
 		raw, _ := jsonx.Marshal(body)
-		if _, err := c.doJSON(ctx, acc, "POST", c.growthURL(acc, growthAcceptPath), c.chatHeaders(rec), raw, 15*time.Second, 1); err != nil {
-			*logs = append(*logs, fmt.Sprintf("接取任务失败: %v", err))
+		o, err := c.doJSON(ctx, acc, "POST", c.growthURL(acc, growthAcceptPath), c.chatHeaders(rec), raw, 15*time.Second, 1)
+		if err != nil {
+			*logs = append(*logs, fmt.Sprintf("! 接取失败: %v", err))
+			rejected += end - start
+			c.pause(time.Second)
+			continue
+		}
+		if code := jsonx.PyStr(o.Get("code")); code != "0" {
+			*logs = append(*logs, "! 接取被拒: "+firstStr2(o.Get("msg"), "code="+code))
+			rejected += end - start
+			c.pause(time.Second)
+			continue
+		}
+		seen := map[string]bool{}
+		if d, ok := o.Get("data").(*jsonx.Obj); ok {
+			if arr, ok := d.Get("results").([]any); ok {
+				for _, item := range arr {
+					m, ok := item.(*jsonx.Obj)
+					if !ok {
+						continue
+					}
+					tc := strOf(m.Get("task_code"))
+					seen[tc] = true
+					if st := strOf(m.Get("status")); st == "accepted" || st == "already_accepted" {
+						accepted++
+						continue
+					}
+					rejected++
+					*logs = append(*logs, fmt.Sprintf("! 任务 %s 接取未成功: %s", tc, firstStr2(m.Get("message"), m.Get("status"))))
+				}
+			}
+		}
+		for _, tc := range codes[start:end] {
+			if !seen[tc] {
+				rejected++
+			}
 		}
 		c.pause(time.Second)
+	}
+	if accepted > 0 {
+		*logs = append(*logs, fmt.Sprintf("✓ 已接取 %d 个任务", accepted))
+	}
+	if rejected > 0 && accepted == 0 {
+		*logs = append(*logs, "! 本轮接取未成功，相关任务跳过（先解决接取失败）")
 	}
 }
 
 // progressTask reports enough events for one task and claims it when it lands.
 func (c *Client) progressTask(ctx context.Context, acc *pool.Account, t GrowthTask, gap float64, logs *[]string) int {
 	spec, known := growthSpecs[t.Code]
+	if !known {
+		// 动态专家任务（expert_use_* 或 jump_url 里带 expertId）没有固定规格，
+		// 用任务自己声明的专家补一个 —— 不补就会被当成未知任务静默跳过。
+		if e, ok := extractExpertFromTask(t); ok {
+			spec = taskSpec{kind: "expert", target: max(t.Target, 1), reward: 100, expert: &e}
+			known = true
+		}
+	}
 	if !known {
 		return 0
 	}
@@ -544,11 +716,16 @@ func (c *Client) progressTask(ctx context.Context, acc *pool.Account, t GrowthTa
 	if target <= 0 {
 		target = spec.target
 	}
+	if target <= 0 {
+		target = 1
+	}
+	// 已完成的任务先领奖 —— 桌面端/夜间/上一次运行顺手点亮的任务都必须结算，
+	// 不能因为"只能靠真实操作"就跳过丢掉奖励。
 	if t.Status == "completed" || t.Current >= target {
 		credit, _, ok, _ := c.claimGrowthTask(ctx, acc, t.Code)
 		if ok {
 			if logs != nil {
-				*logs = append(*logs, fmt.Sprintf("✓ 任务 [%s] 领奖 +%d 积分", t.Title, credit))
+				*logs = append(*logs, fmt.Sprintf("✓ 任务 [%s] 点亮并领奖成功: +%d 积分", t.Title, credit))
 			}
 			return credit
 		}
@@ -560,42 +737,75 @@ func (c *Client) progressTask(ctx context.Context, acc *pool.Account, t GrowthTa
 		}
 		return 0
 	}
+	if t.Status == "not_accepted" && t.Type != "auto" {
+		if logs != nil {
+			*logs = append(*logs, fmt.Sprintf("⏭ 任务 [%s] 仍未接取, 跳过 (先解决接取失败)", t.Title))
+		}
+		return 0
+	}
 	need := target - t.Current
 	if need < 1 {
 		need = 1
 	}
+	rec := acc.Record()
+	if logs != nil {
+		*logs = append(*logs, fmt.Sprintf("正在点亮任务 [%s] (需上报 %d 次)...", t.Title, need))
+	}
 	okReports := 0
 	for i := 0; i < need; i++ {
-		ev := c.growthEvent(spec.kind, t.Current+i, acc.Record().UID)
-		raw, _ := jsonx.Marshal([]any{ev})
-		if _, err := c.doJSON(ctx, acc, "POST", c.growthURL(acc, reportPath), c.chatHeaders(acc.Record()), raw, 15*time.Second, 1); err == nil {
+		events := c.growthEvents(spec, t.Current+i, rec.UID, rec.Nickname)
+		raw, _ := jsonx.Marshal(anySlice(events))
+		if _, err := c.doJSON(ctx, acc, "POST", c.growthURL(acc, reportPath), c.chatHeaders(rec), raw, 15*time.Second, 1); err == nil {
 			okReports++
 		}
 		c.pause(time.Duration(gap * float64(time.Second)))
 	}
-	if okReports == 0 {
-		if logs != nil {
-			*logs = append(*logs, fmt.Sprintf("! 任务 [%s] 部分事件上报失败 (上游拒绝), 继续尝试领奖", t.Title))
-		}
+	if okReports == 0 && logs != nil {
+		*logs = append(*logs, fmt.Sprintf("! 任务 [%s] 部分事件上报失败 (上游拒绝), 继续尝试领奖", t.Title))
 	}
 	c.pause(1500 * time.Millisecond)
-	for i := 0; i < 6; i++ {
-		tasks, err := c.GrowthTasks(ctx, acc)
-		if err == nil {
-			if now, found := findTask(tasks, t.Code); found && (now.Current >= target || now.Status == "completed" || now.Status == "claimed") {
-				credit, _, ok, _ := c.claimGrowthTask(ctx, acc, t.Code)
-				if ok && logs != nil {
-					*logs = append(*logs, fmt.Sprintf("✓ 任务 [%s] 领奖 +%d 积分", t.Title, credit))
+
+	// 等上游把进度落账再领奖。进度通常 1-3 秒可见，所以先快查几次；只有确实
+	// 在动才继续等，免得每个卡住的任务都空等。
+	prog := t.Current
+	for attempt := 0; attempt < 6; attempt++ {
+		if fresh, err := c.GrowthTasks(ctx, acc); err == nil {
+			if now, found := findTask(fresh, t.Code); found {
+				prog = now.Current
+				if now.Status == "claimed" {
+					return 0
 				}
-				return credit
+				if prog >= target || now.Status == "completed" {
+					credit, _, ok, _ := c.claimGrowthTask(ctx, acc, t.Code)
+					if ok && logs != nil {
+						*logs = append(*logs, fmt.Sprintf("✓ 任务 [%s] 点亮并领奖成功: +%d 积分", t.Title, credit))
+					}
+					return credit
+				}
+				if prog > t.Current {
+					c.pause(2500 * time.Millisecond)
+					continue
+				}
 			}
 		}
-		c.pause(1500 * time.Millisecond)
+		if attempt < 2 {
+			c.pause(1500 * time.Millisecond)
+			continue
+		}
+		break
 	}
 	if logs != nil {
-		*logs = append(*logs, fmt.Sprintf("? 任务 [%s] 已上报但进度未达成, 领奖顺延到下次运行", t.Title))
+		*logs = append(*logs, fmt.Sprintf("? 任务 [%s] 已上报但进度 %d/%d 未达成, 领奖顺延到下次运行", t.Title, prog, target))
 	}
 	return 0
+}
+
+func anySlice(objs []*jsonx.Obj) []any {
+	out := make([]any, len(objs))
+	for i, o := range objs {
+		out[i] = o
+	}
+	return out
 }
 
 func findTask(tasks []GrowthTask, code string) (GrowthTask, bool) {
@@ -608,9 +818,16 @@ func findTask(tasks []GrowthTask, code string) (GrowthTask, bool) {
 }
 
 func (c *Client) claimGrowthTask(ctx context.Context, acc *pool.Account, code string) (credit, energy int, ok bool, msg string) {
+	return c.claimGrowthTaskWith(ctx, acc, code, nil)
+}
+
+// claimGrowthTaskWith claims one task; extra headers let the mini-program
+// 口径 (X-Client-Platform: miniprogram) claim the same task code.
+func (c *Client) claimGrowthTaskWith(ctx context.Context, acc *pool.Account, code string, extra []identity.Pair) (credit, energy int, ok bool, msg string) {
 	rec := acc.Record()
 	path := fmt.Sprintf(growthClaimPath, code)
-	o, err := c.doJSON(ctx, acc, "POST", c.growthURL(acc, path), c.chatHeaders(rec), []byte("{}"), 15*time.Second, 1)
+	h := withHeaders(c.chatHeaders(rec), extra...)
+	o, err := c.doJSON(ctx, acc, "POST", c.growthURL(acc, path), h, []byte("{}"), 15*time.Second, 1)
 	if err != nil {
 		var he *HTTPError
 		if errors.As(err, &he) && he.Status == 400 {
@@ -696,8 +913,8 @@ func (c *Client) NightGrowth(ctx context.Context, acc *pool.Account) Result {
 		target = 3
 	}
 	if cur < target {
-		ev := c.growthEvent("cat", cur, rec.UID)
-		raw, _ := jsonx.Marshal([]any{ev})
+		events := c.growthEvents(growthSpecs["black_cat"], cur, rec.UID, rec.Nickname)
+		raw, _ := jsonx.Marshal(anySlice(events))
 		if _, err := c.doJSON(ctx, acc, "POST", c.growthURL(acc, reportPath), c.chatHeaders(rec), raw, 15*time.Second, 1); err != nil {
 			return failure("夜猫子事件上报失败: %v", err)
 		}
@@ -734,20 +951,80 @@ func stringSliceAny(in []string) []any {
 	return out
 }
 
-// growthEvent builds one growth-centre event. The upstream dedupes expert
-// events by (eventCode, id), so the id has to differ between events of a
-// batch; callers pass cur+i as cur.
-func (c *Client) growthEvent(kind string, cur int, uid string) *jsonx.Obj {
-	now := c.now().UnixMilli()
-	cid := fmt.Sprintf("wb-task-%d-%d", now, cur)
+// ------------------------------------------------------------------- events
+
+// libDocURL is the 资料库 introduction document the Library_read task counts:
+// the upstream records a web_element_click on it and advances the task.
+const libDocURL = "https://www.workbuddy.cn/space/d/o0KWYeynteVv06UnAZqIFm"
+
+// richMeowModel is the model pair the desktop chat chain reports. The real
+// desktop client sends its own alias ("fast-model") before it is resolved.
+const (
+	richMeowModelID   = "fast-model"
+	richMeowModelName = "fast-model"
+)
+
+// expertIDRe matches a real expert id (ex_ + 6..64 alphanumerics).
+var expertIDRe = regexp.MustCompile(`^ex_[A-Za-z0-9]{6,64}$`)
+
+// extractExpertFromTask resolves the agent a task has to be reported against.
+// The jump_url deeplink wins because it carries the real id; the
+// expert_use_<slug> code prefix is the fallback legacy wb_tasks.py uses. Not
+// having this is why every dynamically named expert task stayed at 0/N.
+func extractExpertFromTask(t GrowthTask) (expert, bool) {
+	name := t.Title
+	if name == "" {
+		name = t.Code
+	}
+	if raw := strings.TrimSpace(t.JumpURL); raw != "" {
+		if u, err := url.Parse(raw); err == nil {
+			if d := firstQuery(u, "deeplink"); d != "" {
+				if inner, err := url.Parse(d); err == nil {
+					if id := firstQuery(inner, "expertId"); expertIDRe.MatchString(id) {
+						return expert{id, name}, true
+					}
+				}
+			}
+			if id := firstQuery(u, "expertId"); expertIDRe.MatchString(id) {
+				return expert{id, name}, true
+			}
+		}
+	}
+	if slug, ok := strings.CutPrefix(t.Code, "expert_use_"); ok && slug != "" {
+		return expert{"ex_" + slug, name}, true
+	}
+	return expert{}, false
+}
+
+func firstQuery(u *url.URL, key string) string {
+	if vs, ok := u.Query()[key]; ok && len(vs) > 0 {
+		return strings.TrimSpace(vs[0])
+	}
+	return ""
+}
+
+// newEvent starts one growth event with the envelope every kind shares.
+func (c *Client) newEvent(eventCode string, now int64, cid, uid string) *jsonx.Obj {
 	o := jsonx.NewObj()
-	o.Set("eventCode", "heartbeat")
+	o.Set("eventCode", eventCode)
 	o.Set("timestamp", jsonNumber(now))
 	o.Set("reportDelay", jsonNumber(0))
 	o.Set("conversationId", cid)
 	o.Set("requestId", cid+"-req")
 	o.Set("userId", uid)
-	switch kind {
+	return o
+}
+
+// growthEvents builds the event array one task kind needs. The upstream
+// dedupes by (eventCode, id), so ids have to differ between events of a batch;
+// callers pass cur+i as cur. Most kinds are a single event, but the playbook
+// pair and the 6-event desktop chat chain are chains: reporting only the head
+// leaves the task at 0/N forever.
+func (c *Client) growthEvents(spec taskSpec, cur int, uid, nick string) []*jsonx.Obj {
+	now := c.now().UnixMilli()
+	cid := fmt.Sprintf("wb-task-%d-%d", now, cur)
+	o := c.newEvent("heartbeat", now, cid, uid)
+	switch spec.kind {
 	case "canvas":
 		o.Set("eventCode", "wbx_design_canvas_task_create")
 		o.Set("source", "summon_keyword")
@@ -762,18 +1039,15 @@ func (c *Client) growthEvent(kind string, cur int, uid string) *jsonx.Obj {
 		o.Set("isCustomModel", true)
 		o.Set("id", fmt.Sprint(cur))
 		o.Set("name", "幻灯片")
-	case "expert", "team", "lighthouse", "valorant":
+	case "expert", "team", "lighthouse":
 		e := expertPool[cur%len(expertPool)]
-		if kind == "valorant" {
-			// The Valorant task only progresses for this fixed expert; using the
-			// generic pool would report progress on the wrong agent.
-			e = expert{"ex_xQHHD1u5Jkua", "无畏契约拼豆专家"}
-		}
-		if kind == "team" {
-			t := teamPool[cur%len(teamPool)]
-			e = t
-		}
-		if kind == "lighthouse" {
+		switch {
+		case spec.expert != nil:
+			// A task that names its agent only progresses for that agent.
+			e = *spec.expert
+		case spec.kind == "team":
+			e = teamPool[cur%len(teamPool)]
+		case spec.kind == "lighthouse":
 			e = expertPool[len(expertPool)-1]
 		}
 		o.Set("eventCode", "expert_actual_use")
@@ -782,7 +1056,7 @@ func (c *Client) growthEvent(kind string, cur int, uid string) *jsonx.Obj {
 		o.Set("name", e.Name)
 		o.Set("expertTitle", e.Name)
 		o.Set("type", "02-Engineering")
-		if kind == "team" {
+		if spec.kind == "team" {
 			o.Set("expertType", "team")
 		} else {
 			o.Set("expertType", "agent")
@@ -810,14 +1084,39 @@ func (c *Client) growthEvent(kind string, cur int, uid string) *jsonx.Obj {
 		sch.Set("rrule", "FREQ=WEEKLY;BYDAY=FR;BYHOUR=9;BYMINUTE=0")
 		o.Set("schedule", sch)
 		o.Set("prompt", "每周五自动整理本周工作")
+	case "library":
+		o.Set("eventCode", "web_element_click")
+		o.Set("pageURL", libDocURL)
+		o.Set("elementId", "library_doc_intro_click")
+		o.Set("elementName", "WorkBuddy资料库介绍")
+		o.Set("os", "Win32")
+		o.Set("arch", "")
+		o.Set("osVersion", "10.0")
+		o.Set("userAgent", "Mozilla/5.0")
 	case "playbook":
-		o.Set("eventCode", "playbook_prompt_send")
-		o.Set("id", "worker-ledger-freedom-dashboard")
-		o.Set("name", "打工人小账本")
-		o.Set("type", "other")
-		o.Set("promptLength", jsonNumber(10))
-		o.Set("isOfficial", jsonNumber(1))
-		o.Set("source", "discover")
+		// 官方灵感案例要"点开 CTA + 发送提示词"两条事件才算一次使用。
+		cta := c.newEvent("playbook_cta_click", now, cid, uid)
+		cta.Set("id", "worker-ledger-freedom-dashboard")
+		cta.Set("name", "打工人小账本")
+		cta.Set("type", "document")
+		cta.Set("categoryId", "")
+		cta.Set("categoryName", "")
+		cta.Set("source", "discover")
+		cta.Set("position", jsonNumber(0))
+		cta.Set("messageId", cid+"-req")
+		send := c.newEvent("playbook_prompt_send", now+50, cid, uid)
+		send.Set("id", "worker-ledger-freedom-dashboard")
+		send.Set("name", "打工人小账本")
+		send.Set("type", "document")
+		send.Set("categoryId", "")
+		send.Set("categoryName", "")
+		send.Set("promptLength", jsonNumber(30))
+		send.Set("isOfficial", jsonNumber(1))
+		send.Set("source", "discover")
+		send.Set("messageId", cid+"-req")
+		send.Set("skills", "")
+		send.Set("skillNames", "")
+		return []*jsonx.Obj{cta, send}
 	case "skin":
 		o.Set("eventCode", "appearance_skin_apply")
 		o.Set("action", "apply")
@@ -829,7 +1128,7 @@ func (c *Client) growthEvent(kind string, cur int, uid string) *jsonx.Obj {
 		o.Set("name", "和平精英激战金秋")
 	case "chat", "glmchat", "cat":
 		mode := "craft"
-		if kind == "cat" {
+		if spec.kind == "cat" {
 			mode = "night"
 		}
 		o.Set("eventCode", "chat_request_send")
@@ -838,15 +1137,181 @@ func (c *Client) growthEvent(kind string, cur int, uid string) *jsonx.Obj {
 		o.Set("isPlan", false)
 		o.Set("agentName", "default")
 		o.Set("agentType", "conversation")
-		if kind == "chat" {
+		if spec.kind == "chat" {
 			o.Set("requestModelId", "deepseek-v4-flash")
 			o.Set("requestModelName", "DeepSeek V4 Flash")
 		} else {
 			o.Set("requestModelId", "glm-5.2")
 			o.Set("requestModelName", "GLM-5.2")
 		}
+	case "richmeow":
+		return c.richMeowEvents(now, cur, uid, nick)
 	}
-	return o
+	return []*jsonx.Obj{o}
+}
+
+// richMeowEvents is the 6-event desktop chat chain the RichMeow_Chat
+// (桌面对话事件链) task counts: 任务创建 → 发送消息 → 发起请求 → 收到消息 →
+// 请求结束 → 任务完成, all under one conversation id. The upstream only
+// advances the task when the whole chain arrives.
+func (c *Client) richMeowEvents(now int64, idx int, uid, nick string) []*jsonx.Obj {
+	cid := fmt.Sprintf("wb-richmeow-%d-%d", now, idx)
+	rid := cid + "-req"
+	mid := fmt.Sprintf("msg-%d-%d", now, idx)
+	// The collector only attributes this chain to the desktop client when every
+	// event carries the desktop envelope. Without product/ideType/platform the
+	// 6 events are accepted (code 0) but the task stays at 0/1 forever — which
+	// is exactly what the legacy Python chain runs into.
+	env := []struct {
+		k string
+		v any
+	}{
+		{"product", "SaaS"},
+		{"ideType", "WorkBuddy"},
+		{"ideVersion", identity.DesktopVersionCN},
+		{"extName", "workbuddy"},
+		{"extVersion", identity.DesktopVersionCN},
+		{"ideName", "WorkBuddy"},
+		{"platform", "desktop"},
+		{"os", "win32"},
+		{"osVersion", "10.0"},
+		{"arch", "x64"},
+		{"machineId", fingerprint.MachineID(uid)},
+		{"timezone", "Asia/Shanghai"},
+	}
+
+	created := jsonx.NewObj()
+	for _, e := range env {
+		created.Set(e.k, e.v)
+	}
+	created.Set("eventCode", "agent_task_created")
+	created.Set("timestamp", jsonNumber(now))
+	created.Set("userId", uid)
+	created.Set("userNickname", nick)
+	created.Set("source", "LOCAL")
+	created.Set("name", "working")
+	created.Set("task_target", "local")
+	created.Set("mode", "craft")
+	created.Set("requestModelId", richMeowModelID)
+	created.Set("requestModelName", richMeowModelName)
+	created.Set("has_repo", false)
+	created.Set("repo_type", "none")
+	created.Set("workspace_type", "empty")
+	created.Set("has_connector", false)
+	created.Set("connector_types", []any{})
+	created.Set("has_mention", false)
+	created.Set("mention_types", []any{})
+	created.Set("has_template", false)
+	created.Set("action", "")
+	created.Set("template_name", "")
+	created.Set("has_expert", false)
+	created.Set("expert_id", "")
+	created.Set("expert_name", "")
+	created.Set("expert_industry_id", "")
+	created.Set("has_skill", false)
+	created.Set("skill_names", []any{})
+	created.Set("conversationId", cid)
+	created.Set("messageId", mid)
+	created.Set("buddyId", "")
+	created.Set("buddyName", "")
+
+	msgSend := jsonx.NewObj()
+	for _, e := range env {
+		msgSend.Set(e.k, e.v)
+	}
+	msgSend.Set("eventCode", "chat_message_send")
+	msgSend.Set("timestamp", jsonNumber(now+20))
+	msgSend.Set("userId", uid)
+	msgSend.Set("userNickname", nick)
+	msgSend.Set("messageId", mid+"-ast")
+	msgSend.Set("historyCount", jsonNumber(0))
+	msgSend.Set("isContextTruncated", false)
+	msgSend.Set("currentStepCount", jsonNumber(1))
+	msgSend.Set("traceId", rid)
+	msgSend.Set("rootRequestId", rid)
+	msgSend.Set("parentConversationId", cid)
+	msgSend.Set("agentName", "cli")
+	msgSend.Set("agentType", "main")
+
+	reqSend := jsonx.NewObj()
+	for _, e := range env {
+		reqSend.Set(e.k, e.v)
+	}
+	reqSend.Set("eventCode", "chat_request_send")
+	reqSend.Set("timestamp", jsonNumber(now+40))
+	reqSend.Set("userId", uid)
+	reqSend.Set("userNickname", nick)
+	reqSend.Set("inputLength", jsonNumber(24))
+	reqSend.Set("isPlan", false)
+	reqSend.Set("isAutoExecuteTerminal", false)
+	reqSend.Set("isAutoModify", false)
+	reqSend.Set("codebaseEnable", false)
+	reqSend.Set("maxToken", jsonNumber(0))
+	reqSend.Set("maxSteps", jsonNumber(500))
+	reqSend.Set("temperature", jsonNumber(0))
+	reqSend.Set("maxRetries", jsonNumber(0))
+	reqSend.Set("mentionContexts", []any{})
+	reqSend.Set("knowledgeId", []any{})
+	reqSend.Set("knowledgeName", []any{})
+	reqSend.Set("codebaseId", "")
+	reqSend.Set("mentionContextCount", jsonNumber(0))
+	reqSend.Set("command", "")
+	reqSend.Set("recommendId", "")
+	reqSend.Set("skillId", "")
+	reqSend.Set("skillCount", jsonNumber(0))
+	reqSend.Set("totalCount", jsonNumber(0))
+	reqSend.Set("traceId", rid)
+	reqSend.Set("rootRequestId", rid)
+	reqSend.Set("parentConversationId", cid)
+	reqSend.Set("conversationId", cid)
+	reqSend.Set("messageId", mid)
+	reqSend.Set("agentName", "cli")
+	reqSend.Set("agentType", "main")
+
+	msgResp := jsonx.NewObj()
+	for _, e := range env {
+		msgResp.Set(e.k, e.v)
+	}
+	msgResp.Set("eventCode", "chat_message_response")
+	msgResp.Set("timestamp", jsonNumber(now+60))
+	msgResp.Set("userId", uid)
+	msgResp.Set("userNickname", nick)
+	msgResp.Set("messageId", mid+"-resp")
+	msgResp.Set("conversationId", cid)
+	msgResp.Set("requestId", rid)
+	msgResp.Set("agentName", "cli")
+
+	reqResp := jsonx.NewObj()
+	for _, e := range env {
+		reqResp.Set(e.k, e.v)
+	}
+	reqResp.Set("eventCode", "chat_request_response")
+	reqResp.Set("timestamp", jsonNumber(now+80))
+	reqResp.Set("userId", uid)
+	reqResp.Set("userNickname", nick)
+	reqResp.Set("conversationId", cid)
+	reqResp.Set("requestId", rid)
+	reqResp.Set("requestModelId", richMeowModelID)
+	reqResp.Set("requestModelName", richMeowModelName)
+	reqResp.Set("toolCallCount", jsonNumber(0))
+	reqResp.Set("inputToken", jsonNumber(6))
+	reqResp.Set("outputToken", jsonNumber(12))
+	reqResp.Set("duration", jsonNumber(50))
+	reqResp.Set("agentName", "cli")
+
+	done := jsonx.NewObj()
+	for _, e := range env {
+		done.Set(e.k, e.v)
+	}
+	done.Set("eventCode", "agent_task_completed")
+	done.Set("timestamp", jsonNumber(now+100))
+	done.Set("userId", uid)
+	done.Set("userNickname", nick)
+	done.Set("conversationId", cid)
+	done.Set("messageId", mid)
+	done.Set("status", "success")
+
+	return []*jsonx.Obj{created, msgSend, reqSend, msgResp, reqResp, done}
 }
 
 // GrowthSnapshot returns what the tasks panel shows for one account.

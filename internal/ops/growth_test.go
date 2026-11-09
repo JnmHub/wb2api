@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"wb2api/internal/jsonx"
 )
 
 // noPause removes the deliberate anti-risk-control sleeps in tests.
@@ -162,23 +165,224 @@ func TestNightGrowthOutsideWindowIsANoOp(t *testing.T) {
 
 func TestGrowthEventShapes(t *testing.T) {
 	e := newEnv(t, "cn", nil)
-	one := e.c.growthEvent("expert", 0, "u-1")
-	two := e.c.growthEvent("expert", 1, "u-1")
+	one := e.c.growthEvents(growthSpecs["expert_5"], 0, "u-1", "nick")[0]
+	two := e.c.growthEvents(growthSpecs["expert_5"], 1, "u-1", "nick")[0]
 	if one.Get("eventCode") != "expert_actual_use" || one.Get("userId") != "u-1" {
 		t.Fatalf("event %v", one)
 	}
 	if one.Get("id") == two.Get("id") {
 		t.Fatal("expert events must not repeat the same id within a batch")
 	}
-	chat := e.c.growthEvent("chat", 0, "u-1")
+	chat := e.c.growthEvents(growthSpecs["chat_5"], 0, "u-1", "nick")[0]
 	if chat.Get("eventCode") != "chat_request_send" || chat.Get("mode") != "craft" {
 		t.Fatalf("chat event %v", chat)
 	}
-	valorant := e.c.growthEvent("valorant", 0, "u-1")
+	valorant := e.c.growthEvents(growthSpecs["WorkBuddy_Valorant"], 0, "u-1", "nick")[0]
 	if valorant.Get("eventCode") != "expert_actual_use" || valorant.Get("id") != "ex_xQHHD1u5Jkua" {
 		t.Fatalf("valorant event %v", valorant)
 	}
 	if _, ok := growthSpecs["WorkBuddy_Valorant"]; !ok {
 		t.Fatal("WorkBuddy_Valorant is not registered")
+	}
+}
+
+// The 桌面对话事件链 (RichMeow_Chat) task only advances on a complete desktop
+// chat chain: 创建 → 发消息 → 发请求 → 收消息 → 请求结束 → 完成.
+func TestRichMeowChainIsSixLinkedEvents(t *testing.T) {
+	e := newEnv(t, "cn", nil)
+	spec, ok := growthSpecs["RichMeow_Chat"]
+	if !ok {
+		t.Fatal("RichMeow_Chat is not registered")
+	}
+	if spec.desktop {
+		t.Fatal("RichMeow_Chat is forgeable: legacy lights it with the event chain")
+	}
+	evs := e.c.growthEvents(spec, 0, "u-1", "nick")
+	want := []string{
+		"agent_task_created", "chat_message_send", "chat_request_send",
+		"chat_message_response", "chat_request_response", "agent_task_completed",
+	}
+	if len(evs) != len(want) {
+		t.Fatalf("%d events, want %d", len(evs), len(want))
+	}
+	cid := ""
+	for i, ev := range evs {
+		if got := jsonx.PyStr(ev.Get("eventCode")); got != want[i] {
+			t.Fatalf("event %d = %s, want %s", i, got, want[i])
+		}
+		if ev.Get("userId") != "u-1" || ev.Get("userNickname") != "nick" {
+			t.Fatalf("event %d lost the identity: %v", i, ev)
+		}
+		c := jsonx.PyStrIfTruthy(ev.Get("conversationId"))
+		if c == "" {
+			c = jsonx.PyStrIfTruthy(ev.Get("parentConversationId"))
+		}
+		if c == "" {
+			t.Fatalf("event %d has no conversation id: %v", i, ev)
+		}
+		if cid == "" {
+			cid = c
+		} else if c != cid {
+			t.Fatalf("event %d broke the chain: %s != %s", i, c, cid)
+		}
+	}
+	// 时间戳必须单调递增，上游按顺序拼这条链。
+	var prev int64
+	for i, ev := range evs {
+		ts := intOfAny(ev.Get("timestamp"))
+		if i > 0 && int64(ts) <= prev {
+			t.Fatalf("event %d timestamp %d not after %d", i, ts, prev)
+		}
+		prev = int64(ts)
+	}
+	if !strings.Contains(jsonx.PyStr(evs[5].Get("status")), "success") {
+		t.Fatalf("last event %v", evs[5])
+	}
+	// 采集侧只把带桌面设备信封的链算作真实桌面会话：少了 ideType/platform/
+	// machineId，6 条事件照收（code 0）但进度永远停在 0/1。
+	for i, ev := range evs {
+		if got := jsonx.PyStrIfTruthy(ev.Get("ideType")); got != "WorkBuddy" {
+			t.Fatalf("event %d ideType %q", i, got)
+		}
+		if got := jsonx.PyStrIfTruthy(ev.Get("platform")); got != "desktop" {
+			t.Fatalf("event %d platform %q", i, got)
+		}
+		if jsonx.PyStrIfTruthy(ev.Get("machineId")) == "" {
+			t.Fatalf("event %d has no machineId", i)
+		}
+	}
+}
+
+func TestLibraryReadSendsTheDocumentClick(t *testing.T) {
+	e := newEnv(t, "cn", nil)
+	spec := growthSpecs["Library_read"]
+	if spec.desktop {
+		t.Fatal("Library_read is forgeable: legacy lights it with web_element_click")
+	}
+	evs := e.c.growthEvents(spec, 0, "u-1", "nick")
+	if len(evs) != 1 {
+		t.Fatalf("%d events", len(evs))
+	}
+	if got := jsonx.PyStr(evs[0].Get("eventCode")); got != "web_element_click" {
+		t.Fatalf("eventCode %q", got)
+	}
+	if got := jsonx.PyStr(evs[0].Get("pageURL")); got != libDocURL {
+		t.Fatalf("pageURL %q", got)
+	}
+	if got := jsonx.PyStr(evs[0].Get("elementId")); got != "library_doc_intro_click" {
+		t.Fatalf("elementId %q", got)
+	}
+}
+
+func TestPlaybookSendsBothEvents(t *testing.T) {
+	e := newEnv(t, "cn", nil)
+	evs := e.c.growthEvents(growthSpecs["playbook_prompt"], 0, "u-1", "nick")
+	if len(evs) != 2 {
+		t.Fatalf("%d events, want the CTA click plus the prompt send", len(evs))
+	}
+	if jsonx.PyStr(evs[0].Get("eventCode")) != "playbook_cta_click" ||
+		jsonx.PyStr(evs[1].Get("eventCode")) != "playbook_prompt_send" {
+		t.Fatalf("codes %s / %s",
+			jsonx.PyStr(evs[0].Get("eventCode")), jsonx.PyStr(evs[1].Get("eventCode")))
+	}
+}
+
+// A task code that is not in growthSpecs but names its expert in the deeplink
+// still has to progress: the port of extract_expert_from_task.
+func TestDynamicExpertTaskIsReported(t *testing.T) {
+	e := newEnv(t, "cn", nil)
+	noPause(e)
+	task := GrowthTask{
+		Code: "expert_use_newshop", Title: "新专家", Status: "accepted", Type: "single",
+		JumpURL: "workbuddy://home?deeplink=" + url.QueryEscape("workbuddy://expert?expertId=ex_AbCd1234Xy"),
+		Current: 0, Target: 1,
+	}
+	spec := growthSpecs[task.Code]
+	if spec.kind != "" {
+		t.Fatal("fixture assumes an unregistered code")
+	}
+	x, ok := extractExpertFromTask(task)
+	if !ok || x.ID != "ex_AbCd1234Xy" {
+		t.Fatalf("expert %+v ok=%v", x, ok)
+	}
+	e.vendor.h["/v2/report"] = func(w http.ResponseWriter, r *http.Request) {
+		body := readBody(t, r)
+		if !strings.Contains(body, "ex_AbCd1234Xy") || !strings.Contains(body, "expert_actual_use") {
+			t.Errorf("report body %s", body)
+		}
+		io.WriteString(w, `{"code":0}`)
+	}
+	e.vendor.json("/v2/activity/growth/tasks", `{"data":{"tasks":[
+	  {"task_code":"expert_use_newshop","title":"新专家","accept_status":"completed","task_type":"single","progress":{"current":1,"target":1}}]}}`)
+	e.vendor.json("/activity/growth/tasks/expert_use_newshop/claim", `{"code":0,"data":{"credit":100}}`)
+	var logs []string
+	got := e.c.progressTask(context.Background(), e.acc(), GrowthTask{
+		Code: task.Code, Title: task.Title, Status: "accepted", Type: "single", JumpURL: task.JumpURL, Target: 1,
+	}, 1, &logs)
+	if got != 100 {
+		t.Fatalf("earned %d logs %v", got, logs)
+	}
+	if e.vendor.called("/v2/report") != 1 {
+		t.Fatalf("reports %d, logs %v", e.vendor.called("/v2/report"), logs)
+	}
+}
+
+// 未接取的任务上报事件不会计入进度：必须跳过，而不是白报。
+func TestUnacceptedTaskIsSkipped(t *testing.T) {
+	e := newEnv(t, "cn", nil)
+	noPause(e)
+	var logs []string
+	got := e.c.progressTask(context.Background(), e.acc(), GrowthTask{
+		Code: "chat_5", Title: "发起 5 次对话", Status: "not_accepted", Type: "single", Current: 0, Target: 5,
+	}, 1, &logs)
+	if got != 0 || e.vendor.called("/v2/report") != 0 {
+		t.Fatalf("earned %d reports %d", got, e.vendor.called("/v2/report"))
+	}
+	if len(logs) == 0 || !strings.Contains(logs[0], "仍未接取") {
+		t.Fatalf("logs %v", logs)
+	}
+}
+
+// 小程序任务走另一套标头与事件体，不看 miniprogram 头就根本看不见它们。
+func TestMiniProgramTasksUseTheMiniProgramIdentity(t *testing.T) {
+	e := newEnv(t, "cn", nil)
+	noPause(e)
+	var sawMPAccept, sawMPReport, sawMPClaim bool
+	e.vendor.h["/v2/activity/growth/tasks"] = func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Client-Platform") == "miniprogram" {
+			io.WriteString(w, `{"data":{"tasks":[
+			  {"task_code":"Sequential_Tasks_1","title":"","accept_status":"accepted","task_type":"single","progress":{"current":0,"target":1}}]}}`)
+			return
+		}
+		io.WriteString(w, `{"data":{"tasks":[]}}`)
+	}
+	e.vendor.h["/v2/activity/growth/tasks/accept"] = func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("already accepted tasks must not be accepted again: %s", readBody(t, r))
+		io.WriteString(w, `{"code":0}`)
+	}
+	e.vendor.h["/v2/report"] = func(w http.ResponseWriter, r *http.Request) {
+		body := readBody(t, r)
+		if r.Header.Get("X-Client-Product") == "workbuddy-mp" &&
+			r.Header.Get("X-Client-Platform") == "mp-weixin" &&
+			strings.Contains(body, "codebuddy.session_id") &&
+			strings.Contains(body, "workspace_type") == false &&
+			strings.Contains(body, "WorkBuddy_MP") {
+			sawMPReport = true
+		}
+		io.WriteString(w, `{"code":0}`)
+	}
+	e.vendor.h["/activity/growth/tasks/Sequential_Tasks_1/claim"] = func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Client-Platform") == "miniprogram" {
+			sawMPClaim = true
+		}
+		io.WriteString(w, `{"code":0,"data":{"credit":100}}`)
+	}
+	earned, logs := e.c.RunMiniProgramTasks(context.Background(), e.acc(), 1)
+	if !sawMPReport || !sawMPClaim {
+		t.Fatalf("report=%v claim=%v logs %v", sawMPReport, sawMPClaim, logs)
+	}
+	_ = sawMPAccept
+	if earned != 100 {
+		t.Fatalf("earned %d logs %v", earned, logs)
 	}
 }
