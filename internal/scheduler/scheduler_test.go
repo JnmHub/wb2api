@@ -106,10 +106,13 @@ func (f *fx) atHour(h int) {
 
 func TestCycleDoesTheDailyChores(t *testing.T) {
 	f := newFx(t,
-		map[string]any{"realm": "cn", "uid": "cn-1"},                                                               // check-in + activity report
-		map[string]any{"realm": "intl", "uid": "intl-1"},                                                           // daily chat
-		map[string]any{"realm": "cn", "uid": "cn-2", "restrictedUntil": float64(time.Now().Add(time.Hour).Unix())}, // skipped
-		map[string]any{"realm": "cn", "uid": "cn-3", "enabled": false},                                             // skipped
+		map[string]any{"realm": "cn", "uid": "cn-1"},     // check-in + activity report
+		map[string]any{"realm": "intl", "uid": "intl-1"}, // daily chat
+		// The window must outlive the pinned clock below: atHour(9) moves the
+		// scheduler to 09:05 today, so a +1h window silently expires whenever
+		// the suite runs before 08:05 local (CI caught this at 06:44 UTC).
+		map[string]any{"realm": "cn", "uid": "cn-2", "restrictedUntil": float64(time.Now().Add(48 * time.Hour).Unix())}, // skipped
+		map[string]any{"realm": "cn", "uid": "cn-3", "enabled": false},                                                  // skipped
 		map[string]any{"realm": "intl", "uid": "soon", "expiresAt": time.Now().Add(30 * time.Minute).Unix(),
 			"lastDailyChat": time.Now().Format("2006-01-02 15:04:05")}, // keep-alive only
 	)
