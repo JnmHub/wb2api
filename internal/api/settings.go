@@ -99,7 +99,11 @@ func (s *Settings) snapshot() map[string]any {
 			"header_timeout_seconds": int(up.HeaderTimeout.Seconds()), "idle_timeout_seconds": int(up.IdleTimeout.Seconds()),
 			"device_token_set": up.DeviceToken != "", "device_token_file": up.DeviceTokenFile,
 		},
-		"prompt":                  map[string]any{"mode": s.Store.PromptConfig().Mode, "file": s.Store.PromptConfig().File},
+		"prompt": map[string]any{
+			"mode":     s.Store.PromptConfig().Mode,
+			"file":     s.Store.PromptConfig().File,
+			"sanitize": s.Store.PromptConfig().Sanitize,
+		},
 		"credits_refresh_hours":   s.Store.CreditsRefreshHours(),
 		"proxy_slots":             slots,
 		"window_probe":            s.Store.WindowProbe(),

@@ -319,7 +319,11 @@ export interface SettingsView {
   switches: Record<string, boolean>
   auto_switch_products: string[]
   upstream: { header_timeout_seconds: number; idle_timeout_seconds: number; device_token_set: boolean; device_token_file: string }
-  prompt: { mode: 'passthrough' | 'custom' | 'append'; file: string }
+  prompt: {
+    mode: 'passthrough' | 'custom' | 'append'
+    file: string
+    sanitize: 'off' | 'identity' | 'full'
+  }
   credits_refresh_hours: number
   window_probe: boolean
   quota_scan_models: string[]

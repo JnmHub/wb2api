@@ -230,3 +230,70 @@ func TestDSHPathsIsAFingerprint(t *testing.T) {
 		t.Fatal("paths paragraph must enter the sanitizer on its own")
 	}
 }
+
+// The Codex / Claude Code identity sentences are what content review matches.
+// Identity strength neutralises just those, and must keep the tool contract
+// (which is the reason the sentence exists in the first place).
+func TestIdentityStrengthNeutralisesClientIdentity(t *testing.T) {
+	codex := strings.Join([]string{
+		"You are a coding agent running in the Codex CLI tool, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI.",
+		"You are Codex, based on GPT-5. You and the user share the same workspace.",
+		"",
+		"# Tools",
+		"Use the shell tool for commands and never print secrets.",
+	}, "\n")
+	got := sanitizeSystemText(codex, SanitizeIdentity)
+	if strings.Contains(got, "OpenAI") || strings.Contains(got, "Codex CLI") || strings.Contains(got, "GPT-5") {
+		t.Fatalf("identity sentence survived: %q", got)
+	}
+	if !strings.HasPrefix(got, "You are a coding assistant.") {
+		t.Fatalf("opening not neutralised: %q", got)
+	}
+	if !strings.Contains(got, "Use the shell tool for commands and never print secrets.") {
+		t.Fatalf("tool contract changed: %q", got)
+	}
+
+	claude := "You are Claude Code, Anthropic's official CLI tool for Claude. Use the read tool first."
+	got = sanitizeSystemText(claude, SanitizeIdentity)
+	if strings.Contains(got, "Anthropic") {
+		t.Fatalf("vendor survived: %q", got)
+	}
+	if !strings.HasPrefix(got, "You are a CLI coding assistant.") || !strings.Contains(got, "Use the read tool first.") {
+		t.Fatalf("claude rewrite wrong: %q", got)
+	}
+}
+
+// Off keeps the client's wording: the operator asked for no rewriting at all.
+func TestOffStrengthLeavesIdentityAlone(t *testing.T) {
+	codex := "You are a coding agent running in the Codex CLI tool, a terminal-based coding assistant."
+	if got := sanitizeSystemText(codex, SanitizeOff); got != codex {
+		t.Fatalf("off mode rewrote the prompt: %q", got)
+	}
+}
+
+// Full replaces the whole system prompt, which is the blunt instrument: the
+// model loses the client's workflow rules.
+func TestFullStrengthReplacesSystemPrompt(t *testing.T) {
+	msg := func(role, content string) any {
+		o := jsonx.NewObj()
+		o.Set("role", role)
+		o.Set("content", content)
+		return o
+	}
+	msgs := []any{msg("system", "You are a coding agent. Use the shell tool."), msg("user", "hi"),
+		msg("assistant", "You are Claude Code, Anthropic's official CLI tool for Claude.")}
+	out := sanitizeMessages(msgs, &Options{Sanitize: SanitizeFull})
+	sys, _ := asObj(out[0])
+	if got, _ := sys.Get("content").(string); got != degradedPrompt {
+		t.Fatalf("system prompt not replaced: %q", got)
+	}
+	user, _ := asObj(out[1])
+	if got, _ := user.Get("content").(string); got != "hi" {
+		t.Fatalf("user data changed: %q", got)
+	}
+	// Replayed assistant turns only lose the identity sentence, never their body.
+	asst, _ := asObj(out[2])
+	if got, _ := asst.Get("content").(string); strings.Contains(got, "Anthropic") {
+		t.Fatalf("assistant identity survived: %q", got)
+	}
+}

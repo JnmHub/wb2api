@@ -464,7 +464,7 @@ func (h *Handler) responsesWhole(q *request, acc *pool.Account, cancel context.C
 		ev.Outcome, ev.Status = "failed", http.StatusBadGateway
 		h.emitWithLatency(q.r.Context(), ev)
 		if q.r.Context().Err() == nil {
-			writeError(q.w, http.StatusBadGateway, reasoningOnlyDetail, "server_error")
+			writeError(q.w, http.StatusBadGateway, reasoningOnlyMessage(res.finish), "server_error")
 		}
 		return
 	}
@@ -683,7 +683,7 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 			// Reasoning with no answer: report a failed response instead of a
 			// completed one with empty output.
 			reasoningOnly = true
-			if write([]responses.Frame{s.Error(reasoningOnlyDetail)}) != nil {
+			if write([]responses.Frame{s.Error(reasoningOnlyMessage(s.FinishReason()))}) != nil {
 				clientClosed = true
 			}
 		} else if write(s.Finish()) != nil {

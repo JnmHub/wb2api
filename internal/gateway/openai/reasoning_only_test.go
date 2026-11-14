@@ -59,3 +59,24 @@ func TestToolCallOnlyReplyIsNotReasoningOnly(t *testing.T) {
 		t.Fatalf("tool call reply flagged as reasoning-only: %s", out)
 	}
 }
+
+// A budget-limited thinking reply is the common case on the CN catalogue: the
+// message has to name the cause, otherwise it reads as a gateway fault.
+func TestReasoningOnlyNamesTheBudgetWhenTruncated(t *testing.T) {
+	budget := "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"thinking\"},\"finish_reason\":\"length\"}]}\n\n" + doneChunk
+	w := &relayTestWriter{header: http.Header{}}
+	runRelayProtocol("chat", &Handler{}, w, strings.NewReader(budget), time.Second, func() {}, 0)
+	out := w.body.String()
+	if !strings.Contains(out, reasoningOnlyDetail) || !strings.Contains(out, "max_tokens") {
+		t.Fatalf("truncated reply lost the budget hint: %s", out)
+	}
+	if !strings.Contains(out, "finish_reason=length") {
+		t.Fatalf("finish reason missing: %s", out)
+	}
+	if msg := reasoningOnlyMessage("stop"); strings.Contains(msg, "max_tokens") {
+		t.Fatalf("stop reply got a budget hint: %s", msg)
+	}
+	if msg := reasoningOnlyMessage(""); msg != reasoningOnlyDetail {
+		t.Fatalf("empty finish changed the wording: %s", msg)
+	}
+}

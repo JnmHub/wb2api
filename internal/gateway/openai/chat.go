@@ -380,6 +380,7 @@ func (h *Handler) reshape(q *request) {
 	cfg := h.Settings.PromptConfig()
 	q.shaped = shape.Build(q.payload, shape.Options{
 		PromptMode: cfg.Mode, PromptText: h.promptText(cfg),
+		Sanitize:         cfg.Sanitize,
 		Degraded:         h.degrade().Active(time.Now()),
 		PreserveContract: preserveContract(),
 		Catalog:          h.Catalog,

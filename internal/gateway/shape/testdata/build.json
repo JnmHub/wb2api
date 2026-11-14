@@ -97,12 +97,12 @@
  {
   "payload": "{\"model\": \"glm-5.3\", \"messages\": [{\"role\": \"system\", \"content\": \"You are Claude Code, Anthropic's official CLI for Claude. Main branch (you will usually use this for PRs) error 11128\"}, {\"role\": \"user\", \"content\": \"x-anthropic-billing-header: cc_version=1; cc_entrypoint=cli; hello\"}]}",
   "opts": {},
-  "out": "{\"model\":\"glm-5.3\",\"messages\":[{\"role\":\"system\",\"content\":\"You are Claude Code, Anthropic's official CLI tool for Claude. Default branch (you will usually use this for PRs) error 11-128\"},{\"role\":\"user\",\"content\":\"hello\"}],\"max_tokens\":48000,\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+  "out": "{\"model\":\"glm-5.3\",\"messages\":[{\"role\":\"system\",\"content\":\"You are a CLI coding assistant. Default branch (you will usually use this for PRs) error 11-128\"},{\"role\":\"user\",\"content\":\"hello\"}],\"max_tokens\":48000,\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
  },
  {
   "payload": "{\"model\": \"glm-5.3\", \"messages\": [{\"role\": \"system\", \"content\": [{\"type\": \"text\", \"text\": \"You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Sisyphus-Junior - Focused executor from OhMyOpenCode\"}, {\"type\": \"image_url\", \"image_url\": {\"url\": \"u\"}}]}, {\"role\": \"user\", \"content\": \"hi\"}]}",
   "opts": {},
-  "out": "{\"model\":\"glm-5.3\",\"messages\":[{\"role\":\"system\",\"content\":[{\"type\":\"text\",\"text\":\"You are a coding agent running in the Codex CLI tool, a terminal-based coding assistant. Sisyphus-Junior - Focused executor\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"u\"}}]},{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":48000,\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
+  "out": "{\"model\":\"glm-5.3\",\"messages\":[{\"role\":\"system\",\"content\":[{\"type\":\"text\",\"text\":\"You are a coding assistant. Sisyphus-Junior - Focused executor\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"u\"}}]},{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":48000,\"stream\":true,\"stream_options\":{\"include_usage\":true}}"
  },
  {
   "payload": "{\"model\": \"glm-5.3\", \"messages\": [{\"role\": \"user\", \"content\": \"go\"}, {\"role\": \"assistant\", \"content\": null, \"tool_calls\": [{\"id\": \"c1\", \"type\": \"function\", \"function\": {\"name\": \"f\", \"arguments\": \"x-anthropic-billing-header: z; ok\"}}], \"reasoning_content\": \"x-anthropic-billing-header: q\"}, {\"role\": \"tool\", \"tool_call_id\": \"c1\", \"content\": \"11128 result\"}]}",

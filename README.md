@@ -52,12 +52,14 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
   Code / Codex / OpenCode / DSH / Crush / ZCode 的本机配置。
 - **本地 web 工具**：可选在网关侧执行 Responses 的 `web_search` / `web_fetch`。
 - **安全**：面板登录、API Key、CSRF、TLS 指纹（OpenSSL 形状 ClientHello）、
-  私网抓取防护。
+  私网抓取防护；系统提示词净化三档可调（`identity` 只中性化身份句、保留工具契约，
+  `full` 整段替换，`off` 关闭），对付上游内容审核的客户端指纹拦截。
 - **更新检查**：可选检查 GitHub Releases（启动后一两分钟内先查一次，之后按设定间隔），
   只读，不自动下载。
 
 ## 最新发行版
 
+[v2.5.1 更新说明](docs/releases/v2.5.1.md)：系统提示词净化三档可调（只中性化身份句，保留工具契约），思考截断的报错写清 max_tokens 原因。
 [v2.5.0 更新说明](docs/releases/v2.5.0.md)：国内成长任务引擎对齐上游（桌面对话事件链、资料库埋点、动态专家、小程序链式任务、Buddy 盲盒），真实账号实测 18 个任务领到 16 个。
 [v2.4.9 更新说明](docs/releases/v2.4.9.md)：模型后备链现在也覆盖「选不到号」的场景（模型被人工禁用、账号池被风控清空时不再直接 503）。
 [v2.4.8 更新说明](docs/releases/v2.4.8.md)：模型冷却可视化 + 模型后备链（阶段式切换，返回体回写请求名）+ 模型窗口跨副本共享。

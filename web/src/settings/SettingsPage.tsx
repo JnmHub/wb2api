@@ -500,6 +500,7 @@ function UpstreamSection({ s }: { s: SettingsView }) {
   const [tokenFile, setTokenFile] = useState(s.upstream.device_token_file)
   const [mode, setMode] = useState(s.prompt.mode)
   const [file, setFile] = useState(s.prompt.file)
+  const [sanitize, setSanitize] = useState(s.prompt.sanitize ?? 'identity')
   const [credits, setCredits] = useState(String(s.credits_refresh_hours))
   const upstream: Record<string, unknown> = {
     header_timeout_seconds: Number(hdr), idle_timeout_seconds: Number(idle), device_token_file: tokenFile,
@@ -514,7 +515,7 @@ function UpstreamSection({ s }: { s: SettingsView }) {
           size="small"
           loading={save.isPending}
           onClick={() => {
-            save.mutate({ upstream, prompt: { mode, file }, credits_refresh_hours: Number(credits) })
+            save.mutate({ upstream, prompt: { mode, file, sanitize }, credits_refresh_hours: Number(credits) })
             setToken('')
           }}
         >
@@ -559,6 +560,19 @@ function UpstreamSection({ s }: { s: SettingsView }) {
         <Col xs={24} md={12}>
           <Typography.Text type="secondary">提示词文件（custom / append 模式，留空 = 内置中性提示词）</Typography.Text>
           <Input value={file} onChange={(e) => setFile(e.target.value)} disabled={mode === 'passthrough'} />
+        </Col>
+        <Col xs={24} md={12}>
+          <Typography.Text type="secondary">系统提示词净化（对付 403 内容审核）</Typography.Text>
+          <Select
+            style={{ width: '100%' }}
+            value={sanitize}
+            onChange={(v) => setSanitize(v as typeof sanitize)}
+            options={[
+              { value: 'identity', label: '只中性化身份句，保留工具与流程规则（默认）' },
+              { value: 'full', label: '整段替换为中性提示词（丢客户端规则）' },
+              { value: 'off', label: '不改写（只做最小指纹补丁）' },
+            ]}
+          />
         </Col>
       </Row>
       {save.isError && <Typography.Text type="danger">{String(save.error)}</Typography.Text>}

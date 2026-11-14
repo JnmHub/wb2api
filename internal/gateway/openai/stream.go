@@ -390,7 +390,7 @@ loop:
 			// A reply that is nothing but thinking is not an answer: end the
 			// stream as an error instead of a fake success with empty content.
 			reasoningOnly = true
-			errObj, _ := json.Marshal(map[string]apiError{"error": {Message: reasoningOnlyDetail, Type: "server_error"}})
+			errObj, _ := json.Marshal(map[string]apiError{"error": {Message: reasoningOnlyMessage(pendingFin), Type: "server_error"}})
 			if writeData(errObj) != nil {
 				clientClosed = true
 			}
@@ -645,7 +645,7 @@ func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp fun
 		ev.Outcome, ev.Status = "failed", http.StatusBadGateway
 		h.emitWithLatency(r.Context(), ev)
 		if r.Context().Err() == nil {
-			writeError(w, http.StatusBadGateway, reasoningOnlyDetail, "server_error")
+			writeError(w, http.StatusBadGateway, reasoningOnlyMessage(res.finish), "server_error")
 		}
 		return
 	}

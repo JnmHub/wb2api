@@ -380,6 +380,15 @@ func (s *Store) SetPrompt(patch map[string]any) (PromptConfig, error) {
 				return s.PromptConfig(), errors.New("prompt file must be a string")
 			}
 			clean[k] = strings.TrimSpace(str)
+		case "sanitize":
+			if !ok {
+				return s.PromptConfig(), errors.New("prompt sanitize must be a string")
+			}
+			mode := strings.ToLower(strings.TrimSpace(str))
+			if mode != "off" && mode != "identity" && mode != "full" {
+				return s.PromptConfig(), errors.New("prompt sanitize must be off, identity or full")
+			}
+			clean[k] = mode
 		default:
 			return s.PromptConfig(), fmt.Errorf("unknown prompt setting %q", k)
 		}

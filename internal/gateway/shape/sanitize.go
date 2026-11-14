@@ -61,6 +61,43 @@ var (
 	sanitizeDSHBrandRe = regexp.MustCompile(`(?i)DeepSeek[ \t_-]*Harness`)
 )
 
+// Structured system-prompt rewrite strength (Options.Sanitize). The client's
+// wording is only ever touched in system/developer messages (and assistant
+// turns, because the upstream echo-checks replayed history): user and tool
+// content is data and stays verbatim.
+const (
+	// SanitizeOff keeps the client's wording; only the minimal-edit
+	// fingerprint patches run.
+	SanitizeOff = "off"
+	// SanitizeIdentity (default) replaces identity and vendor sentences with
+	// neutral ones of the same strength, leaving the tool contract and the
+	// workflow rules byte-for-byte.
+	SanitizeIdentity = "identity"
+	// SanitizeFull replaces the whole system prompt with the neutral one. It is
+	// what the 403 degrade gate already does.
+	SanitizeFull = "full"
+)
+
+// sanitizeIdentityRewrites maps the client-identity sentences content review
+// matches onto neutral ones. Keeping the rest of the prompt intact matters: the
+// Codex / Claude Code system prompts carry the tool contract, and replacing the
+// whole prompt makes the model stop following it.
+var sanitizeIdentityRewrites = []struct {
+	re   *regexp.Regexp
+	with string
+}{
+	{regexp.MustCompile(`(?i)You are a coding agent running in the Codex CLI(?: tool)?,[^\r\n]*?coding assistant\.`),
+		"You are a coding assistant."},
+	{regexp.MustCompile(`(?i)\s*Codex CLI is an open source project led by OpenAI\.?`), ""},
+	// The official Codex prompt introduces the model right after the identity
+	// sentence ("You are Codex, based on GPT-5."): vendor + model names, same
+	// fingerprint family.
+	{regexp.MustCompile(`(?i)\s*You are Codex,? based on [^
+.]{1,40}\.`), ""},
+	{regexp.MustCompile(`(?i)You are Claude Code, Anthropic's official CLI(?: tool)? for Claude\.?`),
+		"You are a CLI coding assistant."},
+}
+
 // The official client injects a fixed paragraph explaining how to read "@"
 // path references. The upstream WAF treats that paragraph as an "official
 // client" fingerprint and answers 11-128 ("Illegal API invocation from an
@@ -122,11 +159,22 @@ func sanitizeText(text string) string {
 
 // sanitizeSystemText applies the broader identity-sentence rule that is only
 // allowed for system/developer messages, then the ordinary fingerprints.
-func sanitizeSystemText(text string) string {
+func sanitizeSystemText(text string, modes ...string) string {
 	if text == "" {
 		return text
 	}
-	out := sanitizeDSHIdentityRe.ReplaceAllString(text, "You are a helpful AI assistant.${4}")
+	mode := SanitizeIdentity
+	if len(modes) > 0 && modes[0] != "" {
+		mode = modes[0]
+	}
+	if mode == SanitizeOff {
+		return sanitizeText(text)
+	}
+	out := text
+	for _, r := range sanitizeIdentityRewrites {
+		out = r.re.ReplaceAllString(out, r.with)
+	}
+	out = sanitizeDSHIdentityRe.ReplaceAllString(out, "You are a helpful AI assistant.${4}")
 	// Avoid a second full regex pass for the common case (no DeepSeek brand at
 	// all). The regex still handles mixed separators and casing once present.
 	if strings.Contains(out, "DeepSeek") || strings.Contains(out, "deepseek") || strings.Contains(out, "DEEPSEEK") {
@@ -156,10 +204,10 @@ func sanitizeBase(text string) string {
 	return strings.TrimSpace(text)
 }
 
-func sanitizeContent(content any, system bool) any {
+func sanitizeContent(content any, system bool, mode string) any {
 	fn := sanitizeText
 	if system {
-		fn = sanitizeSystemText
+		fn = func(t string) string { return sanitizeSystemText(t, mode) }
 	}
 	switch c := content.(type) {
 	case string:
@@ -240,8 +288,14 @@ func sanitizeMessages(msgs []any, opt *Options) []any {
 		// identity rewrite exists to avoid. User/tool content is left verbatim.
 		system := role == "system" || role == "developer" || role == "assistant"
 		preserveToolResult := opt.PreserveContract && (role == "tool" || role == "function")
-		if item.Has("content") && !preserveToolResult {
-			item.Set("content", sanitizeContent(item.Get("content"), system))
+		mode := opt.sanitizeMode()
+		if mode == SanitizeFull && (role == "system" || role == "developer") {
+			// Full strength: the whole system prompt becomes the neutral one.
+			// Assistant history keeps its text (only identity sentences change),
+			// otherwise a replayed conversation would lose its own answers.
+			item.Set("content", degradedPrompt)
+		} else if item.Has("content") && !preserveToolResult {
+			item.Set("content", sanitizeContent(item.Get("content"), system, mode))
 		}
 		if rc, ok := item.Get("reasoning_content").(string); ok {
 			item.Set("reasoning_content", sanitizeText(rc))

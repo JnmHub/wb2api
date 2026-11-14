@@ -57,6 +57,10 @@ func (s *Stream) Usage() *jsonx.Obj { return s.usage }
 // Estimated reports whether Usage was estimated locally.
 func (s *Stream) Estimated() bool { return s.estimatedUsage }
 
+// FinishReason is the upstream finish reason seen so far ("stop" before one
+// arrives). The relay uses it to explain a reasoning-only answer.
+func (s *Stream) FinishReason() string { return s.finish }
+
 // Error reports an interrupted stream without fabricating a completed response.
 // Callers pass a sanitized message, never arbitrary upstream error details.
 func (s *Stream) Error(message string) Frame {

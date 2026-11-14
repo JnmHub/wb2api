@@ -130,6 +130,19 @@ func TestUpstreamAndPromptValidation(t *testing.T) {
 	if _, err := s.SetPrompt(map[string]any{"mode": "weird"}); err == nil {
 		t.Error("bad mode")
 	}
+	// Sanitize strength: default identity, accepts the three levels, rejects junk.
+	if got := s.PromptConfig().Sanitize; got != "identity" {
+		t.Fatalf("default sanitize = %q", got)
+	}
+	if p, err := s.SetPrompt(map[string]any{"sanitize": "OFF"}); err != nil || p.Sanitize != "off" {
+		t.Fatalf("%+v %v", p, err)
+	}
+	if p, err := s.SetPrompt(map[string]any{"sanitize": "full"}); err != nil || p.Sanitize != "full" {
+		t.Fatalf("%+v %v", p, err)
+	}
+	if _, err := s.SetPrompt(map[string]any{"sanitize": "aggressive"}); err == nil {
+		t.Error("bad sanitize")
+	}
 	if err := s.SetCreditsRefreshHours(6); err != nil || s.CreditsRefreshHours() != 6 {
 		t.Fatal("credits ttl")
 	}

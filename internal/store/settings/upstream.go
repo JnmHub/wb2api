@@ -57,6 +57,9 @@ func (s *Store) UpstreamConfig() UpstreamConfig {
 type PromptConfig struct {
 	Mode string // passthrough | custom | append
 	File string
+	// Sanitize is the structured rewrite strength applied to system prompts:
+	// off | identity | full. Empty reads as identity.
+	Sanitize string
 }
 
 // PromptConfig returns the prompt group; anything invalid reads as passthrough.
@@ -69,7 +72,14 @@ func (s *Store) PromptConfig() PromptConfig {
 			mode = lm
 		}
 	}
-	return PromptConfig{Mode: mode, File: trimmedString(g["file"])}
+	sanitize := "identity"
+	if v, ok := g["sanitize"].(string); ok {
+		switch lv := strings.ToLower(strings.TrimSpace(v)); lv {
+		case "off", "identity", "full":
+			sanitize = lv
+		}
+	}
+	return PromptConfig{Mode: mode, File: trimmedString(g["file"]), Sanitize: sanitize}
 }
 
 type deviceTokenCache struct {

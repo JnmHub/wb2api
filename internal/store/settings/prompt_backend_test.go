@@ -17,13 +17,13 @@ func TestSetPromptPreservesTransactionalSibling(t *testing.T) {
 			name:   "mode preserves file",
 			latest: map[string]any{"mode": "passthrough", "file": "latest.txt", "future_option": true},
 			patch:  map[string]any{"mode": " APPEND "},
-			want:   PromptConfig{Mode: "append", File: "latest.txt"},
+			want:   PromptConfig{Mode: "append", File: "latest.txt", Sanitize: "identity"},
 		},
 		{
 			name:   "file preserves mode",
 			latest: map[string]any{"mode": "custom", "file": "old.txt", "future_option": true},
 			patch:  map[string]any{"file": " new.txt "},
-			want:   PromptConfig{Mode: "custom", File: "new.txt"},
+			want:   PromptConfig{Mode: "custom", File: "new.txt", Sanitize: "identity"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

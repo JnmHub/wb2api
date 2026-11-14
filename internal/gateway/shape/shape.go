@@ -32,6 +32,9 @@ type Options struct {
 	Degraded bool
 	// SystemPrompt overrides DefaultSystemPrompt.
 	SystemPrompt string
+	// Sanitize selects the structured system-prompt rewrite: SanitizeOff,
+	// SanitizeIdentity (default) or SanitizeFull. Empty reads as identity.
+	Sanitize string
 	// PreserveContract (WB_PRESERVE_REQUEST_CONTRACT) skips text rewriting of
 	// tool results and tool-call arguments.
 	PreserveContract bool
@@ -44,6 +47,19 @@ func (o *Options) logf(format string, args ...any) {
 	if o.Logf != nil {
 		o.Logf(format, args...)
 	}
+}
+
+func (o *Options) sanitizeMode() string {
+	if o == nil {
+		return SanitizeIdentity
+	}
+	switch strings.ToLower(strings.TrimSpace(o.Sanitize)) {
+	case SanitizeOff:
+		return SanitizeOff
+	case SanitizeFull:
+		return SanitizeFull
+	}
+	return SanitizeIdentity
 }
 
 func (o *Options) systemPrompt() string {
