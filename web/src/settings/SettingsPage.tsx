@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Card, Checkbox, Col, Input, InputNumber, Row, Segmented, Select, Space, Switch, Tag, Typography } from 'antd'
 import { ApiError, get, patch, post, type SettingsView, type UpdateStatus } from '../api'
+import { realmLabel } from '../format'
 import { Toggle } from '../components/Modal'
 import { AgentsSection } from './AgentsSection'
 import { KeysSection } from './KeysSection'
@@ -62,7 +63,7 @@ export function SettingsPage() {
 
       <Card title="出口">
         <Typography.Paragraph type="secondary">
-          未绑定出口的 Key、也没有 X-Realm / ?realm= 的请求，走这里选的出口。只在国内版提供的模型（如 deepseek-v4-pro）必须选国内版或使用绑定国内版的 Key。
+          未绑定渠道的 Key、也没有 X-Realm / ?realm= 的请求，走这里选的渠道。模型名只在各自厂商内比较：WorkBuddy 的 gpt-* / gemini-* 选国际版，deepseek-v4-pro 选国内版，华为云 CodeArts 的模型选 CodeArts。
         </Typography.Paragraph>
         <Segmented
           value={s.realm.current}
@@ -70,6 +71,7 @@ export function SettingsPage() {
           options={[
             { value: 'intl', label: '国际版 (Global)' },
             { value: 'cn', label: '国内版 (China)' },
+            { value: 'codearts', label: '华为 CodeArts' },
           ]}
         />
       </Card>
@@ -288,7 +290,7 @@ function CatalogSection({ s }: { s: SettingsView }) {
       <Space direction="vertical" size={0} style={{ width: '100%' }}>
         {(s.catalog ?? []).map((c) => (
           <div key={c.realm} className="catline">
-            <b>{c.realm === 'intl' ? '国际版' : '国内版'}</b>
+            <b>{realmLabel[c.realm] ?? c.realm}</b>
             <span>{label[c.source] ?? c.source}</span>
             <span className="dim">{c.count ? c.count + ' 个模型' : '暂无'}</span>
             <span className="dim">{c.fetched_at ? new Date(c.fetched_at * 1000).toLocaleString() : ''}</span>

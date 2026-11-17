@@ -182,10 +182,12 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
               <Typography.Text type="secondary">代理槽</Typography.Text>
               <Input value={form.proxySlot} onChange={(e) => set('proxySlot', e.target.value)} />
             </div>
-            <div>
-              <Typography.Text type="secondary">出站身份</Typography.Text>
-              <Select style={{ width: '100%' }} value={form.product} onChange={(v) => set('product', v)} options={PRODUCTS} />
-            </div>
+            {a.realm !== 'codearts' && (
+              <div>
+                <Typography.Text type="secondary">出站身份</Typography.Text>
+                <Select style={{ width: '100%' }} value={form.product} onChange={(v) => set('product', v)} options={PRODUCTS} />
+              </div>
+            )}
 
             <Divider style={{ margin: '4px 0' }} />
             <Descriptions
@@ -227,10 +229,12 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
 
             <Divider style={{ margin: '4px 0' }}>账号操作</Divider>
             <Space wrap size={[6, 6]}>
-              <Button size="small" loading={busy === 'credits'} disabled={!!busy} onClick={() => runAction('credits')}>
-                刷新积分
-              </Button>
-              {a.realm === 'cn' && (
+              {a.realm !== 'codearts' && (
+                <Button size="small" loading={busy === 'credits'} disabled={!!busy} onClick={() => runAction('credits')}>
+                  刷新积分
+                </Button>
+              )}
+              {(a.realm === 'cn' || a.realm === 'codearts') && (
                 <Button size="small" loading={busy === 'checkin'} disabled={!!busy} onClick={() => runAction('checkin')}>
                   签到
                 </Button>

@@ -10,6 +10,11 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
 
 - **三套协议**：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`（含
   `count_tokens`），支持流式与非流式、工具调用、思考档位、图像输入。
+- **多渠道**：除 `intl` / `cn` 两个 WorkBuddy 出口外，新增华为云 **CodeArts Agent 渠道**
+  （`realm=codearts`）：AK/SK 全头签名（SDK-HMAC-SHA256）、OAuth2+DPoP 续期、面板一键登录、
+  三源模型自动发现与福利领取、积分签到（手动+定时），按 Key / `X-Realm` / `?realm=` 选渠道，
+  复用同一套选号、冷却、Key 白名单与用量账本。
+  详见[接入方案](<docs/CODEARTS_CHANNEL.md>)。
 - **账号池**：多账号轮换、权重、按 Key 绑定出口/模型、手动置顶、失败切换、
   429 作用域（账号/模型/6004）、冷却与风控停放、免费模型积分回退。
   模型级 429 冷却会写回账号记录，重启后仍生效；账号可单独关闭每日任务
@@ -59,6 +64,7 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
 
 ## 最新发行版
 
+[v2.6.0 更新说明](docs/releases/v2.6.0.md)：新增华为云 CodeArts 渠道（SDK-HMAC 签名、DPoP 续期、三源模型发现与福利领取、一键登录、积分签到、按渠道并发）。
 [v2.5.1 更新说明](docs/releases/v2.5.1.md)：系统提示词净化三档可调（只中性化身份句，保留工具契约），思考截断的报错写清 max_tokens 原因。
 [v2.5.0 更新说明](docs/releases/v2.5.0.md)：国内成长任务引擎对齐上游（桌面对话事件链、资料库埋点、动态专家、小程序链式任务、Buddy 盲盒），真实账号实测 18 个任务领到 16 个。
 [v2.4.9 更新说明](docs/releases/v2.4.9.md)：模型后备链现在也覆盖「选不到号」的场景（模型被人工禁用、账号池被风控清空时不再直接 503）。

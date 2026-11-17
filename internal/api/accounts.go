@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"wb2api/internal/codeartsync"
 	"wb2api/internal/events"
 	"wb2api/internal/fingerprint"
 	"wb2api/internal/jobs"
@@ -46,6 +47,10 @@ type Accounts struct {
 	// Prober tests an account with a real request. Either may be nil.
 	Ops    *ops.Client
 	Prober Prober
+
+	// CodeArts is the Huawei Cloud channel's operations service (nil = channel
+	// disabled). Discovery, check-in and the model catalogue live there.
+	CodeArts *codeartsync.Service
 
 	changes events.Coalescer
 }
@@ -802,14 +807,35 @@ func fullCreditSweep(b batchReq) bool {
 	return b.Filter.Realm == "" && b.Filter.Status == "" && b.Filter.Q == "" && b.Filter.Enabled == nil
 }
 
-// filterBatchRealm drops accounts the action cannot serve (check-in is CN-only,
-// daily activity is INTL-only). The batch is built from the selection, which
-// usually spans both realms; previously every miss became a job failure.
+// filterBatchRealm drops accounts the action cannot serve (check-in covers the
+// WorkBuddy CN exit and the CodeArts channel, daily activity is INTL-only). The
+// batch is built from the selection, which usually spans every channel;
+// previously every miss became a job failure.
 func (a *Accounts) filterBatchRealm(action string, uids []string) ([]string, string) {
+	if action == "checkin" {
+		out := make([]string, 0, len(uids))
+		for _, uid := range uids {
+			acc := a.Pool.Get(uid)
+			if acc == nil {
+				continue
+			}
+			rec := acc.Record()
+			switch {
+			case realm.IsCodeArts(rec.Realm):
+				// The CodeArts check-in claims credit campaigns; enterprise and
+				// task switches do not apply, the upstream decides eligibility.
+				out = append(out, uid)
+			case rec.Realm == realm.CN && !ops.IsEnterprise(rec):
+				out = append(out, uid)
+			}
+		}
+		if len(out) == 0 {
+			return out, "所选账号里没有可签到的账号（国内版签到或华为 CodeArts 积分）。"
+		}
+		return out, ""
+	}
 	want, empty := "", ""
 	switch action {
-	case "checkin":
-		want, empty = realm.CN, "所选账号里没有可签到的国内版账号（签到仅支持非企业国内版）。"
 	case "daily_chat", "daily_chat_web":
 		want, empty = realm.Intl, "所选账号里没有国际版账号；每日活跃只支持国际版。"
 	default:

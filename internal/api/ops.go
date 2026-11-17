@@ -11,12 +11,15 @@ import (
 	"wb2api/internal/activity"
 	"wb2api/internal/agents"
 	"wb2api/internal/atrest"
+	"wb2api/internal/codeartsync"
 	"wb2api/internal/gateway/openai"
 	"wb2api/internal/jobs"
 	"wb2api/internal/ops"
 	"wb2api/internal/pool"
 	"wb2api/internal/quota"
+	"wb2api/internal/realm"
 	"wb2api/internal/scheduler"
+	"wb2api/internal/store/accounts"
 )
 
 // Prober tests an account with a real request.
@@ -53,6 +56,11 @@ func (a *Accounts) upstreamAction(b batchReq) (jobs.Func, error) {
 			case "refresh_credits":
 				return resultErr(a.Ops.FetchCredits(ctx, acc))
 			case "checkin":
+				// The two channels have unrelated check-in APIs: the Huawei
+				// channel claims credit campaigns, WorkBuddy claims its own.
+				if realm.IsCodeArts(acc.Record().Realm) {
+					return a.checkinCodeArts(ctx, acc)
+				}
 				return resultErr(a.Ops.Checkin(ctx, acc, "manual"))
 			case "daily_chat":
 				return resultErr(a.Ops.DailyChat(ctx, acc, "manual"))
@@ -87,6 +95,16 @@ type Operations struct {
 	Scanner   *quota.Scanner
 	AtRest    *atrest.Keyring
 	Agents    *agents.Manager
+	// Persist stores a changed account record (used by the channel check-in).
+	Persist func(*accounts.Record) error
+	// CodeArts is the Huawei Cloud channel's operations service (nil = off).
+	CodeArts *codeartsync.Service
+	// CodeArtsLoginBase overrides the snap-access root used by the ticket poll
+	// (tests, mock).
+	CodeArtsLoginBase string
+
+	// codeartsLogins holds in-flight CodeArts browser logins.
+	codeartsLogins codeartsLogins
 }
 
 func (o *Operations) account(w http.ResponseWriter, r *http.Request) *pool.Account {
@@ -119,6 +137,28 @@ func (o *Operations) action(w http.ResponseWriter, r *http.Request) {
 	case "credits":
 		res = o.Ops.FetchCredits(ctx, acc)
 	case "checkin":
+		// The two channels have unrelated check-in APIs: the Huawei channel
+		// claims credit campaigns, WorkBuddy claims its own.
+		if realm.IsCodeArts(acc.Record().Realm) {
+			out := map[string]any{"ok": false, "msg": "", "error": ""}
+			if o.CodeArts == nil {
+				out["error"] = "CodeArts 渠道未启用"
+				out["msg"] = out["error"]
+				res = out
+				break
+			}
+			ok, msg, err := o.CodeArts.Checkin(ctx, acc)
+			out["ok"] = ok && err == nil
+			out["msg"] = msg
+			if err != nil {
+				out["error"] = err.Error()
+				if msg == "" {
+					out["msg"] = err.Error()
+				}
+			}
+			res = out
+			break
+		}
 		res = o.Ops.Checkin(ctx, acc, "manual")
 	case "daily-chat":
 		res = o.Ops.DailyChat(ctx, acc, "manual")
@@ -146,6 +186,15 @@ func (o *Operations) loginStart(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
+	if realm.IsCodeArts(in.Realm) {
+		res, err := o.startCodeArtsLogin()
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
+		return
+	}
 	res, err := o.Ops.LoginStart(r.Context(), in.Realm, in.Platform)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
@@ -155,12 +204,22 @@ func (o *Operations) loginStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (o *Operations) loginPoll(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, o.Ops.LoginPoll(r.Context(), r.URL.Query().Get("state")))
+	state := strings.TrimSpace(r.URL.Query().Get("state"))
+	if _, ok := o.codeartsLogins.get(state); ok {
+		writeJSON(w, http.StatusOK, o.pollCodeArtsLogin(context.WithoutCancel(r.Context()), state))
+		return
+	}
+	writeJSON(w, http.StatusOK, o.Ops.LoginPoll(r.Context(), state))
 }
 
 func (o *Operations) loginCancel(w http.ResponseWriter, r *http.Request) {
 	var in struct{ State string }
 	if !decode(w, r, &in) {
+		return
+	}
+	if _, ok := o.codeartsLogins.get(in.State); ok {
+		o.codeartsLogins.drop(in.State)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": o.Ops.CancelLogin(in.State)})
@@ -277,6 +336,7 @@ func (o *Operations) Register(mux *http.ServeMux, wrap func(http.Handler) http.H
 	mux.Handle("POST /api/v2/accounts/login/start", h(o.loginStart))
 	mux.Handle("GET /api/v2/accounts/login/poll", h(o.loginPoll))
 	mux.Handle("POST /api/v2/accounts/login/cancel", h(o.loginCancel))
+	mux.Handle("POST /api/v2/codearts/models/refresh", h(o.codeartsModelsRefresh))
 	mux.Handle("POST /api/v2/accounts/import", h(o.importAccounts))
 	mux.Handle("GET /api/v2/accounts/export", h(o.exportAccounts))
 	mux.Handle("GET /api/v2/activity", h(o.activityList))

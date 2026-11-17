@@ -6,13 +6,92 @@ package realm
 
 import (
 	"os"
+	"strconv"
 	"strings"
 )
 
 const (
 	Intl = "intl"
 	CN   = "cn"
+	// CodeArts is the Huawei Cloud CodeArts Agent channel. It is a channel,
+	// not a second region: snap-access has one commercial region (cn-north-4),
+	// so the value names the vendor rather than an exit of one vendor.
+	CodeArts = "codearts"
 )
+
+// CodeArtsChatBase is the snap-access endpoint of the CodeArts Agent channel.
+// It lives here (not in the client package) so identity.Endpoint can resolve a
+// channel without importing its HTTP client.
+const CodeArtsChatBase = "https://snap-access.cn-north-4.myhuaweicloud.com"
+
+// Family groups realms by upstream vendor. Every WorkBuddy-only behaviour
+// (check-in tasks, growth tasks, identity headers, product catalogue) is gated
+// on Family instead of a realm string comparison, so a new channel never
+// silently inherits WorkBuddy behaviour.
+func Family(r string) string {
+	if r == CodeArts {
+		return "codearts"
+	}
+	return "workbuddy"
+}
+
+// SameFamily reports whether two realms are served by the same upstream; a
+// model-exclusivity verdict only applies inside one family.
+func SameFamily(a, b string) bool { return Family(a) == Family(b) }
+
+// IsCodeArts reports whether r is the Huawei Cloud CodeArts channel.
+func IsCodeArts(r string) bool { return r == CodeArts }
+
+// DefaultCodeArtsInflight is how many turns one CodeArts account may run at
+// once. The channel tolerates roughly three parallel chats; beyond that the
+// upstream starts rejecting or serialising. WB_CODEARTS_INFLIGHT overrides it
+// (0 or negative removes the channel ceiling).
+const DefaultCodeArtsInflight = 3
+
+// CodeArtsInflight resolves the channel's per-account ceiling.
+func CodeArtsInflight() int {
+	raw := strings.TrimSpace(os.Getenv("WB_CODEARTS_INFLIGHT"))
+	if raw == "" {
+		return DefaultCodeArtsInflight
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return DefaultCodeArtsInflight
+	}
+	return n
+}
+
+// InflightFor narrows a global per-account concurrency limit with the
+// channel's own ceiling. WorkBuddy channels inherit the global value; a limit
+// of 0 means "unlimited" on either side.
+//
+// The two vendors do not share a capacity model: one WorkBuddy account can run
+// a dozen turns, while a CodeArts account starts pushing back at three. One
+// global number would either throttle WorkBuddy or overrun CodeArts.
+func InflightFor(r string, global int) int {
+	if !IsCodeArts(r) {
+		return global
+	}
+	ch := CodeArtsInflight()
+	if ch <= 0 {
+		return global
+	}
+	if global <= 0 || ch < global {
+		return ch
+	}
+	return global
+}
+
+// Valid reports whether r is a known channel. Callers that persist or accept a
+// realm from a client should reject unknown values instead of letting
+// realm.Get fall back to the international WorkBuddy exit.
+func Valid(r string) bool {
+	switch strings.ToLower(strings.TrimSpace(r)) {
+	case Intl, CN, CodeArts:
+		return true
+	}
+	return false
+}
 
 // Config describes one upstream exit.
 type Config struct {
@@ -45,8 +124,22 @@ func CNChatBase() (base string, ignored string) {
 }
 
 // Get returns the config for a realm; unknown realms fall back to Intl, as in
-// the legacy get_realm_config.
+// the legacy get_realm_config. A caller that accepts a realm from a client must
+// validate it with Valid first: the fallback is a migration rule for old
+// account files, not a routing decision.
 func Get(r string) Config {
+	if r == CodeArts {
+		return Config{
+			Name:            "华为云 CodeArts (China)",
+			ChatUpstream:    CodeArtsChatBase,
+			BillingUpstream: "https://codearts.huaweicloud.com",
+			Origin:          "https://codearts.huaweicloud.com",
+			Domain:          "",
+			InfoFilename:    "codearts-auth.json",
+			CacheDirName:    ".codearts",
+			HasCheckin:      true,
+		}
+	}
 	if r == CN {
 		base, _ := CNChatBase()
 		return Config{

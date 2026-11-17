@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -33,6 +34,7 @@ import (
 	"wb2api/internal/api"
 	"wb2api/internal/atrest"
 	"wb2api/internal/catalog"
+	"wb2api/internal/codeartsync"
 	"wb2api/internal/events"
 	"wb2api/internal/gateway/leak"
 	"wb2api/internal/gateway/openai"
@@ -47,6 +49,7 @@ import (
 	"wb2api/internal/pool"
 	"wb2api/internal/pricing"
 	"wb2api/internal/quota"
+	"wb2api/internal/realm"
 	"wb2api/internal/realmswitch"
 	"wb2api/internal/refresh"
 	"wb2api/internal/sched"
@@ -226,7 +229,7 @@ func main() {
 			if latest, loadErr := pgaccounts.LoadOne(reloadCtx, pgDB.Pool, rec.UID); loadErr == nil && accountPool != nil {
 				accountPool.ApplyChanges([]*accounts.Record{latest}, nil)
 				if a := accountPool.Get(latest.UID); a != nil {
-					a.SetMaxInflight(*perAccount)
+					a.SetMaxInflight(realm.InflightFor(latest.Realm, *perAccount))
 				}
 			} else if errors.Is(loadErr, pgx.ErrNoRows) && accountPool != nil {
 				accountPool.ApplyChanges(nil, []string{rec.UID})
@@ -257,9 +260,11 @@ func main() {
 	p := pool.New(recs)
 	accountPool = p
 	p.SetTopK(*topK)
-	if *perAccount > 0 {
+	if *perAccount > 0 || realm.InflightFor(realm.CodeArts, 0) > 0 {
+		// A channel ceiling applies even when the global limit is off: the two
+		// vendors do not share a capacity model.
 		for _, a := range p.All() {
-			a.SetMaxInflight(*perAccount)
+			a.SetMaxInflight(realm.InflightFor(a.Realm, *perAccount))
 		}
 	}
 	var st *settings.Store
@@ -392,7 +397,7 @@ func main() {
 						}
 						for _, rec := range latest {
 							if a := p.Get(rec.UID); a != nil {
-								a.SetMaxInflight(*perAccount)
+								a.SetMaxInflight(realm.InflightFor(rec.Realm, *perAccount))
 							}
 						}
 						accountCursor = next
@@ -645,7 +650,18 @@ func main() {
 		Leader: isLeader,
 		Hold:   func(realm string) time.Duration { return h.RiskHold(realm) },
 	}
-	(&api.Operations{Ops: opsClient, Pool: p, Prober: h, Scheduler: sched, Activity: activityLog, Scanner: scanner, AtRest: keyring, Agents: agentMgr}).Register(mux, auth.Require)
+	// The Huawei Cloud channel keeps its own credentials, catalogue and check-in.
+	// Its service is shared by the panel, the scheduler and the scan below so
+	// the three never implement the same call twice.
+	codeArtsSvc := &codeartsync.Service{
+		Pool: p, Persist: persist, ClaimBenefit: codeArtsClaimBenefit(), Log: log,
+	}
+	sched.Channel = codeArtsSvc
+	accountsAPI.CodeArts = codeArtsSvc
+	background.start(func() {
+		(&codeartsync.Scanner{Service: codeArtsSvc}).Run(bg)
+	})
+	(&api.Operations{Ops: opsClient, Pool: p, Prober: h, Scheduler: sched, Activity: activityLog, Scanner: scanner, AtRest: keyring, Agents: agentMgr, Persist: persist, CodeArts: codeArtsSvc}).Register(mux, auth.Require)
 	(&api.Settings{Store: st, Pool: p, Realm: realmSw, Guards: h.Guards, Catalog: cat, Ops: opsGate}).Register(mux, auth.Require)
 	checker := &updates.Checker{Current: version, Enabled: st.UpdateCheckEnabled, Store: st, Log: log}
 	(&api.Updates{Checker: checker}).Register(mux, auth.Require)
@@ -752,4 +768,16 @@ func refreshPricingLoop(life context.Context, s *pricing.Store, log *slog.Logger
 			refresh()
 		}
 	}
+}
+
+// codeArtsClaimBenefit reports whether model discovery should claim the
+// free-plan (benefit) models first. The claim is idempotent upstream; it is on
+// by default because an unclaimed benefit model answers InferHub.4004.200 on the
+// first chat request. WB_CODEARTS_BENEFIT_CLAIM=0 turns the write off.
+func codeArtsClaimBenefit() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("WB_CODEARTS_BENEFIT_CLAIM"))) {
+	case "0", "false", "off", "no":
+		return false
+	}
+	return true
 }

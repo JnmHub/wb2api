@@ -15,10 +15,12 @@ import (
 	"wb2api/internal/gateway/ratelimit"
 	"wb2api/internal/jsonx"
 	"wb2api/internal/pool"
+	"wb2api/internal/realm"
 	"wb2api/internal/risk"
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/store/settings"
 	"wb2api/internal/upstream"
+	"wb2api/internal/upstream/codearts"
 	"wb2api/internal/upstream/identity"
 )
 
@@ -314,7 +316,7 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 				}
 				if pinned != nil {
 					acc = pinned
-					if acc.AtCapacity(h.AccountInflight) {
+					if acc.AtCapacity(h.accountLimit(acc)) {
 						q.at.allFull = true
 						q.at.full = map[string]*pool.Account{acc.UID: acc}
 						if !q.at.waited && h.AccountWait > 0 {
@@ -340,7 +342,7 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 					// Local capacity is checked atomically after selection, so a
 					// concurrently saturated account may not have been recorded.
 					if pinned == nil {
-						for _, full := range h.Pool.Full(q.realm, q.model, h.AccountInflight) {
+						for _, full := range h.Pool.Full(q.realm, q.model, h.realmLimit(q.realm)) {
 							if _, tried := q.at.tried[full.UID]; tried {
 								continue
 							}
@@ -381,7 +383,7 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 			}
 			q.at.tried[acc.UID] = struct{}{}
 			q.at.lastUID = acc.UID
-			if !slotHeld && h.Limiter != nil && h.AccountInflight > 0 {
+			if !slotHeld && h.Limiter != nil && h.accountLimit(acc) > 0 {
 				var rel func()
 				var ok bool
 				var lerr error
@@ -437,7 +439,7 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 			}
 			localRelease, localOK := func() {}, true
 			if !slotHeld { // the bounded wait already reserved both slots
-				localRelease, localOK = acc.TryAcquire(h.AccountInflight)
+				localRelease, localOK = acc.TryAcquire(h.accountLimit(acc))
 			}
 			if !localOK {
 				release()
@@ -602,10 +604,10 @@ type result struct {
 
 func (h *Handler) chatURL(acc *pool.Account, product string) string {
 	if h.UpstreamOverride != "" {
-		return strings.TrimRight(h.UpstreamOverride, "/") + ChatPath
+		return strings.TrimRight(h.UpstreamOverride, "/") + chatPathFor(acc.Realm)
 	}
 	base, _ := identity.Endpoint(acc.Realm, product)
-	return base + ChatPath
+	return base + chatPathFor(acc.Realm)
 }
 
 func egressKey(rawURL, proxy string) string {
@@ -620,9 +622,9 @@ func egressKey(rawURL, proxy string) string {
 func (h *Handler) try(q *request, acc *pool.Account) result {
 	rec := acc.Record()
 	product := identity.NormalizeProduct(rec.Product)
-	enc, gz := q.bodyFor(product)
+	out := h.buildOutbound(q, rec, product)
 
-	hdrs := h.chatHeaders(q, rec, product, gz)
+	hdrs := h.chatHeaders(q, rec, product, out)
 	cfg := h.Settings.UpstreamConfig()
 
 	ctx, cancel := context.WithCancel(q.r.Context())
@@ -635,7 +637,7 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 	target := h.chatURL(acc, product)
 	resp, err := h.Up.Wire(acc.UID, acc.Proxy()).Do(ctx, upstream.Request{
 		Method: http.MethodPost, URL: target, Headers: hdrs,
-		Body: enc.wire(gz), HeaderTimeout: cfg.HeaderTimeout,
+		Body: out.body, HeaderTimeout: cfg.HeaderTimeout,
 	})
 	if traceTimings {
 		h.logger().Info("trace", "pre_ms", tDo.Sub(q.start).Milliseconds(), "upstream_headers_ms", time.Since(tDo).Milliseconds())
@@ -696,10 +698,43 @@ func (h *Handler) persistRecord(rec *accounts.Record) {
 	}
 }
 
+// outbound is one attempt's wire body. gz only matters for the WorkBuddy
+// channels: a CodeArts request signs the payload hash, so its body is never
+// compressed and the hash is computed over exactly what is sent.
+type outbound struct {
+	body []byte
+	gz   bool
+}
+
+// chatPathFor returns the chat endpoint of an upstream channel.
+func chatPathFor(r string) string {
+	if realm.IsCodeArts(r) {
+		return codearts.ChatPath
+	}
+	return ChatPath
+}
+
+// buildOutbound renders the body of one attempt for the account's channel.
+func (h *Handler) buildOutbound(q *request, rec *accounts.Record, product string) outbound {
+	if realm.IsCodeArts(rec.Realm) {
+		body, err := codearts.PrepareBody(q.shaped, q.model, identity.ConversationIDFor(rec.UID, q.sessionKey))
+		if err != nil {
+			return outbound{body: []byte("{}")}
+		}
+		return outbound{body: body}
+	}
+	enc, gz := q.bodyFor(product)
+	return outbound{body: enc.wire(gz), gz: gz}
+}
+
 // chatHeaders builds the outbound headers of one attempt for the account's
 // identity: the conversation id is stable per (account, session key), the turn
 // request id is shared by every retry of one user turn.
-func (h *Handler) chatHeaders(q *request, rec *accounts.Record, product string, gz bool) identity.Headers {
+func (h *Handler) chatHeaders(q *request, rec *accounts.Record, product string, out outbound) identity.Headers {
+	if realm.IsCodeArts(rec.Realm) {
+		return codearts.ChatHeaders(codearts.CredentialOf(rec), rec.AccessToken, q.turnID, "",
+			codearts.IsBenefitModel(rec, q.model), out.body)
+	}
 	conv := ""
 	if product == identity.ProductVSCode {
 		conv = q.vscodeConv
@@ -714,7 +749,7 @@ func (h *Handler) chatHeaders(q *request, rec *accounts.Record, product string, 
 		},
 		DeviceToken: h.Settings.ResolveDeviceToken(),
 	})
-	if gz {
+	if out.gz {
 		hdrs.Set("Content-Encoding", identity.RequestContentEnc)
 	}
 	return hdrs
@@ -805,6 +840,22 @@ func (h *Handler) classify(q *request, acc *pool.Account, status int, body []byt
 	acc.NoteResult(false)
 	now := time.Now()
 	q.at.kind, q.at.lastStatus, q.at.lastBody, q.at.lastErr = failHTTP, status, body, nil
+	if realm.IsCodeArts(acc.Realm) {
+		// A rejected request body is the client's problem: no account rotation
+		// and no cooldown, or one malformed call would park the whole channel.
+		if codearts.IsFatalRequestError(body) {
+			return result{kind: stop, status: http.StatusBadRequest, body: body}
+		}
+		// A model the account is not registered for (or a benefit model that
+		// was never claimed) is an account-capability fact: park the model on
+		// this account, keep rotating instead of cooling the account.
+		if codearts.IsModelAccessError(body) {
+			if rec, isNew := acc.NoteModelError(q.model, time.Time{}, 30*time.Minute, "codearts model access", truncate(string(body), 200), now); isNew && rec != nil {
+				h.persistRecord(rec)
+			}
+			return result{kind: retry, status: status, body: body}
+		}
+	}
 	switch {
 	case status == http.StatusTooManyRequests:
 		detail := truncate(string(body), 600)

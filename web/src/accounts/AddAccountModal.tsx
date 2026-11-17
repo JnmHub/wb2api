@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Alert, Button, Input, Segmented, Select, Space, Typography } from 'antd'
-import { get, post, type LoginPoll, type LoginStart } from '../api'
+import { get, post, type LoginPoll, type LoginStart, type Realm } from '../api'
 import { CopyButton, Modal } from '../components/Modal'
 
 /**
@@ -11,7 +11,7 @@ import { CopyButton, Modal } from '../components/Modal'
  */
 export function AddAccountModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient()
-  const [realm, setRealm] = useState<'intl' | 'cn'>('intl')
+  const [realm, setRealm] = useState<Realm>('intl')
   const [platform, setPlatform] = useState('CLI')
   const start = useMutation({
     mutationFn: () => post<LoginStart>('/api/v2/accounts/login/start', { realm, platform }),
@@ -45,33 +45,38 @@ export function AddAccountModal({ onClose }: { onClose: () => void }) {
         {!state && (
           <>
             <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
-              用浏览器完成 WorkBuddy 登录后，账号会自动写进网关。国内版首次登录会顺带签到一次。
+              {realm === 'codearts'
+                ? '用华为云账号完成登录后，网关会自动领取 STS 凭据、写入账号，并拉取一次模型目录。'
+                : '用浏览器完成 WorkBuddy 登录后，账号会自动写进网关。国内版首次登录会顺带签到一次。'}
             </Typography.Paragraph>
             <div>
-              <Typography.Text type="secondary">区域</Typography.Text>
+              <Typography.Text type="secondary">渠道</Typography.Text>
               <div style={{ marginTop: 4 }}>
                 <Segmented
                   value={realm}
-                  onChange={(v) => setRealm(v as 'intl' | 'cn')}
+                  onChange={(v) => setRealm(v as Realm)}
                   options={[
                     { value: 'intl', label: '国际版' },
                     { value: 'cn', label: '国内版' },
+                    { value: 'codearts', label: '华为 CodeArts' },
                   ]}
                 />
               </div>
             </div>
-            <div>
-              <Typography.Text type="secondary">登录身份</Typography.Text>
-              <Select
-                style={{ width: '100%' }}
-                value={platform}
-                onChange={setPlatform}
-                options={[
-                  { value: 'CLI', label: 'CLI（默认）' },
-                  { value: 'VSCode', label: 'VSCode 扩展' },
-                ]}
-              />
-            </div>
+            {realm !== 'codearts' && (
+              <div>
+                <Typography.Text type="secondary">登录身份</Typography.Text>
+                <Select
+                  style={{ width: '100%' }}
+                  value={platform}
+                  onChange={setPlatform}
+                  options={[
+                    { value: 'CLI', label: 'CLI（默认）' },
+                    { value: 'VSCode', label: 'VSCode 扩展' },
+                  ]}
+                />
+              </div>
+            )}
             {start.isError && <Alert type="error" showIcon message={String(start.error)} />}
             <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
               <Button onClick={onClose}>取消</Button>

@@ -25,7 +25,8 @@ func (h *Handler) pickAccount(q *request) *pool.Account {
 		for _, a := range candidates {
 			n, known := counts[a.UID]
 			_, denied := q.at.full[a.UID]
-			full := a.AtCapacity(h.AccountInflight) || (known && h.AccountInflight > 0 && n >= h.AccountInflight)
+			limit := h.accountLimit(a)
+			full := a.AtCapacity(limit) || (known && limit > 0 && n >= limit)
 			// Unknown shared occupancy must not erase a concrete atomic denial.
 			if full || (denied && !known) {
 				base[a.UID] = struct{}{}

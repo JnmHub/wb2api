@@ -9,8 +9,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
+
+	"wb2api/internal/realm"
 )
 
 // RefreshInterval bounds how often a database-backed switch re-reads its value.
@@ -91,6 +94,7 @@ func (s *Switch) refresh() {
 
 // Set switches and persists; unknown values are refused.
 func (s *Switch) Set(realm string) bool {
+	realm = strings.ToLower(strings.TrimSpace(realm))
 	if !valid(realm) {
 		return false
 	}
@@ -113,11 +117,12 @@ func (s *Switch) Set(realm string) bool {
 	return true
 }
 
-func valid(realm string) bool { return realm == "intl" || realm == "cn" }
+func valid(r string) bool { return realm.Valid(r) }
 
-func normalize(realm string) string {
-	if valid(realm) {
-		return realm
+func normalize(r string) string {
+	r = strings.ToLower(strings.TrimSpace(r))
+	if valid(r) {
+		return r
 	}
-	return "intl"
+	return realm.Intl
 }

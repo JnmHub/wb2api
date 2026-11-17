@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"wb2api/internal/pool"
 	"wb2api/internal/realm"
 	"wb2api/internal/store/settings"
+	"wb2api/internal/upstream/codearts"
 )
 
 // Info serves the read-only gateway endpoints: /v1/models (and /models),
@@ -47,9 +49,9 @@ func (i *Info) requestRealm(r *http.Request, key *settings.APIKey) string {
 		bound = key.Realm
 	}
 	for _, c := range []string{bound, r.Header.Get("X-Realm"), r.URL.Query().Get("realm")} {
-		switch c {
-		case realm.Intl, realm.CN, "all":
-			return c
+		switch strings.ToLower(strings.TrimSpace(c)) {
+		case realm.Intl, realm.CN, realm.CodeArts, "all":
+			return strings.ToLower(strings.TrimSpace(c))
 		}
 	}
 	if p := PinnedFrom(r.Context()); p != nil {
@@ -106,7 +108,15 @@ func (i *Info) models(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rl := i.requestRealm(r, boundKey)
-	data, meta := i.Catalog.Entries(r.Context(), rl)
+	var data []*jsonx.Obj
+	var meta catalog.Meta
+	if realm.IsCodeArts(rl) {
+		// The WorkBuddy catalogue describes another vendor's models; a
+		// CodeArts channel advertises what its accounts declare they can serve.
+		data, meta = i.codeartsModels(rl), catalog.Meta{Source: "codearts"}
+	} else {
+		data, meta = i.Catalog.Entries(r.Context(), rl)
+	}
 	list := make([]any, 0, len(data))
 	pinned := PinnedFrom(r.Context())
 	filterByKey := i.Chat != nil && i.Chat.Settings != nil && i.Chat.Settings.FilterModelsByKey()
@@ -174,6 +184,47 @@ func (i *Info) models(w http.ResponseWriter, r *http.Request) {
 	}
 	out.Set("catalog", m)
 	writeObj(w, r, http.StatusOK, out)
+}
+
+// codeartsModels builds /v1/models for a CodeArts channel from what the pool's
+// accounts declare (account file: extra.codearts.models). Nothing is invented:
+// advertising a model the upstream never registered only earns
+// InferHub.002002009 on the first real call.
+func (i *Info) codeartsModels(rl string) []*jsonx.Obj {
+	seen := map[string]bool{}
+	benefit := map[string]bool{}
+	var ids []string
+	if i.Chat != nil && i.Chat.Pool != nil {
+		for _, a := range i.Chat.Pool.All() {
+			if a == nil || a.Realm != rl {
+				continue
+			}
+			rec := a.Record()
+			for _, id := range codearts.ModelsOf(rec) {
+				if !seen[id] {
+					seen[id] = true
+					ids = append(ids, id)
+				}
+				if codearts.IsBenefitModel(rec, id) {
+					benefit[id] = true
+				}
+			}
+		}
+	}
+	sort.Strings(ids)
+	out := make([]*jsonx.Obj, 0, len(ids))
+	for _, id := range ids {
+		e := jsonx.NewObj()
+		e.Set("id", id)
+		e.Set("object", "model")
+		e.Set("created", 0)
+		e.Set("owned_by", "codearts")
+		if benefit[id] {
+			e.Set("benefit", true)
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // modelReachable reports whether some account of this realm — honouring both

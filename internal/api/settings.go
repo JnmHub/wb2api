@@ -89,7 +89,7 @@ func (s *Settings) snapshot() map[string]any {
 		slots = []settings.ProxySlot{}
 	}
 	out := map[string]any{
-		"realm":                map[string]any{"current": s.Realm.Get(), "options": []string{"intl", "cn"}},
+		"realm":                map[string]any{"current": s.Realm.Get(), "options": []string{"intl", "cn", "codearts"}},
 		"keys":                 keys,
 		"auth_required":        !s.Store.AuthDisabled() && len(s.Store.APIKeys(false)) > 0,
 		"limits":               s.Store.Limits(),
@@ -208,7 +208,7 @@ func (s *Settings) patch(w http.ResponseWriter, r *http.Request) {
 	}
 	fail := func(err error) { writeErr(w, http.StatusBadRequest, err.Error()) }
 	if p.Realm != nil && !s.Realm.Set(*p.Realm) {
-		writeErr(w, http.StatusBadRequest, "realm must be intl or cn, and the switch must be persisted")
+		writeErr(w, http.StatusBadRequest, "realm must be intl, cn or codearts, and the switch must be persisted")
 		return
 	}
 	for k, v := range p.Switches {

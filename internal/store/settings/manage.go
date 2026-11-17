@@ -48,9 +48,9 @@ func (in KeyInput) validate() error {
 	}
 	if in.Realm != nil {
 		switch strings.ToLower(strings.TrimSpace(*in.Realm)) {
-		case "", "intl", "cn":
+		case "", "intl", "cn", "codearts":
 		default:
-			return errors.New("realm must be intl, cn or empty")
+			return errors.New("realm must be intl, cn, codearts or empty")
 		}
 	}
 	if in.ConcurrencyLimit != nil && *in.ConcurrencyLimit < 0 {

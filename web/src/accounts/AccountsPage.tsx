@@ -24,6 +24,7 @@ import {
   type Account,
   type AccountPage,
   type AccountSummary,
+  type Realm,
   type SchedulerSummary,
   type Status,
 } from '../api'
@@ -40,7 +41,7 @@ export type StatusFilter = Status | 'model_cooling' | ''
 
 export interface Filters {
   q: string
-  realm: '' | 'intl' | 'cn'
+  realm: '' | Realm
   status: StatusFilter
   sort: string
   order: 'asc' | 'desc'
@@ -145,7 +146,9 @@ export function AccountsPage() {
       title: '区域',
       dataIndex: 'realm',
       width: 96,
-      render: (r: Account['realm']) => <Tag color={r === 'cn' ? 'volcano' : 'geekblue'}>{realmLabel[r] ?? r}</Tag>,
+      render: (r: Account['realm']) => (
+        <Tag color={r === 'cn' ? 'volcano' : r === 'codearts' ? 'gold' : 'geekblue'}>{realmLabel[r] ?? r}</Tag>
+      ),
     },
     {
       title: '状态',
@@ -339,9 +342,10 @@ export function AccountsPage() {
             style={{ width: 128 }}
             onChange={(v) => setFilters((f) => ({ ...f, realm: v }))}
             options={[
-              { value: '', label: '全部区域' },
+              { value: '', label: '全部渠道' },
               { value: 'intl', label: '国际版' },
               { value: 'cn', label: '国内版' },
+              { value: 'codearts', label: '华为 CodeArts' },
             ]}
           />
           <Select

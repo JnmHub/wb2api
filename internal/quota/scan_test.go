@@ -118,3 +118,25 @@ func TestScanOffWhenNoModelsAreWatched(t *testing.T) {
 		t.Fatalf("sent=%d calls=%d", sent, pr.calls)
 	}
 }
+
+// The watched-model scan is a WorkBuddy concept: a CodeArts account must never
+// be probed with those model ids.
+func TestScanSkipsOtherChannels(t *testing.T) {
+	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	pr := &fakeScanProber{ok: true}
+	s := &Scanner{Dir: t.TempDir(), Now: func() time.Time { return now }, Prober: pr,
+		Models: func() []string { return []string{"m1"} }}
+	recs := []*accounts.Record{
+		accounts.FromMap(map[string]any{"uid": "wb-1", "accessToken": "t", "realm": "intl", "enabled": true}, "", now),
+		accounts.FromMap(map[string]any{"uid": "hw-1", "accessToken": "t", "realm": "codearts", "enabled": true}, "", now),
+	}
+	p := pool.New(recs)
+	s.RunDue(context.Background(), p, true)
+	rows := s.Snapshot()
+	if len(rows) != 1 || rows[0].UID != "wb-1" {
+		t.Fatalf("rows = %+v, want only the WorkBuddy account", rows)
+	}
+	if pr.calls > 1 {
+		t.Fatalf("probe calls = %d", pr.calls)
+	}
+}

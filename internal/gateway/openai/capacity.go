@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"wb2api/internal/pool"
+	"wb2api/internal/realm"
 )
 
 // OccupancyLimiter supplies hints only; every dispatch must still atomically
@@ -72,10 +73,29 @@ func (h *Handler) admissionFailed(q *request) bool {
 	return true
 }
 
+// accountLimit is the per-account concurrency ceiling that applies to acc: the
+// global setting narrowed by the account's channel. A CodeArts account pushes
+// back after a few parallel turns, a WorkBuddy one does not, so a single global
+// number cannot serve both.
+func (h *Handler) accountLimit(acc *pool.Account) int {
+	if acc != nil {
+		if rec := acc.Record(); rec != nil {
+			return realm.InflightFor(rec.Realm, h.AccountInflight)
+		}
+	}
+	return h.AccountInflight
+}
+
+// realmLimit is accountLimit for a realm-wide query: every account of one realm
+// belongs to the same channel.
+func (h *Handler) realmLimit(r string) int {
+	return realm.InflightFor(r, h.AccountInflight)
+}
+
 func (h *Handler) loadOccupancy(q *request, candidates []*pool.Account, fresh bool) map[string]int {
 	h.startAdmission(q)
 	lim, ok := h.Limiter.(OccupancyLimiter)
-	if !ok || h.AccountInflight <= 0 {
+	if !ok || h.realmLimit(q.realm) <= 0 {
 		return nil
 	}
 	s := q.at.capacity
@@ -137,7 +157,7 @@ func (h *Handler) noteAccountFull(q *request, a *pool.Account) {
 	}
 	q.at.full[a.UID] = a
 	if q.at.capacity.counts != nil {
-		q.at.capacity.counts[a.UID] = h.AccountInflight
+		q.at.capacity.counts[a.UID] = h.accountLimit(a)
 	}
 	q.at.capacity.refresh = true
 }
@@ -151,13 +171,14 @@ func (h *Handler) acquireAccount(q *request, a *pool.Account) (func(), bool, err
 	var rel func()
 	var ok bool
 	var err error
+	limit := h.accountLimit(a)
 	if lim, bounded := h.Limiter.(BoundedInflightLimiter); bounded {
-		rel, ok, err = lim.AcquireWithin(q.r.Context(), a.UID, h.AccountInflight, q.turnID, budget)
+		rel, ok, err = lim.AcquireWithin(q.r.Context(), a.UID, limit, q.turnID, budget)
 	} else {
 		// Compatibility: the legacy interface cannot separate admission I/O
 		// from renewal lifetime. Keep its original request context and fence
 		// late success rather than canceling an admitted lease prematurely.
-		rel, ok, err = h.Limiter.Acquire(q.r.Context(), a.UID, h.AccountInflight, q.turnID)
+		rel, ok, err = h.Limiter.Acquire(q.r.Context(), a.UID, limit, q.turnID)
 	}
 	if q.r.Context().Err() != nil || (!q.at.admissionDeadline.IsZero() && !time.Now().Before(q.at.admissionDeadline)) {
 		if rel != nil {

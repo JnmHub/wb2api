@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"wb2api/internal/pool"
+	"wb2api/internal/realm"
 )
 
 // Active quota scan: probes the watched models every few hours so a fully used
@@ -209,6 +210,12 @@ func (s *Scanner) seed(p *pool.Pool) {
 			if !rec.IsEnabled() || rec.AccessToken == "" {
 				continue
 			}
+			// The watched models and their quota windows belong to the WorkBuddy
+			// channels; probing a CodeArts account with those ids would only
+			// earn an InferHub 404 and skew the board.
+			if realm.Family(rec.Realm) != "workbuddy" {
+				continue
+			}
 			k := key(rec.UID, model)
 			if _, ok := s.rows[k]; ok {
 				continue
@@ -251,6 +258,9 @@ func (s *Scanner) RunDue(ctx context.Context, p *pool.Pool, force bool) int {
 		acc := p.Get(r.UID)
 		if acc == nil {
 			continue // keep the row: the account may come back
+		}
+		if realm.Family(acc.Record().Realm) != "workbuddy" {
+			continue
 		}
 		if s.Windows != nil && s.Windows.Has(r.UID, r.Model) {
 			continue // the 429 window owns this line now

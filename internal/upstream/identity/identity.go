@@ -99,6 +99,11 @@ func NormalizeProduct(v string) string {
 // product.
 func Endpoint(r, product string) (base, domain string) {
 	product = NormalizeProduct(product)
+	// CodeArts is a separate channel with its own API shape; it has no
+	// WorkBuddy "domain" header at all.
+	if r == realm.CodeArts {
+		return realm.CodeArtsChatBase, ""
+	}
 	if r == realm.CN {
 		cnBase, _ := realm.CNChatBase()
 		if product == ProductVSCode {

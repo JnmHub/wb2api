@@ -314,13 +314,13 @@ func (h *Handler) openFollowUp(q *request, acc *pool.Account, chat *jsonx.Obj) (
 	h.reshape(&q2)
 	rec := acc.Record()
 	product := identity.NormalizeProduct(rec.Product)
-	enc, gz := q2.bodyFor(product)
-	hdrs := h.chatHeaders(&q2, rec, product, gz)
+	out := h.buildOutbound(&q2, rec, product)
+	hdrs := h.chatHeaders(&q2, rec, product, out)
 	cfg := h.Settings.UpstreamConfig()
 	ctx, cancel := context.WithCancel(q.r.Context())
 	beginAttempt(ctx)
 	resp, err := h.Up.Wire(acc.UID, acc.Proxy()).Do(ctx, upstream.Request{
-		Method: http.MethodPost, URL: h.chatURL(acc, product), Headers: hdrs, Body: enc.wire(gz),
+		Method: http.MethodPost, URL: h.chatURL(acc, product), Headers: hdrs, Body: out.body,
 		HeaderTimeout: cfg.HeaderTimeout,
 	})
 	if err != nil {

@@ -51,14 +51,14 @@ func (h *Handler) ProbeModel(ctx context.Context, acc *pool.Account, model strin
 	q.shaped = shape.Build(payload, shape.Options{Catalog: h.Catalog})
 	q.enc = map[string]*encoded{}
 	product := identity.NormalizeProduct(rec.Product)
-	enc, gz := q.bodyFor(product)
-	hdrs := h.chatHeaders(q, rec, product, gz)
+	out := h.buildOutbound(q, rec, product)
+	hdrs := h.chatHeaders(q, rec, product, out)
 
 	cctx, cancel := context.WithTimeout(ctx, quota.ProbeTimeout)
 	defer cancel()
 	target := h.chatURL(acc, product)
 	resp, err := h.Up.Wire(acc.UID, acc.Proxy()).Do(cctx, upstream.Request{
-		Method: http.MethodPost, URL: target, Headers: hdrs, Body: enc.wire(gz)})
+		Method: http.MethodPost, URL: target, Headers: hdrs, Body: out.body})
 	if err != nil {
 		return false, time.Time{}, truncate(err.Error(), 200)
 	}
@@ -122,14 +122,14 @@ func (h *Handler) Probe(ctx context.Context, acc *pool.Account, model string) Pr
 	q.shaped = shape.Build(payload, shape.Options{Catalog: h.Catalog})
 	q.enc = map[string]*encoded{}
 	product := identity.NormalizeProduct(rec.Product)
-	enc, gz := q.bodyFor(product)
-	hdrs := h.chatHeaders(q, rec, product, gz)
+	out := h.buildOutbound(q, rec, product)
+	hdrs := h.chatHeaders(q, rec, product, out)
 
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	target := h.chatURL(acc, product)
 	resp, err := h.Up.Wire(acc.UID, acc.Proxy()).Do(cctx, upstream.Request{
-		Method: http.MethodPost, URL: target, Headers: hdrs, Body: enc.wire(gz)})
+		Method: http.MethodPost, URL: target, Headers: hdrs, Body: out.body})
 	res.ElapsedMs = time.Since(start).Milliseconds()
 	if err != nil {
 		switch {

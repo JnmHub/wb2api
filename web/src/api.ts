@@ -2,6 +2,10 @@
 // cookie (JS never sees it); the CSRF token is kept in memory and re-fetched
 // from /session after a page reload.
 
+// Realm names the upstream channel an account or API key belongs to: the two
+// WorkBuddy exits plus the Huawei Cloud CodeArts channel.
+export type Realm = 'intl' | 'cn' | 'codearts'
+
 export class ApiError extends Error {
   status: number
   code?: string
@@ -77,7 +81,7 @@ export interface Account {
   uid: string
   short_id: string
   nickname: string
-  realm: 'intl' | 'cn'
+  realm: Realm
   product: string
   enterprise_id: string
   enabled: boolean
@@ -273,7 +277,7 @@ export interface KeyView {
   id: string
   name: string
   key_preview: string
-  realm: '' | 'intl' | 'cn'
+  realm: '' | Realm
   models: string[]
   accounts: string[]
   concurrency_limit: number
@@ -312,7 +316,7 @@ export interface CatalogStatus {
 }
 
 export interface SettingsView {
-  realm: { current: 'intl' | 'cn'; options: string[] }
+  realm: { current: Realm; options: string[] }
   keys: KeyView[]
   auth_required: boolean
   limits: Record<string, LimitEntry>
@@ -414,7 +418,7 @@ export interface ImportResponse {
 export interface LoginStart {
   state: string
   authUrl: string
-  realm: 'intl' | 'cn'
+  realm: Realm
   platform: string
 }
 

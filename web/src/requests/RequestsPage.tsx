@@ -161,9 +161,10 @@ export function RequestsPage() {
             onChange={setRealm}
             style={{ width: 126 }}
             options={[
-              { value: '', label: '全部区域' },
+              { value: '', label: '全部渠道' },
               { value: 'intl', label: '国际版' },
               { value: 'cn', label: '国内版' },
+              { value: 'codearts', label: '华为 CodeArts' },
             ]}
           />
           <Input allowClear prefix={<Search size={14} />} placeholder="模型" value={model} onChange={(e) => setModel(e.target.value)} style={{ width: 180 }} />

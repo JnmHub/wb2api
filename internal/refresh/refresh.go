@@ -31,6 +31,7 @@ import (
 	"wb2api/internal/realm"
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/upstream"
+	"wb2api/internal/upstream/codearts"
 	"wb2api/internal/upstream/identity"
 )
 
@@ -351,6 +352,9 @@ func (r *Refresher) doRefresh(ctx context.Context, a *pool.Account) error {
 	if r.BaseURL != nil {
 		base = r.BaseURL(a)
 	}
+	if realm.IsCodeArts(rec.Realm) {
+		return r.refreshCodeArts(ctx, a, rec, base)
+	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	resp, err := r.Up.Wire(a.UID, a.Proxy()).Do(ctx, upstream.Request{
@@ -406,6 +410,32 @@ func (r *Refresher) doRefresh(ctx context.Context, a *pool.Account) error {
 	a.MarkTokenBad(false)
 	if r.Persist != nil {
 		if err := r.Persist(&next); err != nil {
+			return fmt.Errorf("token refreshed but not saved: %w", err)
+		}
+	}
+	return nil
+}
+
+// refreshCodeArts renews the STS credential chain of a CodeArts account:
+// OAuth2 refresh_token -> fresh AK/SK + security_token, with the DPoP proof
+// signed by the key the credential was originally issued with.
+func (r *Refresher) refreshCodeArts(ctx context.Context, a *pool.Account, rec *accounts.Record, base string) error {
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	res, err := codearts.Refresh(ctx, nil, base,
+		rec.RefreshToken, codearts.CodeVerifierOf(rec), codearts.DPoPKeyOf(rec))
+	if err != nil {
+		if errors.Is(err, codearts.ErrRefreshExpired) {
+			a.MarkTokenBad(true)
+			return fmt.Errorf("%w (%v)", ErrNeedsLogin, err)
+		}
+		return err
+	}
+	next := codearts.ApplyToken(rec, res)
+	a.SetRecord(next)
+	a.MarkTokenBad(false)
+	if r.Persist != nil {
+		if err := r.Persist(next); err != nil {
 			return fmt.Errorf("token refreshed but not saved: %w", err)
 		}
 	}

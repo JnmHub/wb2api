@@ -61,7 +61,7 @@ export const statusLabel: Record<string, string> = {
   model_cooling: '模型冷却',
 }
 
-export const realmLabel: Record<string, string> = { intl: '国际版', cn: '国内版' }
+export const realmLabel: Record<string, string> = { intl: '国际版', cn: '国内版', codearts: '华为 CodeArts' }
 
 export function debounce<A extends unknown[]>(fn: (...a: A) => void, wait: number) {
   let t: ReturnType<typeof setTimeout> | undefined

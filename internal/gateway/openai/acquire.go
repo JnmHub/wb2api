@@ -64,15 +64,16 @@ func (h *Handler) waitForFullAccount(q *request) (*pool.Account, func(), bool) {
 				continue
 			}
 			eligible = true
-			if n, known := counts[a.UID]; known && h.AccountInflight > 0 && n >= h.AccountInflight {
+			limit := h.accountLimit(a)
+			if n, known := counts[a.UID]; known && limit > 0 && n >= limit {
 				continue
 			}
-			localRelease, ok := a.TryAcquire(h.AccountInflight)
+			localRelease, ok := a.TryAcquire(limit)
 			if !ok {
 				continue
 			}
 			sharedRelease := func() {}
-			if h.Limiter != nil && h.AccountInflight > 0 {
+			if h.Limiter != nil && limit > 0 {
 				remaining := time.Until(deadline)
 				if remaining <= 0 || ctx.Err() != nil {
 					localRelease()
@@ -83,7 +84,7 @@ func (h *Handler) waitForFullAccount(q *request) (*pool.Account, func(), bool) {
 				if bounded, canBound := h.Limiter.(BoundedInflightLimiter); canBound {
 					// Hints already found potential space. Do one atomic probe,
 					// not a per-account queue that serially stalls alternatives.
-					rel, ok, err = bounded.AcquireWithin(ctx, a.UID, h.AccountInflight, q.turnID, minDur(remaining, 10*time.Millisecond))
+					rel, ok, err = bounded.AcquireWithin(ctx, a.UID, limit, q.turnID, minDur(remaining, 10*time.Millisecond))
 				} else if waiter, canWait := h.Limiter.(WaitingInflightLimiter); canWait {
 					budget := remaining
 					if multiple {
@@ -97,13 +98,13 @@ func (h *Handler) waitForFullAccount(q *request) (*pool.Account, func(), bool) {
 					}
 					// maxWait bounds admission only. Passing a short-lived probe
 					// context here would stop successful Redis lease renewal.
-					rel, ok, err = waiter.AcquireWait(ctx, a.UID, h.AccountInflight, q.turnID, budget)
+					rel, ok, err = waiter.AcquireWait(ctx, a.UID, limit, q.turnID, budget)
 				} else {
 					// Legacy Acquire has no separate admission budget. Preserve
 					// its request-scoped lease context; a blocking implementation
 					// can overrun AccountWait (checked again on return). It must
 					// implement AcquireWait to bound I/O independently of lease life.
-					rel, ok, err = h.Limiter.Acquire(ctx, a.UID, h.AccountInflight, q.turnID)
+					rel, ok, err = h.Limiter.Acquire(ctx, a.UID, limit, q.turnID)
 				}
 				if err != nil && h.SharedLimitFailOpen && ctx.Err() == nil {
 					// Explicit availability policy, never a silent downgrade.

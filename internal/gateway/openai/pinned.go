@@ -73,8 +73,9 @@ func requestRealm(r *http.Request, key *settings.APIKey) string {
 	}
 	cands = append(cands, r.Header.Get("X-Realm"), r.URL.Query().Get("realm"))
 	for _, c := range cands {
+		c = strings.ToLower(strings.TrimSpace(c))
 		switch c {
-		case realm.Intl, realm.CN:
+		case realm.Intl, realm.CN, realm.CodeArts:
 			return c
 		}
 	}
@@ -98,6 +99,13 @@ func (h *Handler) activeRealm() string {
 func crossRealmMessage(model, reqRealm string, key *settings.APIKey) string {
 	owner := realm.ExclusiveRealm(model)
 	if owner == "" || reqRealm == "" || owner == reqRealm {
+		return ""
+	}
+	// The exclusivity table describes the two WorkBuddy exits. A different
+	// upstream family (CodeArts) has its own catalogue: a name that collides
+	// with a WorkBuddy-exclusive id (glm-5.1, deepseek-v4-pro) is served by the
+	// channel's own account pool, not a reason to reject the request.
+	if !realm.SameFamily(owner, reqRealm) {
 		return ""
 	}
 	name := "当前 Key"

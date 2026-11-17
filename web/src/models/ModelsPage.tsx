@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation } from '@tanstack/react-query'
 import { Button, Card, Input, Segmented, Space, Table, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { RefreshCw, Search } from 'lucide-react'
-import { get, type CatalogModel, type ModelCatalogue, type ModelCoolingRow } from '../api'
+import { get, post, type CatalogModel, type ModelCatalogue, type ModelCoolingRow, type Realm } from '../api'
 import { num, tokens } from '../format'
 
 const REASON_LABEL: Record<string, string> = {
@@ -71,8 +71,22 @@ const SOURCE_LABEL: Record<string, string> = {
 
 /** The model catalogue the gateway advertises on /v1/models. */
 export function ModelsPage() {
-  const [realm, setRealm] = useState<'intl' | 'cn'>('intl')
+  const [realm, setRealm] = useState<Realm>('intl')
   const [q, setQ] = useState('')
+  const [discoverMsg, setDiscoverMsg] = useState('')
+  const discover = useMutation({
+    mutationFn: () =>
+      post<{ ok: boolean; count: number; accounts: { uid: string; ok: boolean; models: string[] }[] }>(
+        '/api/v2/codearts/models/refresh',
+        {},
+      ),
+    onSuccess: (r) => {
+      const models = r.accounts.reduce((n, a) => n + a.models.length, 0)
+      setDiscoverMsg(`已发现 ${r.count} 个账号 / ${models} 个模型`)
+      query.refetch()
+    },
+    onError: (e) => setDiscoverMsg(String(e)),
+  })
   const query = useQuery({
     queryKey: ['models', realm],
     queryFn: () => get<ModelCatalogue>(`/api/v2/models?realm=${realm}`),
@@ -165,16 +179,23 @@ export function ModelsPage() {
         <Space wrap>
           <Segmented
             value={realm}
-            onChange={(v) => setRealm(v as 'intl' | 'cn')}
+            onChange={(v) => setRealm(v as Realm)}
             options={[
               { value: 'intl', label: '国际版' },
               { value: 'cn', label: '国内版' },
+              { value: 'codearts', label: '华为 CodeArts' },
             ]}
           />
           <Input allowClear prefix={<Search size={14} />} placeholder="搜索模型 / 名称 / 描述" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: 260 }} />
+          {realm === 'codearts' && (
+            <Button icon={<RefreshCw size={14} />} loading={discover.isPending} onClick={() => discover.mutate()}>
+              重新发现
+            </Button>
+          )}
           <Button icon={<RefreshCw size={14} />} loading={query.isFetching} onClick={() => query.refetch()}>
             刷新
           </Button>
+          {discoverMsg && <Typography.Text type="secondary">{discoverMsg}</Typography.Text>}
         </Space>
       </div>
 

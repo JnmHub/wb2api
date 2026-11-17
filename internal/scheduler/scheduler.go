@@ -29,6 +29,23 @@ type Tokens interface {
 	Refresh(ctx context.Context, a *pool.Account) error
 }
 
+// Channel runs the chores of an upstream channel that has its own API
+// (currently Huawei Cloud CodeArts: a daily credit check-in). A nil Channel
+// skips that channel entirely.
+type Channel interface {
+	// CanCheckin reports whether the account still needs today's check-in.
+	CanCheckin(acc *pool.Account) bool
+	// Checkin runs it; ok is the upstream verdict, msg explains it.
+	Checkin(ctx context.Context, acc *pool.Account) (ok bool, msg string, err error)
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 // Scheduler is the background job runner.
 type Scheduler struct {
 	Pool      *pool.Pool
@@ -40,6 +57,8 @@ type Scheduler struct {
 	Hold func(realm string) time.Duration
 	// Windows is the model-quota window probe (nil = disabled).
 	Windows *quota.Windows
+	// Channel runs the chores of non-WorkBuddy channels (nil = skipped).
+	Channel Channel
 	// Scan is the active quota scan (nil = disabled).
 	Scan *quota.Scanner
 	// Leader reports whether this replica may run unattended background work.
@@ -219,7 +238,7 @@ func (s *Scheduler) cycle(ctx context.Context, reason string, force bool) {
 		s.note("暂无可用的活跃账号，跳过本次巡检")
 		return
 	}
-	var kept, checkin, report, chat, travel int
+	var kept, checkin, report, chat, travel, hwCheckin int
 	for i, acc := range accs {
 		if ctx.Err() != nil {
 			return
@@ -311,6 +330,19 @@ func (s *Scheduler) cycle(ctx context.Context, reason string, force bool) {
 					s.note("! 账号 [%s] 夜猫子失败: %s", uid8, firstNonEmpty(res.Error, res.Msg))
 				}
 			}
+		case realm.CodeArts:
+			// The Huawei channel has exactly one chore: claiming the daily
+			// points. It has no activity report, growth tasks or daily chat.
+			if checkinDue && s.Channel != nil && s.Channel.CanCheckin(acc) {
+				ok, msg, err := s.Channel.Checkin(ctx, acc)
+				if ok && err == nil {
+					hwCheckin++
+					s.note("✓ 账号 [%s] 华为 CodeArts 签到: %s", uid8, msg)
+				} else {
+					s.note("! 账号 [%s] 华为 CodeArts 签到未成功: %s", uid8, firstNonEmpty(msg, errText(err)))
+				}
+				s.pause(time.Second)
+			}
 		case realm.Intl:
 			if chatDue && s.Ops.CanDailyChat(acc) {
 				res := s.Ops.DailyChat(ctx, acc, "scheduler")
@@ -324,7 +356,7 @@ func (s *Scheduler) cycle(ctx context.Context, reason string, force bool) {
 		}
 	}
 	s.mu.Lock()
-	s.lastNote = fmt.Sprintf("Token保活 %d，国内签到 %d，活跃上报 %d，猫猫日常 %d，国际活跃 %d", kept, checkin, report, travel, chat)
+	s.lastNote = fmt.Sprintf("Token保活 %d，国内签到 %d，活跃上报 %d，猫猫日常 %d，国际活跃 %d，华为签到 %d", kept, checkin, report, travel, chat, hwCheckin)
 	s.mu.Unlock()
 	s.note("巡检完成：%s", s.lastNote)
 }

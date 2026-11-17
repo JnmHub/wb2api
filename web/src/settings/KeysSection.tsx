@@ -223,6 +223,7 @@ function KeyEditor(props: { initial: KeyView | null; onClose: () => void; onSave
               { value: '', label: '跟随面板切换' },
               { value: 'intl', label: '国际版' },
               { value: 'cn', label: '国内版' },
+              { value: 'codearts', label: '华为 CodeArts' },
             ]}
           />
         </div>
