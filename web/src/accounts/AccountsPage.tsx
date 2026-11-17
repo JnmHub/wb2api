@@ -131,7 +131,7 @@ export function AccountsPage() {
       width: 260,
       render: (_, a) => (
         <div className="acct-cell">
-          <span className="acct-avatar">{a.realm === 'cn' ? 'CN' : 'GL'}</span>
+          <span className="acct-avatar">{a.realm === 'cn' ? 'CN' : a.realm === 'codearts' ? 'HW' : 'GL'}</span>
           <div>
             <div className="acct-name">
               <a onClick={() => setOpen(a.uid)}>{a.nickname || a.short_id}</a>
@@ -175,14 +175,22 @@ export function AccountsPage() {
     },
     {
       title: '积分',
-      width: 110,
+      width: 130,
       align: 'right',
-      render: (_: unknown, a: Account) =>
-        a.credits?.remain != null ? (
-          <span className="mono">{credit(a.credits.remain)}</span>
-        ) : (
-          <Typography.Text type="secondary">—</Typography.Text>
-        ),
+      render: (_: unknown, a: Account) => {
+        // A WorkBuddy account reports a balance; the Huawei channel has no
+        // balance endpoint, so its check-in credit is what is shown.
+        if (a.credits?.remain != null) return <span className="mono">{credit(a.credits.remain)}</span>
+        const c = a.checkin
+        if (c?.credits) {
+          return (
+            <span className="mono" title={c.message || ''}>
+              +{credit(c.credits)}
+            </span>
+          )
+        }
+        return <Typography.Text type="secondary">—</Typography.Text>
+      },
     },
     {
       title: '有效期',

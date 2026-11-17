@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -179,5 +180,34 @@ func TestScannerSkipsFreshAccounts(t *testing.T) {
 	}
 	if hits.Load() != before {
 		t.Fatal("a fresh account was scanned again")
+	}
+}
+
+// A second pass on the same day must not downgrade a real claim to "无活动".
+func TestCheckinKeepsTheDaysRealResult(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == codearts.DeliveryPath {
+			fmt.Fprint(w, `{"code":0,"data":{"items":[]}}`)
+			return
+		}
+		fmt.Fprint(w, `{"code":0,"data":{}}`)
+	}))
+	defer srv.Close()
+
+	now := time.Date(2026, 11, 17, 21, 0, 0, 0, time.Local)
+	rec := syncAccount("hw-1")
+	rec.LastCheckin = map[string]any{
+		"at": float64(now.Add(-2 * time.Minute).Unix()), "ok": true,
+		"credits": float64(4000), "message": "新用户注册送 4000 积分: 已补确认", "channel": realm.CodeArts,
+	}
+	p := pool.New([]*accounts.Record{rec})
+	svc := &Service{Pool: p, Base: srv.URL, Now: func() time.Time { return now }}
+	if _, _, err := svc.Checkin(context.Background(), p.Get("hw-1")); err != nil {
+		t.Fatalf("Checkin: %v", err)
+	}
+	st := p.Get("hw-1").Record().LastCheckin.(map[string]any)
+	if st["credits"] != float64(4000) || !strings.Contains(st["message"].(string), "4000") {
+		t.Fatalf("the earlier result was downgraded: %#v", st)
 	}
 }

@@ -50,19 +50,20 @@ func (t *TokenResponse) Expiry() time.Time {
 	return time.Time{}
 }
 
-// TokenURL is the STS token endpoint for a snap-manager base.
-func TokenURL(base string) string { return strings.TrimRight(base, "/") + TokenPath }
+// TokenURL is the token endpoint for an STS base (see STSHost).
+func TokenURL(stsBase string) string { return strings.TrimRight(stsBase, "/") + TokenPath }
 
-// Refresh exchanges a refresh token for fresh STS credentials.
+// Refresh exchanges a refresh token for fresh STS credentials. stsBase is the
+// STS host (STSHost), not snap-access.
 //
 // codeVerifier and jwk belong to the credential that was signed in: STS binds
 // the refresh token to both, and a mismatch surfaces as
 // "invalid refresh token: InvalidDPoPHeader".
-func Refresh(ctx context.Context, hc *http.Client, base, refreshToken, codeVerifier string, jwk DPoPKey) (*TokenResponse, error) {
+func Refresh(ctx context.Context, hc *http.Client, stsBase, refreshToken, codeVerifier string, jwk DPoPKey) (*TokenResponse, error) {
 	if strings.TrimSpace(refreshToken) == "" {
 		return nil, ErrRefreshExpired
 	}
-	if _, err := SignProof(jwk, TokenURL(base), time.Now()); err != nil {
+	if _, err := SignProof(jwk, TokenURL(stsBase), time.Now()); err != nil {
 		// A credential without its DPoP key can still be used until the STS
 		// token expires, but it can never be refreshed.
 		return nil, fmt.Errorf("%w (dpop: %v)", ErrRefreshExpired, err)
@@ -74,13 +75,13 @@ func Refresh(ctx context.Context, hc *http.Client, base, refreshToken, codeVerif
 	if codeVerifier != "" {
 		form.Set("code_verifier", codeVerifier)
 	}
-	return requestToken(ctx, hc, base, form, jwk, "refresh")
+	return requestToken(ctx, hc, stsBase, form, jwk, "refresh")
 }
 
 // requestToken posts an OAuth2 form with a fresh DPoP proof and normalises the
 // token response. kind only labels errors ("refresh", "authorization_code").
-func requestToken(ctx context.Context, hc *http.Client, base string, form url.Values, jwk DPoPKey, kind string) (*TokenResponse, error) {
-	target := TokenURL(base)
+func requestToken(ctx context.Context, hc *http.Client, stsBase string, form url.Values, jwk DPoPKey, kind string) (*TokenResponse, error) {
+	target := TokenURL(stsBase)
 	proof, err := SignProof(jwk, target, time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("codearts %s: dpop proof: %w", kind, err)

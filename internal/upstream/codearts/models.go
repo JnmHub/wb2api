@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"wb2api/internal/upstream/identity"
 )
@@ -274,6 +275,9 @@ func ClaimBenefitAt(ctx context.Context, hc *http.Client, benefitBase string, cr
 		return fmt.Errorf("parse benefit claim: %w", err)
 	}
 	if out.ErrorCode != "" && out.ErrorCode != "0000" {
+		if isNoBenefitGroup(out.ErrorCode, out.ErrorMsg) {
+			return nil // the account has no free-plan group: nothing to claim
+		}
 		return fmt.Errorf("benefit claim failed: code=%s msg=%s", out.ErrorCode, out.ErrorMsg)
 	}
 	return nil
@@ -303,6 +307,9 @@ func fetchBenefitModels(ctx context.Context, hc *http.Client, benefitBase string
 		return nil, fmt.Errorf("parse benefit config: %w", err)
 	}
 	if out.ErrorCode != "" && out.ErrorCode != "0000" {
+		if isNoBenefitGroup(out.ErrorCode, out.ErrorMsg) {
+			return nil, nil // no free-plan entitlement
+		}
 		return nil, fmt.Errorf("benefit gateway code=%s msg=%s", out.ErrorCode, out.ErrorMsg)
 	}
 	infos := make([]ModelInfo, 0, len(out.Result.Models))
@@ -378,9 +385,20 @@ func betterModel(a, b ModelInfo) bool {
 	return a.ID != strings.ToLower(a.ID) && b.ID == strings.ToLower(b.ID)
 }
 
+// isNoBenefitGroup reports the "account is not in a free-plan group" answer.
+// It is a capability fact, not an error worth showing on the account.
+func isNoBenefitGroup(code, msg string) bool {
+	return code == "4000" || strings.Contains(strings.ToLower(msg), "group not found") ||
+		strings.Contains(msg, "invalid channel")
+}
+
+// firstNonEmpty returns the first non-blank value that is also valid UTF-8: the
+// upstream catalogue carries at least one entry whose id bytes are broken, and
+// advertising it would only break clients.
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
-		if s := strings.TrimSpace(v); s != "" {
+		s := strings.TrimSpace(v)
+		if s != "" && utf8.ValidString(s) {
 			return s
 		}
 	}

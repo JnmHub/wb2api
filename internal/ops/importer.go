@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"wb2api/internal/jsonx"
 	"wb2api/internal/realm"
@@ -48,7 +49,7 @@ func ParseDocument(raw []byte) ([]Row, error) {
 		} else {
 			_, hasAuth := t["auth"].(map[string]any)
 			_, hasAcc := t["account"].(map[string]any)
-			if !(jsonx.Truthy(t["accessToken"]) || hasAuth || hasAcc) {
+			if !(jsonx.Truthy(t["accessToken"]) || hasAuth || hasAcc || isCodeArtsRow(t)) {
 				keys := make([]string, 0, len(t))
 				for k := range t {
 					keys = append(keys, k)
@@ -98,6 +99,11 @@ func str(v any) string {
 // the token / domain, so a stale "realm" field from an account once filed under
 // the wrong exit does not keep dragging it back there.
 func NormaliseRow(row Row, forced string) (Row, error) {
+	// The Huawei channel has its own credential shape: an opaque STS token, an
+	// AK/SK pair and a DPoP key. It never passes the JWT checks below.
+	if isCodeArtsRow(row) {
+		return normaliseCodeArtsRow(row)
+	}
 	if _, hasSnake := row["access_token"]; hasSnake && row["accessToken"] == nil {
 		row = Row{"uid": row["uid"], "nickname": firstStr(row["nickname"], row["email"]), "domain": row["domain"],
 			"accessToken": row["access_token"], "refreshToken": row["refresh_token"], "expiresAt": row["expires_at"], "source": "cockpit"}
@@ -237,6 +243,18 @@ func (c *Client) Export(realmName string, uids []string, secrets bool) (map[stri
 			if json.Unmarshal(b, &m) == nil {
 				delete(m, "accessToken")
 				delete(m, "refreshToken")
+				// The Huawei channel keeps its AK/SK chain in the record extra:
+				// a secret-free export must not leak it.
+				delete(m, "codearts")
+				if raw, ok := m["extra"]; ok {
+					var extra map[string]json.RawMessage
+					if json.Unmarshal(raw, &extra) == nil {
+						delete(extra, "codearts")
+						if nb, err := json.Marshal(extra); err == nil {
+							m["extra"] = nb
+						}
+					}
+				}
 				b, _ = json.Marshal(m)
 			}
 		}
@@ -248,5 +266,103 @@ func (c *Client) Export(realmName string, uids []string, secrets bool) (map[stri
 	return map[string]any{
 		"format": ExportFormat, "version": ExportVersion, "exportedAt": stampNow(c.now()),
 		"count": len(rows), "accounts": rows,
+	}, nil
+}
+
+// isCodeArtsRow reports a Huawei Cloud CodeArts credential document: this
+// gateway's own account file, codexarts' auth file, or a hand-written blob.
+func isCodeArtsRow(row Row) bool {
+	if row == nil {
+		return false
+	}
+	if str(row["realm"]) == realm.CodeArts {
+		return true
+	}
+	if _, ok := row["codearts"].(map[string]any); ok {
+		return true
+	}
+	for _, k := range []string{"cloud_dragon_token", "security_token", "access_key_id", "user_id"} {
+		if str(row[k]) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// normaliseCodeArtsRow maps a CodeArts credential onto an account row. It reads
+// the nested shape ({codearts: {...}}), the flat snake_case shape used by
+// codexarts (user_id / cloud_dragon_token / access_key_id / dpop_private_key)
+// and this gateway's own camelCase account file.
+func normaliseCodeArtsRow(row Row) (Row, error) {
+	nested := map[string]any{}
+	if c, ok := row["codearts"].(map[string]any); ok {
+		for k, v := range c {
+			nested[k] = v
+		}
+	}
+	extra := map[string]any{}
+	if e, ok := row["extra"].(map[string]any); ok {
+		if c, ok := e["codearts"].(map[string]any); ok {
+			for k, v := range c {
+				nested[k] = v
+			}
+		}
+	}
+	pick := func(keys ...string) string {
+		for _, layer := range []map[string]any{row, nested, extra} {
+			for _, k := range keys {
+				if v := str(layer[k]); v != "" {
+					return v
+				}
+			}
+		}
+		return ""
+	}
+	uid := strings.Trim(uidClean.ReplaceAllString(pick("uid", "user_id", "userId"), "_"), "_ ")
+	token := pick("security_token", "cloud_dragon_token", "securityToken", "access_token", "accessToken")
+	ak := pick("access_key_id", "accessKeyId")
+	sk := pick("secret_access_key", "secretAccessKey")
+	switch {
+	case uid == "":
+		return nil, fmt.Errorf("缺少 uid / user_id")
+	case token == "":
+		return nil, fmt.Errorf("缺少 security_token / cloud_dragon_token")
+	case ak == "" || sk == "":
+		return nil, fmt.Errorf("缺少 access_key_id / secret_access_key")
+	}
+	exp := int64(0)
+	if v := pick("expiration", "expires_at", "expiresAt"); v != "" {
+		if ts, err := time.Parse(time.RFC3339Nano, v); err == nil {
+			exp = ts.Unix()
+		} else if n, ok := row["expiresAt"].(json.Number); ok {
+			if f, err := n.Float64(); err == nil {
+				exp = int64(f)
+			}
+		}
+	}
+	dpop := any(nil)
+	for _, layer := range []map[string]any{{"dpop_private_key": row["dpop_private_key"]}, nested, extra} {
+		if v, ok := layer["dpop_private_key"].(map[string]any); ok && len(v) > 0 {
+			dpop = v
+			break
+		}
+	}
+	clientID := pick("client_id", "clientId")
+	if clientID == "" {
+		clientID = "codearts-agent"
+	}
+	return Row{
+		"uid": uid, "nickname": pick("nickname", "user_name", "userName"), "realm": realm.CodeArts,
+		"accessToken": token, "refreshToken": pick("refresh_token", "refreshToken"),
+		"expiresAt": exp, "source": "codearts-import", "platform": "codearts", "enabled": true,
+		"codearts": map[string]any{
+			"access_key_id":     ak,
+			"secret_access_key": sk,
+			"security_token":    token,
+			"expiration":        pick("expiration", "expires_at"),
+			"client_id":         clientID,
+			"code_verifier":     pick("code_verifier", "codeVerifier"),
+			"dpop_private_key":  dpop,
+		},
 	}, nil
 }

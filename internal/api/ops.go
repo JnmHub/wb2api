@@ -102,6 +102,9 @@ type Operations struct {
 	// CodeArtsLoginBase overrides the snap-access root used by the ticket poll
 	// (tests, mock).
 	CodeArtsLoginBase string
+	// CodeArtsSTSBase overrides the STS root used for the code exchange and the
+	// refresh chain (tests, mock).
+	CodeArtsSTSBase string
 
 	// codeartsLogins holds in-flight CodeArts browser logins.
 	codeartsLogins codeartsLogins
@@ -187,7 +190,7 @@ func (o *Operations) loginStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if realm.IsCodeArts(in.Realm) {
-		res, err := o.startCodeArtsLogin()
+		res, err := o.startCodeArtsLogin(r)
 		if err != nil {
 			writeErr(w, http.StatusBadGateway, err.Error())
 			return
@@ -337,6 +340,9 @@ func (o *Operations) Register(mux *http.ServeMux, wrap func(http.Handler) http.H
 	mux.Handle("GET /api/v2/accounts/login/poll", h(o.loginPoll))
 	mux.Handle("POST /api/v2/accounts/login/cancel", h(o.loginCancel))
 	mux.Handle("POST /api/v2/codearts/models/refresh", h(o.codeartsModelsRefresh))
+	// The portal calls this back from the browser, without the panel session:
+	// it must stay unauthenticated.
+	mux.HandleFunc("/oauth/callback", o.codeartsCallback)
 	mux.Handle("POST /api/v2/accounts/import", h(o.importAccounts))
 	mux.Handle("GET /api/v2/accounts/export", h(o.exportAccounts))
 	mux.Handle("GET /api/v2/activity", h(o.activityList))

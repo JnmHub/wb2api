@@ -44,6 +44,13 @@ const PRODUCTS = [
   { value: 'cli', label: 'CodeBuddy CLI' },
 ]
 
+/** Check-in stamp: unix seconds on the Huawei channel, a formatted string on WorkBuddy. */
+function checkinAt(v?: string | number): string {
+  if (v == null || v === '') return ''
+  if (typeof v === 'number') return new Date(v * 1000).toLocaleString()
+  return v
+}
+
 export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => void }) {
   const qc = useQueryClient()
   const q = useQuery({ queryKey: ['account', uid], queryFn: () => get<Account>(`/api/v2/accounts/${uid}`) })
@@ -199,6 +206,22 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
                 { key: 'today', label: '今日', children: `${num(a.today.requests)} 次 · ${tokens(a.today.tokens)} tokens` },
                 ...(a.credits && (a.credits.remain != null || a.credits.total != null)
                   ? [{ key: 'credits', label: '积分', children: `${credit(a.credits.remain)} / ${credit(a.credits.total)}` }]
+                  : []),
+                ...(a.checkin
+                  ? [
+                      {
+                        key: 'checkin',
+                        label: a.realm === 'codearts' ? '签到 / 积分' : '签到',
+                        children: (
+                          <span title={checkinAt(a.checkin.at)}>
+                            {a.checkin.ok === false ? '⏳ ' : '✓ '}
+                            {a.checkin.message || (a.checkin.ok === false ? '未成功' : '已签到')}
+                            {a.checkin.credits ? `（+${credit(a.checkin.credits)}）` : ''}
+                            {a.checkin.at ? ` · ${checkinAt(a.checkin.at)}` : ''}
+                          </span>
+                        ),
+                      },
+                    ]
                   : []),
                 { key: 'inflight', label: '进行中', children: String(a.inflight) },
                 ...(a.cooldown_for ? [{ key: 'cool', label: '冷却', children: `剩余 ${span(a.cooldown_for)}` }] : []),

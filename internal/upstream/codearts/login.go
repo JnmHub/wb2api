@@ -69,14 +69,14 @@ func AuthorizeURL(ticketID, challenge string, port int) string {
 
 // ExchangeCode trades an authorization code for STS credentials (the desktop
 // callback path). jwk must be persisted with the refresh token.
-func ExchangeCode(ctx context.Context, hc *http.Client, base, code, verifier string, port int, jwk DPoPKey) (*TokenResponse, error) {
+func ExchangeCode(ctx context.Context, hc *http.Client, stsBase, code, verifier string, port int, jwk DPoPKey) (*TokenResponse, error) {
 	form := url.Values{}
 	form.Set("client_id", ClientID)
 	form.Set("code", code)
 	form.Set("code_verifier", verifier)
 	form.Set("grant_type", "authorization_code")
 	form.Set("redirect_uri", fmt.Sprintf("http://127.0.0.1:%d%s", port, CallbackPath))
-	return requestToken(ctx, hc, base, form, jwk, "authorization_code")
+	return requestToken(ctx, hc, stsBase, form, jwk, "authorization_code")
 }
 
 // PollTicket asks snap-manager whether the browser login finished. It returns
@@ -121,12 +121,11 @@ func PollTicket(ctx context.Context, hc *http.Client, base, ticketID, secret str
 			Expiration:      out.Credential.ExpiresAt,
 		}
 	}
-	if out.UserName == "" && out.UserID == "" {
-		return nil, nil // still waiting
-	}
 	if out.Credentials.SecurityToken == "" {
-		return nil, fmt.Errorf("codearts ticket: login finished without credentials")
+		return nil, nil // still waiting: the ticket has no credentials yet
 	}
+	// The identity may be absent here; the caller resolves it with the fresh
+	// STS token (see CurrentUser).
 	return &out, nil
 }
 
@@ -186,3 +185,17 @@ func NewSession(port int) (*Session, error) {
 
 // URL is the portal link of this session.
 func (s *Session) URL() string { return AuthorizeURL(s.TicketID, s.Challenge, s.Port) }
+
+// IsPendingTicketError reports the "ticket not registered yet" answer from
+// snap-manager. The portal only records a ticket once the browser has opened
+// the authorize URL, so polling before that is a normal waiting state rather
+// than a failure.
+func IsPendingTicketError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "TM.00001001") ||
+		strings.Contains(s, "无效 ticketId") ||
+		strings.Contains(strings.ToLower(s), "invalid ticket")
+}

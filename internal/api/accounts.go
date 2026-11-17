@@ -64,6 +64,31 @@ func (a *Accounts) now() time.Time {
 
 // ------------------------------------------------------------------- views
 
+// checkinView normalises the last check-in stamp for the panel. The two
+// channels record it differently: WorkBuddy stores a plain "YYYY-MM-DD hh:mm:ss"
+// string, the Huawei channel stores {at, ok, message, credits}. The panel only
+// has to understand one shape.
+func checkinView(v any) map[string]any {
+	switch t := v.(type) {
+	case nil:
+		return nil
+	case map[string]any:
+		out := map[string]any{}
+		for k, val := range t {
+			out[k] = val
+		}
+		return out
+	case string:
+		if strings.TrimSpace(t) == "" {
+			return nil
+		}
+		return map[string]any{"at": t, "ok": true}
+	case float64, json.Number:
+		return map[string]any{"at": t, "ok": true}
+	}
+	return nil
+}
+
 func (a *Accounts) view(acc *pool.Account, now time.Time, detail bool) map[string]any {
 	rec := acc.Record()
 	today := a.Today.Get(acc.UID)
@@ -80,6 +105,7 @@ func (a *Accounts) view(acc *pool.Account, now time.Time, detail bool) map[strin
 		"has_refresh_token": rec.RefreshToken != "", "added_at": rec.AddedAt, "inflight": acc.Inflight(),
 		"today":         map[string]any{"requests": today.Requests, "tokens": today.Tokens, "credit": today.Credit},
 		"tasks_enabled": rec.TasksOn(), "tier": tierOf(rec),
+		"checkin": checkinView(rec.LastCheckin),
 	}
 	if until := acc.CooldownUntil(); until.After(now) {
 		v["cooldown_for"] = int(until.Sub(now).Seconds()) + 1

@@ -190,3 +190,43 @@ func TestBenefitConfigEnvelope(t *testing.T) {
 		t.Fatalf("unexpected envelope: %s", raw)
 	}
 }
+
+// An account without a free-plan group answers code=4000; that is a capability
+// fact, not a discovery failure.
+func TestDiscoverTreatsNoBenefitGroupAsEmpty(t *testing.T) {
+	srv := discoveryServer(t, discoveryOpts{})
+	// override the benefit endpoints with a 4000 answer
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case AgentListPath:
+			fmt.Fprint(w, `{"agents":[{"agent_id":"a-1","agent_name":"CodeAgent","show_in_ide":true,"alias":{"alias_zh_cn":"智能体"}}]}`)
+		case AgentDetailPath, BuiltinPath:
+			fmt.Fprint(w, `{"builtinModels":[],"gpts":{"models":[]}}`)
+		case BenefitClaimPath, BenefitConfigPath:
+			fmt.Fprint(w, `{"error_code":"4000","error_msg":"invalid channel, group not found"}`)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer bad.Close()
+	defer srv.Close()
+
+	dis := DiscoverModelsWith(context.Background(), bad.Client(), bad.URL, bad.URL, "u-1", CreditCredential(), true)
+	if _, ok := dis.Errors["benefit"]; ok {
+		t.Fatalf("no-entitlement must not be reported as an error: %v", dis.Errors)
+	}
+	if _, ok := dis.Errors["benefit_claim"]; ok {
+		t.Fatalf("no-entitlement claim must not be reported: %v", dis.Errors)
+	}
+}
+
+// Broken UTF-8 ids in the upstream catalogue must not reach /v1/models.
+func TestFirstNonEmptySkipsInvalidUTF8(t *testing.T) {
+	if got := firstNonEmpty("bad\x80id", "GLM-5.2"); got != "GLM-5.2" {
+		t.Fatalf("got %q, want the valid candidate", got)
+	}
+	if got := firstNonEmpty("\x80\x81"); got != "" {
+		t.Fatalf("got %q, want empty", got)
+	}
+}

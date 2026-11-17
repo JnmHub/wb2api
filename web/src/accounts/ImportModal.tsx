@@ -102,6 +102,10 @@ export function ImportModal({ onClose }: { onClose: () => void }) {
             placeholder={'{\n  "accounts": [ { "uid": "…", "accessToken": "…", "realm": "intl" } ]\n}'}
           />
         </div>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          华为 CodeArts 凭据按行自动识别：粘贴 user_id / cloud_dragon_token / access_key_id / secret_access_key
+          即可；带上 refresh_token、dpop_private_key、code_verifier 才能自动续期。
+        </Typography.Text>
         <Toggle
           label="覆盖同 UID 的已有账号"
           hint="覆盖时保留原有的添加时间、积分、签到记录和代理槽绑定。"

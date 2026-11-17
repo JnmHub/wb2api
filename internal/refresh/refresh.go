@@ -353,7 +353,13 @@ func (r *Refresher) doRefresh(ctx context.Context, a *pool.Account) error {
 		base = r.BaseURL(a)
 	}
 	if realm.IsCodeArts(rec.Realm) {
-		return r.refreshCodeArts(ctx, a, rec, base)
+		// The OAuth2 token endpoint lives on the STS host, not on the
+		// snap-access root the chat endpoint uses.
+		sts := codearts.STSHost
+		if r.BaseURL != nil {
+			sts = r.BaseURL(a)
+		}
+		return r.refreshCodeArts(ctx, a, rec, sts)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

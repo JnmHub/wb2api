@@ -144,6 +144,15 @@ func (s *Service) Checkin(ctx context.Context, acc *pool.Account) (bool, string,
 	now := s.now()
 	res, err := codearts.Checkin(ctx, nil, s.base(rec), codearts.CredentialOf(rec), now)
 
+	// A second pass the same day (the scheduler racing a manual click) finds
+	// nothing claimable and would overwrite a real "+4000" with "无可领取". Keep
+	// the earlier success visible instead of downgrading it.
+	if res.Credits == 0 && len(res.Campaigns) == 0 && err == nil {
+		if ok, at, credits, msg := lastCheckinParts(rec.LastCheckin); ok && sameLocalDay(at, now) {
+			res.Message, res.Credits = msg, credits
+		}
+	}
+
 	message := res.Message
 	if message == "" && err != nil {
 		message = err.Error()
@@ -201,4 +210,29 @@ func checkedInToday(v any, now time.Time) bool {
 	y, mo, d := ts.Date()
 	y2, mo2, d2 := now.Date()
 	return y == y2 && mo == mo2 && d == d2
+}
+
+// lastCheckinParts reads the stamp written by Checkin.
+func lastCheckinParts(v any) (ok bool, at time.Time, credits float64, message string) {
+	m, isMap := v.(map[string]any)
+	if !isMap {
+		return false, time.Time{}, 0, ""
+	}
+	okFlag, _ := m["ok"].(bool)
+	sec, _ := m["at"].(float64)
+	credits, _ = m["credits"].(float64)
+	message, _ = m["message"].(string)
+	if sec == 0 {
+		return false, time.Time{}, 0, ""
+	}
+	return okFlag, time.Unix(int64(sec), 0), credits, message
+}
+
+func sameLocalDay(a, b time.Time) bool {
+	if a.IsZero() {
+		return false
+	}
+	ay, am, ad := a.Local().Date()
+	by, bm, bd := b.Local().Date()
+	return ay == by && am == bm && ad == bd
 }

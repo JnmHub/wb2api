@@ -106,6 +106,8 @@ export interface Account {
   model_cooldowns?: { model: string; expires_at: number; reason?: string }[]
   credits?: { remain?: number; total?: number }
   refresh?: { failures: number; next_try: number; last_error: string }
+  /** Last check-in result, normalised by the gateway for both channels. */
+  checkin?: { at?: string | number; ok?: boolean; message?: string; credits?: number; channel?: string }
   // detail only
   machine_id?: string
   session_id?: string

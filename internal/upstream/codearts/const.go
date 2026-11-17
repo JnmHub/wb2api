@@ -12,8 +12,13 @@ package codearts
 const (
 	// ChatPath is the OpenAI-compatible chat endpoint on snap-access.
 	ChatPath = "/api/v2/chat/completions"
-	// TokenPath exchanges an OAuth2 refresh token for STS credentials.
-	TokenPath = "/snap-manager/v1/oauth2/tokens"
+	// STSHost hosts the OAuth2 token endpoint (code exchange and refresh).
+	// It is NOT the snap-access host: posting there answers
+	// APIG.0101 "The API does not exist or has not been published".
+	STSHost = "https://sts.cn-north-4.myhuaweicloud.com"
+	// TokenPath exchanges an authorization code or refresh token for STS
+	// credentials.
+	TokenPath = "/v1/oauth2/tokens"
 
 	// ClientID is the OAuth client of the official CodeArts Agent extension.
 	// A refresh token is bound to it: refreshing with another client id is

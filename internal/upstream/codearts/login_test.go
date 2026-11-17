@@ -93,14 +93,16 @@ func TestPollTicketComplete(t *testing.T) {
 	}
 }
 
-// A finished login without credentials is an error, not a pending poll.
-func TestPollTicketCompleteWithoutCredentials(t *testing.T) {
+// A ticket response without credentials is still "waiting": the credential is
+// what makes a login usable, the identity is resolved separately.
+func TestPollTicketWithoutCredentialsKeepsWaiting(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"user_name":"hw"}`))
 	}))
 	defer srv.Close()
-	if _, err := PollTicket(context.Background(), srv.Client(), srv.URL, "tid", "sec"); err == nil {
-		t.Fatal("expected an error")
+	tok, err := PollTicket(context.Background(), srv.Client(), srv.URL, "tid", "sec")
+	if err != nil || tok != nil {
+		t.Fatalf("poll = (%v, %v), want (nil, nil)", tok, err)
 	}
 }
 
