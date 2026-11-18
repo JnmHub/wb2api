@@ -1,12 +1,17 @@
 package openai
 
-import "wb2api/internal/pool"
+import (
+	"wb2api/internal/pool"
+	"wb2api/internal/realm"
+	"wb2api/internal/upstream/codearts"
+)
 
 // pickAccount applies a single batch of advisory capacity exclusions before the
 // existing pool picker, leaving its sticky/manual/expiry/remaining/TopK policy
 // intact. A saturated pool therefore requires O(N) hint work, not N full scans
 // and N sequential Redis atomic probes. Feedback escape remains a preference.
 func (h *Handler) pickAccount(q *request) *pool.Account {
+	h.normaliseModelName(q)
 	h.startAdmission(q)
 	candidates := h.capacityCandidates(q)
 	counts := h.loadOccupancy(q, candidates, false)
@@ -67,4 +72,24 @@ func (h *Handler) pickAccount(q *request) *pool.Account {
 		q.at.allFull = true
 	}
 	return nil
+}
+
+// normaliseModelName rewrites the Huawei channel's display-name aliases
+// ("DeepSeek-V4.1-Flash") to the wire id ("deepseek-v4.1-flash") before the
+// picker consults model cooldowns: the upstream only accepts one spelling, and
+// a cooldown recorded under either would otherwise be silently bypassed.
+func (h *Handler) normaliseModelName(q *request) {
+	if q == nil || !realm.IsCodeArts(q.realm) || q.model == "" {
+		return
+	}
+	for _, a := range h.Pool.All() {
+		rec := a.Record()
+		if !realm.IsCodeArts(rec.Realm) {
+			continue
+		}
+		if wire := codearts.WireName(rec, q.model); wire != q.model {
+			q.model = wire
+			return
+		}
+	}
 }

@@ -158,8 +158,10 @@ func TestMergeModelsKeepsBenefitFlagAndRicherEntry(t *testing.T) {
 
 func TestMergeModelsSortsCaseInsensitively(t *testing.T) {
 	got := MergeModels([]ModelInfo{{ID: "b"}, {ID: "A"}, {ID: "a"}, {ID: "B"}})
-	// One entry per case-insensitive id, sorted, keeping the exact spelling.
-	if len(got) != 2 || got[0].ID != "A" || got[1].ID != "B" {
+	// One entry per case-insensitive id, sorted, keeping the FIRST spelling: the
+	// first source to report a model owns its wire name (builtin's model_id is
+	// the one the chat endpoint accepts).
+	if len(got) != 2 || got[0].ID != "A" || got[1].ID != "b" {
 		t.Fatalf("got %+v", got)
 	}
 }

@@ -109,13 +109,15 @@ func DiscoverModelsWith(ctx context.Context, hc *http.Client, base, benefitBase,
 	out := Discovery{Errors: map[string]string{}}
 	var sets [][]ModelInfo
 
-	if infos, err := fetchAgentModels(ctx, hc, base, cred); err != nil {
-		out.Errors["agent"] = err.Error()
-	} else if len(infos) > 0 {
-		sets = append(sets, infos)
-	}
 	if infos, err := fetchBuiltinModels(ctx, hc, base, cred); err != nil {
 		out.Errors["builtin"] = err.Error()
+	} else if len(infos) > 0 {
+		// First wins on a case-insensitive collision: model_id is what the chat
+		// endpoint accepts, while the agent source only has display names.
+		sets = append(sets, infos)
+	}
+	if infos, err := fetchAgentModels(ctx, hc, base, cred); err != nil {
+		out.Errors["agent"] = err.Error()
 	} else if len(infos) > 0 {
 		sets = append(sets, infos)
 	}
@@ -254,7 +256,9 @@ func fetchBuiltinModels(ctx context.Context, hc *http.Client, base string, cred 
 		if id == "" {
 			continue
 		}
-		infos = append(infos, ModelInfo{ID: id, Name: id, ContextWindow: m.ContextWindow, MaxTokens: m.MaxTokens, Desc: m.ModelDesc})
+		// Keep the display name: it is the second key the merge uses, and it is
+		// what WireName translates back to the callable model_id.
+		infos = append(infos, ModelInfo{ID: id, Name: firstNonEmpty(m.ModelName, id), ContextWindow: m.ContextWindow, MaxTokens: m.MaxTokens, Desc: m.ModelDesc})
 	}
 	return infos, nil
 }
@@ -339,15 +343,30 @@ func fetchBenefitModels(ctx context.Context, hc *http.Client, benefitBase string
 // lost maas_type header and a 404 at chat time); otherwise the richer entry wins.
 func MergeModels(sets ...[]ModelInfo) []ModelInfo {
 	merged := map[string]ModelInfo{}
+	// The same model can arrive under two spellings (builtin's model_id and the
+	// agent source's display name), so the display name is a second key: without
+	// it "glm-5.2-sft-harmony" and "GLM-5.2-ArkTS-SPARK" would both be listed.
+	byName := map[string]string{}
 	for _, set := range sets {
 		for _, mi := range set {
 			if mi.ID == "" {
 				continue
 			}
 			key := strings.ToLower(mi.ID)
+			if alias, ok := byName[strings.ToLower(mi.ID)]; ok {
+				key = alias
+			} else if mi.Name != "" {
+				if alias, ok := byName[strings.ToLower(mi.Name)]; ok {
+					key = alias
+				}
+			}
 			cur, ok := merged[key]
 			if !ok {
 				merged[key] = mi
+				byName[strings.ToLower(mi.ID)] = key
+				if mi.Name != "" {
+					byName[strings.ToLower(mi.Name)] = key
+				}
 				continue
 			}
 			merged[key] = richerModel(cur, mi)
@@ -374,6 +393,7 @@ func richerModel(cur, next ModelInfo) ModelInfo {
 		keep, drop = next, cur
 	}
 	keep.Benefit = benefit
+	keep.ID = cur.ID // the first source owns the wire spelling
 	if keep.Name == "" {
 		keep.Name = drop.Name
 	}

@@ -194,3 +194,39 @@ func ModelsOf(rec *accounts.Record) []string {
 	}
 	return out
 }
+
+// WireName maps a requested model to the spelling the chat endpoint accepts.
+//
+// The catalogue keeps both spellings: ID (what the API takes) and Name (what the
+// panel shows). They differ — "deepseek-v4.1-flash" is callable while
+// "DeepSeek-V4.1-Flash" is refused with TM.000010051 — so a request that names
+// the display form is translated instead of forwarded.
+func WireName(rec *accounts.Record, model string) string {
+	if rec == nil || model == "" {
+		return model
+	}
+	extra := Extra(rec)
+	if extra == nil {
+		return model
+	}
+	known := map[string]bool{}
+	if list, ok := extra["models"].([]any); ok {
+		for _, v := range list {
+			if id, ok := v.(string); ok {
+				if id == model {
+					return model // already the wire spelling
+				}
+				known[strings.ToLower(id)] = true
+			}
+		}
+	}
+	if names, ok := extra["model_names"].(map[string]any); ok {
+		for id, raw := range names {
+			name, _ := raw.(string)
+			if strings.EqualFold(name, model) {
+				return id
+			}
+		}
+	}
+	return model
+}

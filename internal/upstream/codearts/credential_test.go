@@ -3,6 +3,7 @@ package codearts
 import (
 	"testing"
 	"time"
+	"wb2api/internal/realm"
 
 	"wb2api/internal/store/accounts"
 )
@@ -114,5 +115,30 @@ func TestModelsOfAndBenefitModels(t *testing.T) {
 	}
 	if got := ModelsOf(nil); got != nil {
 		t.Fatalf("nil record = %v", got)
+	}
+}
+
+// The catalogue carries both spellings; only one of them is callable.
+func TestWireNameTranslatesDisplayNames(t *testing.T) {
+	rec := &accounts.Record{Realm: realm.CodeArts, Extra: map[string]any{
+		"codearts": map[string]any{
+			"models":      []any{"deepseek-v4.1-flash", "GLM-5.2"},
+			"model_names": map[string]any{"deepseek-v4.1-flash": "DeepSeek-V4.1-Flash"},
+		},
+	}}
+	cases := map[string]string{
+		"deepseek-v4.1-flash": "deepseek-v4.1-flash", // already the wire name
+		"DeepSeek-V4.1-Flash": "deepseek-v4.1-flash", // display name → wire id
+		"deepseek-V4.1-FLASH": "deepseek-v4.1-flash", // match is case-insensitive
+		"GLM-5.2":             "GLM-5.2",             // no mapping needed
+		"unknown-model":       "unknown-model",       // pass through untouched
+	}
+	for in, want := range cases {
+		if got := WireName(rec, in); got != want {
+			t.Errorf("WireName(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := WireName(nil, "x"); got != "x" {
+		t.Fatalf("nil record must pass through: %q", got)
 	}
 }

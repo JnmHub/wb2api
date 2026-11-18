@@ -758,7 +758,8 @@ func chatPathFor(r string) string {
 // buildOutbound renders the body of one attempt for the account's channel.
 func (h *Handler) buildOutbound(q *request, rec *accounts.Record, product string) outbound {
 	if realm.IsCodeArts(rec.Realm) {
-		body, names, err := codearts.PrepareBody(q.shaped, q.model, identity.ConversationIDFor(rec.UID, q.sessionKey))
+		wire := codearts.WireName(rec, q.model)
+		body, names, err := codearts.PrepareBody(q.shaped, wire, identity.ConversationIDFor(rec.UID, q.sessionKey))
 		if err != nil {
 			return outbound{body: []byte("{}")}
 		}

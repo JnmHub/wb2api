@@ -142,8 +142,12 @@ func (s *Service) Discover(ctx context.Context, acc *pool.Account) (codearts.Dis
 func (s *Service) store(acc *pool.Account, dis codearts.Discovery) error {
 	models := make([]any, 0, len(dis.Models))
 	benefit := make([]any, 0, len(dis.Models))
+	names := make(map[string]any, len(dis.Models))
 	for _, mi := range dis.Models {
 		models = append(models, mi.ID)
+		if mi.Name != "" && mi.Name != mi.ID {
+			names[mi.ID] = mi.Name
+		}
 		if mi.Benefit {
 			benefit = append(benefit, mi.ID)
 		}
@@ -160,11 +164,12 @@ func (s *Service) store(acc *pool.Account, dis codearts.Discovery) error {
 			m = map[string]any{}
 		}
 		// Copy before writing: the record and its Extra map are shared.
-		next := make(map[string]any, len(m)+4)
+		next := make(map[string]any, len(m)+5)
 		for k, v := range m {
 			next[k] = v
 		}
 		next["models"] = models
+		next["model_names"] = names
 		next["benefit_models"] = benefit
 		next["models_at"] = at
 		if problem != nil {
