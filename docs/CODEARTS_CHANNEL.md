@@ -509,6 +509,7 @@ realm.CodeArtsChatBase // https://snap-access.cn-north-4.myhuaweicloud.com
 | 签到（领 1000 积分） | 已接：面板手动 + 调度器自动（`Channel` 钩子） |
 | OAuth 登录（PKCE + ticket） | 已接：无回调端口的服务端登录流程 |
 | 账号校验（current/user） | 已接（`codearts.CurrentUser`），面板未单独开按钮 |
+| 远程部署登录 | 已接（v2.7.2）：门户只回调 `127.0.0.1`，服务器部署把地址栏粘回面板 `POST /api/v2/codearts/login/complete` 完成登录 |
 | 积分余额 | 已接：`GET /snap-manager/v1/statistics/plugin`（v2.6.3），面板「积分」列与详情显示剩余/总量/套餐/重置日 |
 | 会话心跳（3 路并发） | 已接（v2.7.0）：`PUT /snap-manager/v1/chat-session/heartbeat` busy/idle 租约，聊天带 `user-session-id`，满员本地换号 |
 | 工具名 64 字符 | 已接（v2.7.0）：超限改名（sha1 后缀）+ 响应还原 |

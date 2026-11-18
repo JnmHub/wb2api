@@ -25,6 +25,19 @@ export function AddAccountModal({ onClose }: { onClose: () => void }) {
     gcTime: 0,
   })
   const status = poll.data?.status
+  const [callbackURL, setCallbackURL] = useState('')
+  const complete = useMutation({
+    mutationFn: () =>
+      post<{ ok: boolean; uid: string; nickname?: string }>('/api/v2/codearts/login/complete', {
+        attempt: state,
+        url: callbackURL,
+      }),
+    onSuccess: () => {
+      setCallbackURL('')
+      void qc.invalidateQueries({ queryKey: ['login-poll', state] })
+      void qc.invalidateQueries({ queryKey: ['accounts'] })
+    },
+  })
 
   useEffect(() => {
     if (status === 'ok') {
@@ -117,6 +130,35 @@ export function AddAccountModal({ onClose }: { onClose: () => void }) {
                 </Space>
                 {status !== 'expired' && status !== 'error' && (
                   <Typography.Text type="secondary">登录完成后这里会自动跳转，不需要刷新页面。</Typography.Text>
+                )}
+                {realm === 'codearts' && (
+                  <div>
+                    <Typography.Text type="secondary">
+                      部署在服务器上时，浏览器打不开 127.0.0.1 的回调地址。把登录后浏览器地址栏那一行
+                      （<span className="mono">…/oauth/callback?code=…</span>）粘到这里即可完成登录。
+                    </Typography.Text>
+                    <Input.TextArea
+                      className="mono"
+                      autoSize={{ minRows: 2, maxRows: 4 }}
+                      placeholder="http://127.0.0.1:52917/oauth/callback?code=…&state=…"
+                      value={callbackURL}
+                      onChange={(e) => setCallbackURL(e.target.value)}
+                    />
+                    <Space style={{ marginTop: 8 }}>
+                      <Button
+                        size="small"
+                        disabled={!callbackURL.trim()}
+                        loading={complete.isPending}
+                        onClick={() => complete.mutate()}
+                      >
+                        用这个地址完成登录
+                      </Button>
+                      {complete.data && <Typography.Text type="success">已登录：{complete.data.uid}</Typography.Text>}
+                      {complete.error && (
+                        <Typography.Text type="danger">{(complete.error as Error).message}</Typography.Text>
+                      )}
+                    </Space>
+                  </div>
                 )}
               </>
             )}

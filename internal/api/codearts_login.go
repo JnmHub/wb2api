@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -344,8 +345,20 @@ func (o *Operations) codeartsCallbackFor(l *codeartsLogin, w http.ResponseWriter
 			return
 		}
 	}
-	tok, err := codearts.ExchangeCode(context.WithoutCancel(r.Context()), nil, o.codeartsSTSBase(),
-		code, l.session.Verifier, l.session.Port, l.session.DPoP)
+	rec, err := o.completeCodeArtsLogin(context.WithoutCancel(r.Context()), l, code)
+	if err != nil {
+		detail := fmt.Sprintf("%s<br><br>redirect_uri=http://127.0.0.1:%d%s，授权码 %d 字符。后台仍在尝试票据轮询，可回到面板观察结果。",
+			err.Error(), l.session.Port, codearts.CallbackPath, len(code))
+		writeCodeArtsPage(w, http.StatusBadGateway, "登录失败", detail)
+		return
+	}
+	writeCodeArtsPage(w, http.StatusOK, "登录成功", "账号 "+rec.UID+" 已写入网关，可以关闭本页。")
+}
+
+// completeCodeArtsLogin exchanges one authorization code and stores the account.
+// Both the loopback callback and the paste endpoint end up here.
+func (o *Operations) completeCodeArtsLogin(ctx context.Context, l *codeartsLogin, code string) (*accounts.Record, error) {
+	tok, err := codearts.ExchangeCode(ctx, nil, o.codeartsSTSBase(), code, l.session.Verifier, l.session.Port, l.session.DPoP)
 	if err != nil {
 		// A failed exchange does not end the attempt: the portal may still have
 		// registered a ticket, so the panel's poll keeps running.
@@ -353,20 +366,93 @@ func (o *Operations) codeartsCallbackFor(l *codeartsLogin, w http.ResponseWriter
 		if o.CodeArts != nil {
 			o.CodeArts.Log.Warn("codearts code exchange failed", "err", err)
 		}
-		detail := fmt.Sprintf("%s<br><br>redirect_uri=http://127.0.0.1:%d%s，授权码 %d 字符。后台仍在尝试票据轮询，可回到面板观察结果。",
-			err.Error(), l.session.Port, codearts.CallbackPath, len(code))
-		writeCodeArtsPage(w, http.StatusBadGateway, "登录失败", detail)
-		return
+		return nil, err
 	}
-	rec, err := o.addCodeArtsAccount(context.WithoutCancel(r.Context()), tok, l.session)
+	rec, err := o.addCodeArtsAccount(ctx, tok, l.session)
 	if err != nil {
 		l.noteFailure(err.Error())
-		writeCodeArtsPage(w, http.StatusInternalServerError, "登录失败", err.Error())
-		return
+		return nil, err
 	}
 	l.finish(rec, "")
 	o.finishCodeArtsLogin(rec)
-	writeCodeArtsPage(w, http.StatusOK, "登录成功", "账号 "+rec.UID+" 已写入网关，可以关闭本页。")
+	return rec, nil
+}
+
+// codeartsLoginComplete finishes a login from the callback URL the operator
+// pasted into the panel.
+//
+// The portal always redirects the browser to http://127.0.0.1:<loopback port>,
+// which is the gateway's own machine. On a server deployment the address bar of
+// the operator's laptop cannot open it, so the code is carried back by hand.
+func (o *Operations) codeartsLoginComplete(w http.ResponseWriter, r *http.Request) {
+	var b struct {
+		Attempt string `json:"attempt"`
+		URL     string `json:"url"`
+	}
+	if !readBody(w, r, &b) {
+		return
+	}
+	code, secret := parseCodeArtsCallback(b.URL)
+	if secret != "" {
+		if l, ok := o.codeartsLogins.get(strings.TrimSpace(b.Attempt)); ok {
+			l.setSecret(secret)
+		}
+	}
+	if code == "" {
+		msg := "地址里没有 code 参数；请把浏览器地址栏里 oauth/callback?code=… 这一整行粘回来"
+		if secret != "" {
+			msg = "已收到 secret，请继续把带 code= 的那一次回调地址粘进来"
+		}
+		writeErr(w, http.StatusBadRequest, msg)
+		return
+	}
+	id := strings.TrimSpace(b.Attempt)
+	l, ok := o.codeartsLogins.get(id)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "登录会话已失效，请重新发起登录")
+		return
+	}
+	if rec, failure, done, _ := l.state(); done {
+		if rec != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uid": rec.UID, "nickname": rec.Nickname, "replayed": true})
+			return
+		}
+		writeErr(w, http.StatusBadGateway, orDefault(failure, "登录失败"))
+		return
+	}
+	l.claimCode(code)
+	rec, err := o.completeCodeArtsLogin(context.WithoutCancel(r.Context()), l, code)
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "STS5.1805") || strings.Contains(msg, "invalid authorization code") {
+			msg = "授权码已失效，或与本次登录会话不匹配（授权码几分钟就过期，且只能用在发起它的那次登录上）。请重新点「开始登录」，登录完成后立刻把地址栏那一行粘回来。"
+		}
+		writeErr(w, http.StatusBadGateway, msg)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uid": rec.UID, "nickname": rec.Nickname})
+}
+
+// parseCodeArtsCallback accepts a full URL, a bare query string or just the code.
+func parseCodeArtsCallback(raw string) (code, secret string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", ""
+	}
+	if u, err := url.Parse(raw); err == nil && (u.Scheme != "" || u.Host != "") {
+		// A URL without a query is not a callback: keep it out of the exchange.
+		if u.RawQuery != "" {
+			q := u.Query()
+			return strings.TrimSpace(q.Get("code")), strings.TrimSpace(q.Get("secret"))
+		}
+		return "", ""
+	}
+	if strings.Contains(raw, "=") {
+		if q, err := url.ParseQuery(strings.TrimPrefix(raw, "?")); err == nil {
+			return strings.TrimSpace(q.Get("code")), strings.TrimSpace(q.Get("secret"))
+		}
+	}
+	return raw, ""
 }
 
 // finishCodeArtsLogin fills the catalogue after a successful login.

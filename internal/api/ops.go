@@ -369,6 +369,9 @@ func (o *Operations) Register(mux *http.ServeMux, wrap func(http.Handler) http.H
 	mux.Handle("GET /api/v2/accounts/login/poll", h(o.loginPoll))
 	mux.Handle("POST /api/v2/accounts/login/cancel", h(o.loginCancel))
 	mux.Handle("POST /api/v2/codearts/models/refresh", h(o.codeartsModelsRefresh))
+	// Remote deployments cannot reach the loopback callback; the operator pastes
+	// the address bar back into the panel instead.
+	mux.Handle("POST /api/v2/codearts/login/complete", h(o.codeartsLoginComplete))
 	// The portal calls this back from the browser, without the panel session:
 	// it must stay unauthenticated.
 	mux.HandleFunc("/oauth/callback", o.codeartsCallback)
