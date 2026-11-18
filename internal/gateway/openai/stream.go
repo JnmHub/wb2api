@@ -17,6 +17,7 @@ import (
 
 	"wb2api/internal/gateway/leak"
 	"wb2api/internal/pool"
+	"wb2api/internal/realm"
 	"wb2api/internal/upstream/codearts"
 )
 
@@ -406,7 +407,8 @@ loop:
 			if streamErr != nil {
 				// Preserve buffered output, but never expose arbitrary upstream
 				// error details (which may contain credentials or request data).
-				errObj, _ := json.Marshal(map[string]apiError{"error": {Message: "upstream stream aborted", Type: "server_error"}})
+				h.noteStreamModelError(acc, model, streamErr)
+				errObj, _ := json.Marshal(map[string]apiError{"error": {Message: h.streamErrorMessage(streamErr), Type: "server_error"}})
 				if writeData(errObj) != nil {
 					clientClosed = true
 				}
@@ -654,8 +656,9 @@ func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp fun
 	if res.err != nil {
 		markCollectedError(&ev, r)
 		h.emitWithLatency(r.Context(), ev)
+		h.noteStreamModelError(acc, model, res.err)
 		if r.Context().Err() == nil {
-			writeError(w, http.StatusBadGateway, "upstream stream aborted", "server_error")
+			writeError(w, http.StatusBadGateway, h.streamErrorMessage(res.err), "server_error")
 		}
 		return
 	}
@@ -709,4 +712,32 @@ func newCallID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
 	return "call_" + hex.EncodeToString(b[:])
+}
+
+// streamErrorMessage returns the parsed upstream business error when there is
+// one, and the deliberately vague default otherwise: raw bodies can carry
+// credentials or request data.
+func (h *Handler) streamErrorMessage(err error) string {
+	if err == nil {
+		return "upstream stream aborted"
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "InferHub.") || strings.Contains(msg, "TM.") || strings.Contains(msg, "APIG.") {
+		return "upstream: " + msg
+	}
+	return "upstream stream aborted"
+}
+
+// noteStreamModelError parks the model on the account when the upstream says
+// the account may not call it: otherwise every retry re-earns the same refusal.
+func (h *Handler) noteStreamModelError(acc *pool.Account, model string, err error) {
+	if acc == nil || err == nil {
+		return
+	}
+	if !realm.IsCodeArts(acc.Realm) || !codearts.IsModelAccessError([]byte(err.Error())) {
+		return
+	}
+	if rec, isNew := acc.NoteModelError(model, time.Time{}, 30*time.Minute, "codearts model access", truncate(err.Error(), 200), time.Now()); isNew && rec != nil {
+		h.persistRecord(rec)
+	}
 }
