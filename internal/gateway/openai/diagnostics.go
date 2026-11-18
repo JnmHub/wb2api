@@ -37,10 +37,10 @@ func upstreamCodeOf(body []byte) string {
 	return ""
 }
 
-// requestShapeOf summarises the outbound body: counts and flags only, never
-// message text, tool arguments, headers or credentials.
-func requestShapeOf(shaped *jsonx.Obj, body []byte) *RequestShape {
-	out := &RequestShape{Bytes: len(body), Stream: true}
+// Keep the original tool-name diagnostics and record the size and token budget
+// of the final CodeArts payload after provider-specific normalization.
+func requestShapeOf(shaped *jsonx.Obj, wire outbound) *RequestShape {
+	out := &RequestShape{Bytes: len(wire.body), MaxTokens: wire.maxTokens, Stream: true}
 	if shaped == nil {
 		return out
 	}
@@ -70,14 +70,6 @@ func requestShapeOf(shaped *jsonx.Obj, body []byte) *RequestShape {
 		case map[string]any:
 			out.HasToolChoice = true
 			out.ToolChoice = "object"
-		}
-	}
-	for _, key := range []string{"max_tokens", "max_completion_tokens"} {
-		if v, ok := shaped.Lookup(key); ok {
-			if n, ok := v.(float64); ok && n > 0 {
-				out.MaxTokens = int64(n)
-				break
-			}
 		}
 	}
 	return out

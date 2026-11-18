@@ -1,6 +1,9 @@
 package codearts
 
 import (
+	"encoding/json"
+	"math"
+	"strconv"
 	"strings"
 
 	"wb2api/internal/jsonx"
@@ -20,35 +23,82 @@ var bodyKeys = []string{
 	"seed", "user", "response_format", "n",
 }
 
-// sanitiseParams removes the combinations the upstream rejects with a bare
-// InferHub.001001005 "The request param is invalid":
-//
-//   - max_tokens together with max_completion_tokens (two output budgets)
-//   - n > 1 (only one choice is ever produced)
-//   - stream_options (streaming is forced on; include_usage is our business)
-//
-// Everything else is forwarded untouched: the upstream may still reject it, but
-// silently rewriting a value the client asked for would be worse than a clear
-// error with the diagnostic record.
-func sanitiseParams(out *jsonx.Obj) {
-	if out.Has("max_completion_tokens") && out.Has("max_tokens") {
-		out.Delete("max_completion_tokens")
+const maxOutputTokens = 65536
+
+// A decimal or exponent can denote a whole token count (e.g. 10.0e-1).
+// Check the decimal digits before float conversion can round away a fraction.
+func wholeTokenNumber(n json.Number) bool {
+	raw := string(n)
+	var exponent int64
+	if i := strings.IndexAny(raw, "eE"); i >= 0 {
+		exponent, _ = strconv.ParseInt(raw[i+1:], 10, 64) // overflow saturates
+		raw = raw[:i]
 	}
+	integer, fraction, _ := strings.Cut(raw, ".")
+	if places := len(strings.TrimRight(fraction, "0")); places > 0 {
+		return exponent >= int64(places)
+	}
+	trailingZeros := len(integer) - len(strings.TrimRight(integer, "0"))
+	return exponent >= -int64(trailingZeros)
+}
+
+// sanitiseParams removes unsupported options, caps the selected output budget
+// and returns its positive integer value for request diagnostics.
+func sanitiseParams(out *jsonx.Obj) int64 {
 	if v, ok := out.Lookup("n"); ok {
 		if n, ok := v.(float64); !ok || n != 1 {
 			out.Delete("n")
 		}
 	}
 	out.Delete("stream_options")
+
+	key := "max_tokens"
+	if out.Has(key) {
+		out.Delete("max_completion_tokens")
+	} else {
+		key = "max_completion_tokens"
+	}
+	var tokens float64
+	switch v := out.Get(key).(type) {
+	case json.Number:
+		if strings.ContainsAny(string(v), ".eE") && !wholeTokenNumber(v) {
+			return 0
+		}
+		// A positive overflow is +Inf, which also exceeds the limit.
+		tokens, _ = v.Float64()
+	case float64:
+		tokens = v
+	case int:
+		tokens = float64(v)
+	case int64:
+		tokens = float64(v)
+	default:
+		return 0
+	}
+	if tokens <= 0 || tokens != math.Trunc(tokens) {
+		return 0
+	}
+	if tokens > maxOutputTokens {
+		out.Set(key, maxOutputTokens)
+		return maxOutputTokens
+	}
+	return int64(tokens)
 }
 
 // PrepareBody renders the CodeArts chat body from the already-shaped request.
+func PrepareBody(shaped *jsonx.Obj, model, chatID string) ([]byte, *ToolNameMap, error) {
+	body, names, _, err := PrepareBodyWithBudget(shaped, model, chatID)
+	return body, names, err
+}
+
+// PrepareBodyWithBudget also returns the positive integer output budget on the
+// wire, or zero when the request omits it or specifies an invalid value.
 //
 // The upstream is stream-only in practice: the official client always asks for
 // SSE and reassembles locally, so the flag is forced to true here. A client
 // that asked for a non-stream response is served by wb2api's own aggregation
 // over that stream, which keeps one wire shape for both modes.
-func PrepareBody(shaped *jsonx.Obj, model, chatID string) ([]byte, *ToolNameMap, error) {
+func PrepareBodyWithBudget(shaped *jsonx.Obj, model, chatID string) ([]byte, *ToolNameMap, int64, error) {
 	out := jsonx.NewObj()
 	if shaped != nil {
 		for _, k := range bodyKeys {
@@ -104,7 +154,7 @@ func PrepareBody(shaped *jsonx.Obj, model, chatID string) ([]byte, *ToolNameMap,
 			}
 		}
 	}
-	sanitiseParams(out)
+	budget := sanitiseParams(out)
 	out.Set("model", model)
 	out.Set("stream", true)
 	out.Set("tool_stream", true)
@@ -113,7 +163,7 @@ func PrepareBody(shaped *jsonx.Obj, model, chatID string) ([]byte, *ToolNameMap,
 		out.Set("prompt_cache_key", chatID)
 	}
 	body, err := jsonx.Marshal(out)
-	return body, names, err
+	return body, names, budget, err
 }
 
 // ChatHeaders builds and signs the outbound header set of one attempt.

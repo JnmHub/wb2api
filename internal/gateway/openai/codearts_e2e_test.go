@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"wb2api/internal/catalog"
 	"wb2api/internal/codeartsync"
 	"wb2api/internal/pool"
 	"wb2api/internal/realm"
@@ -138,6 +139,47 @@ func TestCodeArtsStreamEndToEnd(t *testing.T) {
 	}
 	if ev.Account != "hw-1" {
 		t.Fatalf("usage account = %q", ev.Account)
+	}
+}
+
+func TestCodeArtsChatUsageMatchesUpstreamMaxTokens(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		budget string
+		want   int64
+	}{
+		{"catalog default", "", 65536},
+		{"explicit 128000", `,"max_tokens":128000`, 65536},
+		{"explicit 4096", `,"max_tokens":4096`, 4096},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newCodeartsEnv(t, codeartsSSE)
+			e.h.Catalog = &catalog.Service{}
+			resp := e.post(t, `{"model":"deepseek-v4.1-flash","stream":true,"messages":[{"role":"user","content":"hi"}]`+tc.budget+`}`)
+			defer resp.Body.Close()
+			raw, err := io.ReadAll(resp.Body)
+			if err != nil || resp.StatusCode != http.StatusOK {
+				t.Fatalf("chat response: HTTP %d, err = %v, body = %s", resp.StatusCode, err, raw)
+			}
+
+			var wire struct {
+				MaxTokens int64 `json:"max_tokens"`
+			}
+			if err := json.Unmarshal(e.body, &wire); err != nil {
+				t.Fatalf("decode upstream body: %v", err)
+			}
+			if wire.MaxTokens != tc.want {
+				t.Fatalf("upstream max_tokens = %d, want %d", wire.MaxTokens, tc.want)
+			}
+			select {
+			case ev := <-e.events:
+				if ev.Shape == nil || ev.Shape.MaxTokens != wire.MaxTokens {
+					t.Fatalf("usage request_shape = %+v, upstream max_tokens = %d", ev.Shape, wire.MaxTokens)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("no usage event")
+			}
+		})
 	}
 }
 

@@ -653,7 +653,7 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 	q.attemptBytes = len(out.body)
 	q.toolNames = out.names
 	if realm.IsCodeArts(rec.Realm) {
-		q.shape = requestShapeOf(q.shaped, out.body)
+		q.shape = requestShapeOf(q.shaped, out)
 		setRequestShape(q.r.Context(), q.shape)
 	}
 
@@ -763,7 +763,8 @@ type outbound struct {
 	body []byte
 	gz   bool
 	// names restores the tool names shortened for the Huawei channel.
-	names *codearts.ToolNameMap
+	names     *codearts.ToolNameMap
+	maxTokens int64
 }
 
 // chatPathFor returns the chat endpoint of an upstream channel.
@@ -778,11 +779,11 @@ func chatPathFor(r string) string {
 func (h *Handler) buildOutbound(q *request, rec *accounts.Record, product string) outbound {
 	if realm.IsCodeArts(rec.Realm) {
 		wire := codearts.WireName(rec, q.model)
-		body, names, err := codearts.PrepareBody(q.shaped, wire, identity.ConversationIDFor(rec.UID, q.sessionKey))
+		body, names, maxTokens, err := codearts.PrepareBodyWithBudget(q.shaped, wire, identity.ConversationIDFor(rec.UID, q.sessionKey))
 		if err != nil {
 			return outbound{body: []byte("{}")}
 		}
-		return outbound{body: body, names: names}
+		return outbound{body: body, names: names, maxTokens: maxTokens}
 	}
 	enc, gz := q.bodyFor(product)
 	return outbound{body: enc.wire(gz), gz: gz}
