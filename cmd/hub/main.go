@@ -669,7 +669,8 @@ func main() {
 	background.start(func() {
 		(&codeartsync.Scanner{Service: codeArtsSvc}).Run(bg)
 	})
-	(&api.Operations{Ops: opsClient, Pool: p, Prober: h, Scheduler: sched, Activity: activityLog, Scanner: scanner, AtRest: keyring, Agents: agentMgr, Persist: persist, CodeArts: codeArtsSvc}).Register(mux, auth.Require)
+	(&api.Operations{Ops: opsClient, Pool: p, Prober: h, Scheduler: sched, Activity: activityLog, Scanner: scanner, AtRest: keyring, Agents: agentMgr, Persist: persist, CodeArts: codeArtsSvc,
+		Push: accountsAPI.PushHandler()}).Register(mux, auth.Require)
 	(&api.Settings{Store: st, Pool: p, Realm: realmSw, Guards: h.Guards, Catalog: cat, Ops: opsGate}).Register(mux, auth.Require)
 	checker := &updates.Checker{Current: version, Enabled: st.UpdateCheckEnabled, Store: st, Log: log}
 	(&api.Updates{Checker: checker}).Register(mux, auth.Require)

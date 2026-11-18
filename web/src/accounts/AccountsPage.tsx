@@ -164,7 +164,14 @@ export function AccountsPage() {
         </Space>
       ),
     },
-    { title: '身份', dataIndex: 'product', width: 96 },
+    {
+      title: '身份',
+      dataIndex: 'product',
+      width: 96,
+      // The outbound identity (desktop/vscode/cli) only exists for WorkBuddy;
+      // a Huawei account has no such knob.
+      render: (_: unknown, r: Account) => (r.realm === 'codearts' ? '—' : r.product),
+    },
     { title: '权重', dataIndex: 'weight', width: 70, align: 'right' },
     {
       title: '今日 Token',

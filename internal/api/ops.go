@@ -91,6 +91,8 @@ func (a *Accounts) upstreamAction(b batchReq) (jobs.Func, error) {
 
 // Operations serves the single-account actions, login, import / export, the
 // activity history and the scheduler.
+// Push is the API-key authenticated account push handler, wired from the panel's
+// Accounts handler (which owns the settings store).
 type Operations struct {
 	Ops       *ops.Client
 	Pool      *pool.Pool
@@ -110,6 +112,9 @@ type Operations struct {
 	// CodeArtsSTSBase overrides the STS root used for the code exchange and the
 	// refresh chain (tests, mock).
 	CodeArtsSTSBase string
+
+	// Push handles POST /api/v2/accounts/push (nil = disabled).
+	Push http.HandlerFunc
 
 	// codeartsLogins holds in-flight CodeArts browser logins.
 	codeartsLogins codeartsLogins
@@ -279,8 +284,8 @@ func (o *Operations) importAccounts(w http.ResponseWriter, r *http.Request) {
 		b, _ := jsonMarshal(d)
 		raw = b
 	}
-	if in.Realm != "" && in.Realm != "intl" && in.Realm != "cn" {
-		writeErr(w, http.StatusBadRequest, "realm must be intl or cn")
+	if in.Realm != "" && in.Realm != "intl" && in.Realm != "cn" && in.Realm != realm.CodeArts {
+		writeErr(w, http.StatusBadRequest, "realm must be intl, cn or codearts")
 		return
 	}
 	rows, err := ops.ParseDocument(raw)
@@ -376,6 +381,10 @@ func (o *Operations) Register(mux *http.ServeMux, wrap func(http.Handler) http.H
 	// it must stay unauthenticated.
 	mux.HandleFunc("/oauth/callback", o.codeartsCallback)
 	mux.Handle("POST /api/v2/accounts/import", h(o.importAccounts))
+	// Automation pushes accounts with an API key: no panel session, no CSRF.
+	if o.Push != nil {
+		mux.HandleFunc("POST /api/v2/accounts/push", o.Push)
+	}
 	mux.Handle("GET /api/v2/accounts/export", h(o.exportAccounts))
 	mux.Handle("GET /api/v2/activity", h(o.activityList))
 	mux.Handle("GET /api/v2/scheduler", h(o.schedulerGet))

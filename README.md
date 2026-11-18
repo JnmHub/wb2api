@@ -64,6 +64,7 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
 
 ## 最新发行版
 
+[v2.8.0 更新说明](docs/releases/v2.8.0.md)：新增 `POST /api/v2/accounts/push`（API key 认证，远程推送账号）；华为渠道「身份」列不再误显示 workbuddy。
 [v2.7.2 更新说明](docs/releases/v2.7.2.md)：服务器部署可登录华为渠道——把浏览器回调地址粘回面板即可，不再依赖本机回环。
 [v2.7.1 更新说明](docs/releases/v2.7.1.md)：华为模型 id 改用内置清单的 `model_id`（DeepSeek 等模型此前因发错名字被拒），展示名自动翻译，重复模型合并。
 [v2.7.0 更新说明](docs/releases/v2.7.0.md)：华为渠道补齐会话心跳（3 路上游并发）、工具名 64 字符改写与还原、体积门、福利网关开关、签到回读确认与写入预算。
