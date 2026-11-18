@@ -234,3 +234,36 @@ func TestFirstNonEmptySkipsInvalidUTF8(t *testing.T) {
 		t.Fatalf("got %q, want empty", got)
 	}
 }
+
+// A disabled benefit gateway means "no free-plan catalogue here": the switch is
+// honoured and nothing is reported as a failure.
+func TestDiscoverSkipsBenefitWhenGateDisabled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case BenefitGatePath:
+			fmt.Fprint(w, `{"enabled":false}`)
+		case AgentListPath:
+			fmt.Fprint(w, `{"agents":[{"agent_id":"a-1","agent_name":"CodeAgent","show_in_ide":true,"alias":{"alias_zh_cn":"智能体"}}]}`)
+		case AgentDetailPath:
+			fmt.Fprint(w, `{"gpts":{"models":[{"model_name":"GLM-5.2"}]}}`)
+		case BuiltinPath:
+			fmt.Fprint(w, `{"builtinModels":[]}`)
+		default:
+			t.Errorf("the benefit endpoints must not be called when the gate is off: %s", r.URL.Path)
+			w.WriteHeader(500)
+		}
+	}))
+	defer srv.Close()
+
+	dis := DiscoverModelsWith(context.Background(), srv.Client(), srv.URL, srv.URL, "u-1", CreditCredential(), true)
+	if len(dis.Errors) != 0 {
+		t.Fatalf("errors = %v", dis.Errors)
+	}
+	if dis.Claimed {
+		t.Fatal("a disabled gate must not trigger a claim")
+	}
+	if len(dis.Models) != 1 || dis.Models[0].ID != "GLM-5.2" {
+		t.Fatalf("models = %+v", dis.Models)
+	}
+}
