@@ -422,3 +422,44 @@ func TestCodeArtsParamErrorCarriesDiagnostics(t *testing.T) {
 		t.Fatalf("long tool names = %d", ev.Shape.LongToolNames)
 	}
 }
+
+// A failure that arrives inside a healthy stream must still be traceable: the
+// client gets HTTP 200 plus an error frame, so without the id and the outbound
+// shape on the usage event the record cannot be tied to anything.
+func TestCodeArtsStreamErrorKeepsDiagnostics(t *testing.T) {
+	e := newCodeartsEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"index":0,"delta":{"content":"a"}}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"error_code":"InferHub.001001005.400","error_msg":"The request param is invalid, Please check it"}`+"\n\n")
+	})
+	resp := e.post(t, `{"model":"deepseek-v4.1-flash","stream":true,
+		"messages":[{"role":"user","content":"你好"}],
+		"tools":[{"type":"function","function":{"name":"`+strings.Repeat("b", 70)+`","parameters":{"type":"object"}}}],
+		"tool_choice":"auto"}`)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body = %s", resp.StatusCode, raw)
+	}
+	header := resp.Header.Get("X-Request-Id")
+	if header == "" {
+		t.Fatal("the streaming response must carry X-Request-Id from the first byte")
+	}
+
+	ev := <-e.events
+	if ev.Outcome != "upstream_aborted" {
+		t.Fatalf("outcome = %q", ev.Outcome)
+	}
+	if ev.UpstreamCode != "InferHub.001001005.400" {
+		t.Fatalf("upstream code = %q", ev.UpstreamCode)
+	}
+	if ev.RequestID != header {
+		t.Fatalf("event id = %q, want the header %q", ev.RequestID, header)
+	}
+	if ev.Shape == nil {
+		t.Fatal("the streaming failure lost the outbound request shape")
+	}
+	if ev.Shape.Tools != 1 || ev.Shape.LongToolNames != 1 || ev.Shape.Bytes == 0 {
+		t.Fatalf("shape = %+v", ev.Shape)
+	}
+}

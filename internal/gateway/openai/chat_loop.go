@@ -198,6 +198,11 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	}
 	q.turnID = identity.NewTurnRequestID()
 	q.requestID = q.turnID
+	// The streaming path only has the *http.Request: attach the id to its
+	// context before any response byte is written, so a failure inside the
+	// stream can still be recorded against the id the client was given.
+	q.r = q.r.WithContext(context.WithValue(q.r.Context(), requestMetaKey{}, &requestMeta{id: q.requestID}))
+	q.w.Header().Set("X-Request-Id", q.requestID)
 	if key != nil {
 		// Count local unlimited requests too, so enabling a cap does not forget
 		// work that started while the key's limit was disabled.
@@ -646,6 +651,7 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 	q.toolNames = out.names
 	if realm.IsCodeArts(rec.Realm) {
 		q.shape = requestShapeOf(q.shaped, out.body)
+		setRequestShape(q.r.Context(), q.shape)
 	}
 
 	// The Huawei channel gates each account to three upstream conversations:
@@ -729,7 +735,7 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 	if q.sink != nil {
 		q.sink(q, acc, cancel, idle, body)
 	} else if q.stream {
-		h.pipeStream(q.w, q.r, cancel, idle, body, acc, q.viewModel(), q.keyID, q.effort(h), q.start, q.maxTPS, q.toolNames)
+		h.pipeStream(q.w, q.r, cancel, idle, body, acc, q.viewModel(), q.keyID, q.effort(h), q.start, q.maxTPS, q.toolNames, q.shape)
 	} else {
 		h.aggregate(q.w, q.r, cancel, idle, body, acc, q.viewModel(), q.keyID, q.effort(h), q.start, q.toolNames)
 	}

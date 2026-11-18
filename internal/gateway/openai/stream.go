@@ -164,7 +164,7 @@ func usageTotal(u json.RawMessage) int64 {
 
 // pipeStream relays an upstream SSE stream to the client.
 func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp func(), idleD time.Duration, body io.Reader,
-	acc *pool.Account, model, keyID, effort string, start time.Time, maxTPS float64, names *codearts.ToolNameMap) {
+	acc *pool.Account, model, keyID, effort string, start time.Time, maxTPS float64, names *codearts.ToolNameMap, shape *RequestShape) {
 
 	hdr := w.Header()
 	hdr.Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -408,7 +408,10 @@ loop:
 				// Preserve buffered output, but never expose arbitrary upstream
 				// error details (which may contain credentials or request data).
 				h.noteStreamModelError(acc, model, streamErr)
-				errObj, _ := json.Marshal(map[string]apiError{"error": {Message: h.streamErrorMessage(streamErr), Type: "server_error"}})
+				errObj, _ := json.Marshal(map[string]apiError{"error": {
+					Message: h.streamErrorMessage(streamErr), Type: "server_error",
+					RequestID: requestIDOf(r), UpstreamCode: upstreamCodeOf([]byte(errText(streamErr))),
+				}})
 				if writeData(errObj) != nil {
 					clientClosed = true
 				}
@@ -437,7 +440,7 @@ loop:
 
 	ev := UsageEvent{At: start, Model: model, Account: acc.UID, KeyID: keyID, Stream: true,
 		Outcome: outcome, Status: status, Elapsed: time.Since(start), HeldFor: heldTotal, Usage: lastUsage, Chunks: nChunks, Effort: effort,
-		UpstreamCode: upstreamCodeOf([]byte(errText(streamErr))), RequestID: requestIDOf(r)}
+		UpstreamCode: upstreamCodeOf([]byte(errText(streamErr))), RequestID: requestIDOf(r), Shape: shape}
 	if !firstAt.IsZero() {
 		ev.TTFT = firstAt.Sub(start)
 		ev.Gen = lastAt.Sub(firstAt)

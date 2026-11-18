@@ -64,6 +64,7 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
 
 ## 最新发行版
 
+[v2.9.1 更新说明](docs/releases/v2.9.1.md)：流内失败也带 `request_id` / `request_shape`，请求列表可直接按 id 查。
 [v2.9.0 更新说明](docs/releases/v2.9.0.md)：失败记录带 `request_id` / `upstream_code` / 请求结构摘要；工具名改写同步 `tool_choice` 与历史引用；丢弃上游不接受参数组合。
 [v2.8.0 更新说明](docs/releases/v2.8.0.md)：新增 `POST /api/v2/accounts/push`（API key 认证，远程推送账号）；华为渠道「身份」列不再误显示 workbuddy。
 [v2.7.2 更新说明](docs/releases/v2.7.2.md)：服务器部署可登录华为渠道——把浏览器回调地址粘回面板即可，不再依赖本机回环。

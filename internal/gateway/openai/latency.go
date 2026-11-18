@@ -176,5 +176,13 @@ func (h *Handler) emitWithLatency(ctx context.Context, ev UsageEvent) {
 		l.mu.Unlock()
 	}
 	applyLatency(ctx, &ev)
+	// One place fills the id for every path: successful, failed and aborted
+	// records all have to be findable by the id the client was given.
+	if ev.RequestID == "" {
+		ev.RequestID = requestIDFromContext(ctx)
+	}
+	if ev.Shape == nil {
+		ev.Shape = requestShapeFrom(ctx)
+	}
 	h.emit(ev)
 }

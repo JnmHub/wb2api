@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"regexp"
@@ -109,15 +110,47 @@ func requestIDOf(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	if v := r.Context().Value(requestIDKey{}); v != nil {
-		if s, ok := v.(string); ok {
-			return s
-		}
+	return requestIDFromContext(r.Context())
+}
+
+func requestIDFromContext(ctx context.Context) string {
+	if m := metaFrom(ctx); m != nil {
+		return m.id
 	}
 	return ""
 }
 
-type requestIDKey struct{}
+// requestMeta travels with the request context: the streaming path and the
+// post-hoc emitters only have a context, and a failure has to be traceable to
+// the id the client was handed plus a summary of what was actually sent.
+type requestMeta struct {
+	id    string
+	shape *RequestShape
+}
+
+type requestMetaKey struct{}
+
+func metaFrom(ctx context.Context) *requestMeta {
+	if ctx == nil {
+		return nil
+	}
+	m, _ := ctx.Value(requestMetaKey{}).(*requestMeta)
+	return m
+}
+
+// setRequestShape records the outbound shape for this request.
+func setRequestShape(ctx context.Context, shape *RequestShape) {
+	if m := metaFrom(ctx); m != nil && shape != nil {
+		m.shape = shape
+	}
+}
+
+func requestShapeFrom(ctx context.Context) *RequestShape {
+	if m := metaFrom(ctx); m != nil {
+		return m.shape
+	}
+	return nil
+}
 
 func errText(err error) string {
 	if err == nil {

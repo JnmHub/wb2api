@@ -710,7 +710,8 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 		outcome, status = "failed", http.StatusBadGateway
 	}
 	ev := UsageEvent{At: q.start, Model: model, Account: acc.UID, KeyID: q.keyID, Stream: true, Outcome: outcome,
-		Status: status, Elapsed: time.Since(q.start), Usage: usageJSON(s.Usage()), Estimated: s.Estimated(), Chunks: nChunks, Effort: q.effort(h)}
+		Status: status, Elapsed: time.Since(q.start), Usage: usageJSON(s.Usage()), Estimated: s.Estimated(), Chunks: nChunks, Effort: q.effort(h),
+		UpstreamCode: upstreamCodeOf([]byte(errText(streamErr))), RequestID: q.requestID, Shape: q.shape}
 	if !firstAt.IsZero() {
 		ev.TTFT, ev.Gen = firstAt.Sub(q.start), lastAt.Sub(firstAt)
 	}

@@ -96,6 +96,15 @@ func addLatencyExtra(dst map[string]any, extra json.RawMessage) {
 	if json.Unmarshal(extra, &latency) != nil {
 		return
 	}
+	if latency.RequestID != "" {
+		dst["request_id"] = latency.RequestID
+	}
+	if latency.UpstreamCode != "" {
+		dst["upstream_code"] = latency.UpstreamCode
+	}
+	if latency.RequestShape != nil {
+		dst["request_shape"] = latency.RequestShape
+	}
 	for key, value := range map[string]float64{
 		"upstream_ttft_ms":  latency.UpstreamTTFTMs,
 		"client_ttft_ms":    latency.ClientTTFTMs,

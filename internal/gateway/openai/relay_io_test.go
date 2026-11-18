@@ -44,7 +44,7 @@ func runRelayProtocol(protocol string, h *Handler, w http.ResponseWriter, body i
 	q := &request{w: w, r: r, start: start, payload: jsonx.NewObj(), maxTPS: rate}
 	switch protocol {
 	case "chat":
-		h.pipeStream(w, r, cancel, idle, body, testAccount(), "m", "", "", start, rate, nil)
+		h.pipeStream(w, r, cancel, idle, body, testAccount(), "m", "", "", start, rate, nil, nil)
 	case "responses":
 		h.responsesStream(q, testAccount(), cancel, idle, body, "m", responses.Info{})
 	case "messages":
