@@ -580,17 +580,20 @@ func (h *Handler) AccountScore(a *pool.Account, _ string) int64 {
 
 // finishError relays an upstream error that must not be retried elsewhere.
 func (h *Handler) finishError(q *request, acc *pool.Account, res result) {
-	detail := publicUpstreamDetail(res.status, res.body)
+	// Mask credentials before the body is turned into client-facing text: an
+	// upstream answer that quotes the rejected token would otherwise hand it out.
+	body := redactBody(res.body, acc.Record())
+	detail := publicUpstreamDetail(res.status, body)
 	typ := "server_error"
 	if res.status == http.StatusForbidden {
 		typ = "invalid_request_error"
 	}
-	code := upstreamCodeOf(res.body)
+	code := upstreamCodeOf(body)
 	q.upstreamCode = code
 	h.emitWithLatency(q.r.Context(), UsageEvent{At: q.start, Model: q.model, Account: acc.UID, KeyID: q.keyID, Stream: q.stream,
 		Outcome: "failed", Status: res.status, Elapsed: time.Since(q.start),
 		UpstreamCode: code, RequestID: q.requestID, Shape: q.shape})
-	q.httpErr(res.status, fmt.Sprintf("upstream %d: %s", res.status, detail), typ)
+	q.httpErr(res.status, withUpstreamCode(fmt.Sprintf("upstream %d: %s", res.status, detail), code), typ)
 }
 
 func truncate(s string, n int) string {
@@ -790,7 +793,7 @@ func (h *Handler) buildOutbound(q *request, rec *accounts.Record, product string
 // request id is shared by every retry of one user turn.
 func (h *Handler) chatHeaders(q *request, rec *accounts.Record, product string, out outbound, sessionID string) identity.Headers {
 	if realm.IsCodeArts(rec.Realm) {
-		return codearts.ChatHeaders(codearts.CredentialOf(rec), rec.AccessToken, q.turnID, "", sessionID,
+		return codearts.ChatHeaders(codearts.CredentialOf(rec), rec.AccessToken, q.turnID, "", sessionID, codearts.WireName(rec, q.model),
 			codearts.IsBenefitModel(rec, q.model), out.body)
 	}
 	conv := ""
@@ -909,6 +912,12 @@ func (h *Handler) classify(q *request, acc *pool.Account, status int, body []byt
 		// and no cooldown, or one malformed call would park the whole channel.
 		if codearts.IsFatalRequestError(body) {
 			return result{kind: stop, status: http.StatusBadRequest, body: body}
+		}
+		// A gateway-level refusal (APIG/APIG traffic codes) is not the client's
+		// fault: cool the account briefly and let the picker choose another one.
+		if codearts.IsGatewayRejection(body) && !strings.Contains(string(body), "TM.00001051") {
+			acc.CoolDown(now.Add(gatewayRejectionCooldown))
+			return result{kind: retry, status: status, body: body}
 		}
 		// A model the account is not registered for (or a benefit model that
 		// was never claimed) is an account-capability fact: park the model on
@@ -1345,3 +1354,8 @@ func (h *Handler) trySwitchProduct(acc *pool.Account, model string) bool {
 	h.logger().Warn("429: switching outbound identity", "account", short(acc.UID), "from", current, "to", target, "n", n+1)
 	return true
 }
+
+// gatewayRejectionCooldown is how long an account is parked after the API
+// gateway refused a request outright. Short on purpose: the refusals arrive in
+// bursts and clear on their own.
+const gatewayRejectionCooldown = 30 * time.Second

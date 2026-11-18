@@ -83,3 +83,13 @@ func publicUpstreamDetail(status int, body []byte) string {
 		return "upstream rejected the request"
 	}
 }
+
+// withUpstreamCode appends the vendor code to a client-facing message. Callers
+// that only render `error.message` (most SDKs) otherwise lose the one piece of
+// information that separates two failures with the same HTTP status.
+func withUpstreamCode(message, code string) string {
+	if code == "" || strings.Contains(message, code) {
+		return message
+	}
+	return message + " (" + code + ")"
+}

@@ -121,7 +121,7 @@ func PrepareBody(shaped *jsonx.Obj, model, chatID string) ([]byte, *ToolNameMap,
 // The signature covers every header in the list, so maas_type (when the model
 // rides the free-benefit route) is added before signing and nothing that the
 // upstream verifies may be added afterwards.
-func ChatHeaders(cred Credential, token, traceID, language, sessionID string, benefit bool, body []byte) identity.Headers {
+func ChatHeaders(cred Credential, token, traceID, language, sessionID, model string, benefit bool, body []byte) identity.Headers {
 	if strings.TrimSpace(traceID) == "" {
 		traceID = randomHex(8)
 	}
@@ -131,11 +131,25 @@ func ChatHeaders(cred Credential, token, traceID, language, sessionID string, be
 	h := identity.Headers{
 		identity.P("Content-Type", "application/json"),
 		identity.P("Accept", "text/event-stream"),
+		identity.P("client_version", "Vscode_"+PluginVersion),
+		identity.P("Agent-Type", "ChatAgent"),
+		identity.P("X-Language", language),
+		identity.P("is_confidential", "false"),
+		identity.P("plugin-name", PluginName),
+		identity.P("plugin-version", PluginVersion),
 		identity.P("x-auth-token", token),
 		identity.P("x-snap-traceid", traceID),
-		identity.P("X-Language", language),
 		identity.P("app-id", "CodeAgent3.0"),
-		identity.P("is_confidential", "false"),
+	}
+	if model = strings.TrimSpace(model); model != "" {
+		// The upstream treats the model name as a request header as well: all
+		// three keys are expected, and the value must be the wire name (the
+		// catalogue id), not the display alias the client used.
+		h = append(h,
+			identity.P("model-id", model),
+			identity.P("model-name", model),
+			identity.P("x-model-id", model),
+		)
 	}
 	if strings.TrimSpace(sessionID) != "" {
 		// The upstream ties a chat to the busy lease that was registered for it;
@@ -165,4 +179,25 @@ func IsModelAccessError(body []byte) bool {
 		strings.Contains(s, "tm.000010051") ||
 		strings.Contains(string(body), "无权调用该模型") ||
 		strings.Contains(s, "benefit not found")
+}
+
+// IsGatewayRejection reports an APIG-level refusal: the request never reached
+// the model. These codes are about the account or the gateway, not the body:
+//
+//	TM.00001001  request body is invalid JSON (e.g. a compressed body sent raw)
+//	TM.00001041  session concurrency limit (three conversations per account)
+//	TM.00001050  request rejected by the gateway (observed in bursts; the body
+//	             shape does not reproduce it — 200 KB bodies, 200 tools and
+//	             unknown fields all pass, so it is not a request-shape problem)
+//	TM.00001051  this account may not call the model
+//
+// Treating one of these as "the client sent something bad" would blame the
+// caller for a transient account-side condition.
+func IsGatewayRejection(body []byte) bool {
+	s := string(body)
+	return strings.Contains(s, "TM.00001001") ||
+		strings.Contains(s, "TM.00001041") ||
+		strings.Contains(s, "TM.00001050") ||
+		strings.Contains(s, "APIG.0301") ||
+		strings.Contains(s, "APIG.0602")
 }

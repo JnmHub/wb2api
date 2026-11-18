@@ -88,7 +88,7 @@ func TestNewUserSessionIDShape(t *testing.T) {
 
 // The chat request must carry the same id that was registered busy.
 func TestChatHeadersCarriesSessionID(t *testing.T) {
-	h := ChatHeaders(Credential{AccessKeyID: "AK", SecretAccessKey: "SK", SecurityToken: "T"}, "T", "trace", "", "sess-1", false, []byte(`{}`))
+	h := ChatHeaders(Credential{AccessKeyID: "AK", SecretAccessKey: "SK", SecurityToken: "T"}, "T", "trace", "", "sess-1", "GLM-5.2", false, []byte(`{}`))
 	if v, _ := h.Get("user-session-id"); v != "sess-1" {
 		t.Fatalf("user-session-id = %q", v)
 	}
@@ -97,7 +97,7 @@ func TestChatHeadersCarriesSessionID(t *testing.T) {
 		t.Fatalf("the session header must be signed: %s", auth)
 	}
 	// Without a lease the header is absent (probe/backfill paths).
-	h2 := ChatHeaders(Credential{AccessKeyID: "AK", SecretAccessKey: "SK"}, "T", "trace", "", "", false, []byte(`{}`))
+	h2 := ChatHeaders(Credential{AccessKeyID: "AK", SecretAccessKey: "SK"}, "T", "trace", "", "", "GLM-5.2", false, []byte(`{}`))
 	if _, ok := h2.Get("user-session-id"); ok {
 		t.Fatal("empty session id must not be sent")
 	}
@@ -113,3 +113,45 @@ func TestIsSessionLimitError(t *testing.T) {
 }
 
 var _ atomic.Int32
+
+// The upstream treats the model name as a request header: three keys, all
+// carrying the wire name (catalogue id), not the display alias.
+func TestChatHeadersCarryModelTriplet(t *testing.T) {
+	h := ChatHeaders(Credential{AccessKeyID: "AK", SecretAccessKey: "SK", SecurityToken: "T"},
+		"T", "trace", "", "", "deepseek-v4.1-flash", false, []byte(`{}`))
+	for _, key := range []string{"model-id", "model-name", "x-model-id"} {
+		if v, ok := h.Get(key); !ok || v != "deepseek-v4.1-flash" {
+			t.Fatalf("%s = %q (present %v)", key, v, ok)
+		}
+	}
+	auth, _ := h.Get("Authorization")
+	for _, key := range []string{"model-id", "model-name", "x-model-id", "agent-type", "plugin-name", "plugin-version"} {
+		if !strings.Contains(auth, key) {
+			t.Fatalf("%s is missing from SignedHeaders: %s", key, auth)
+		}
+	}
+}
+
+// APIG/TM refusals are about the account or the gateway, not the request body.
+func TestIsGatewayRejection(t *testing.T) {
+	yes := []string{
+		`{"error_code":"TM.00001050","error_msg":"invalid request parameters"}`,
+		`{"error_code":"TM.00001041","error_msg":"并发会话数已达上限"}`,
+		`{"error_code":"APIG.0301","error_msg":"decrypt token fail"}`,
+		`{"error_code":"APIG.0602","error_msg":"security token has expired"}`,
+	}
+	for _, body := range yes {
+		if !IsGatewayRejection([]byte(body)) {
+			t.Errorf("not recognised: %s", body)
+		}
+	}
+	for _, body := range []string{
+		`{"error_code":"InferHub.001001005.400"}`,
+		`{"error_code":"TM.00001051"}`,
+		`{"error_code":"InferHub.001001009.400"}`,
+	} {
+		if IsGatewayRejection([]byte(body)) {
+			t.Errorf("false positive: %s", body)
+		}
+	}
+}

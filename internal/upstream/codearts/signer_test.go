@@ -161,8 +161,8 @@ func TestPrepareBodyWithoutChatIDOmitsAffinityFields(t *testing.T) {
 // signing, not appended afterwards.
 func TestChatHeadersSignsBenefitRoute(t *testing.T) {
 	body := []byte(`{"model":"GLM-5.2","stream":true}`)
-	plain := ChatHeaders(Credential{AccessKeyID: "AK", SecretAccessKey: "SK", SecurityToken: "T"}, "T", "trace", "", "", false, body)
-	benefit := ChatHeaders(Credential{AccessKeyID: "AK", SecretAccessKey: "SK", SecurityToken: "T"}, "T", "trace", "", "", true, body)
+	plain := ChatHeaders(Credential{AccessKeyID: "AK", SecretAccessKey: "SK", SecurityToken: "T"}, "T", "trace", "", "", "GLM-5.2", false, body)
+	benefit := ChatHeaders(Credential{AccessKeyID: "AK", SecretAccessKey: "SK", SecurityToken: "T"}, "T", "trace", "", "", "GLM-5.2", true, body)
 
 	if _, ok := plain.Get(HeaderMaasType); ok {
 		t.Fatal("maas_type must not be sent for a normal model")
@@ -188,7 +188,7 @@ func TestChatHeadersSignsBenefitRoute(t *testing.T) {
 
 func TestChatHeadersSignsTheBytesOnTheWire(t *testing.T) {
 	body := []byte(`{"model":"GLM-5.2","stream":true}`)
-	h := ChatHeaders(Credential{AccessKeyID: "AK", SecretAccessKey: "SK", SecurityToken: "T"}, "T", "trace", "", "", false, body)
+	h := ChatHeaders(Credential{AccessKeyID: "AK", SecretAccessKey: "SK", SecurityToken: "T"}, "T", "trace", "", "", "GLM-5.2", false, body)
 	want := sha256.Sum256(body)
 	if got, _ := h.Get("X-Sdk-Content-Sha256"); got != hex.EncodeToString(want[:]) {
 		t.Fatalf("payload hash does not cover the exact wire body: %s", got)
