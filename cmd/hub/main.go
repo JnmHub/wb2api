@@ -665,6 +665,7 @@ func main() {
 	// rejects the fourth with TM.00001041, so the gateway registers a busy
 	// lease per attempt instead of firing blindly.
 	h.Sessions = &codeartsync.Sessions{Pool: p, Log: log}
+	log.Info("codearts session gate enabled", "slots_per_account", realm.CodeArtsInflight())
 	background.start(func() {
 		(&codeartsync.Scanner{Service: codeArtsSvc}).Run(bg)
 	})
