@@ -205,6 +205,15 @@ func (r *Refresher) ScanOnce(ctx context.Context) int {
 			defer func() { <-sem }()
 			if err := r.Refresh(ctx, a); err != nil {
 				r.logger().Warn("token refresh failed", "account", short(a.UID), "err", err)
+				return
+			}
+			// Say so: otherwise an operator cannot tell automatic renewal apart
+			// from "the token just happens to be fresh".
+			if rec := a.Record(); rec != nil && rec.ExpiresAt > 0 {
+				r.logger().Info("token refreshed",
+					"account", short(a.UID), "realm", rec.Realm,
+					"expires_at", time.Unix(rec.ExpiresAt, 0).Format("15:04:05"),
+					"in", time.Until(time.Unix(rec.ExpiresAt, 0)).Truncate(time.Minute).String())
 			}
 		}(a)
 	}
