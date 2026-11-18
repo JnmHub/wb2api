@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -54,6 +55,10 @@ func (a *Accounts) upstreamAction(b batchReq) (jobs.Func, error) {
 		return a.Gate.Do(ctx, func() error {
 			switch b.Action {
 			case "refresh_credits":
+				if realm.IsCodeArts(acc.Record().Realm) && a.CodeArts != nil {
+					_, err := a.CodeArts.Balance(ctx, acc)
+					return err
+				}
 				return resultErr(a.Ops.FetchCredits(ctx, acc))
 			case "checkin":
 				// The two channels have unrelated check-in APIs: the Huawei
@@ -138,6 +143,30 @@ func (o *Operations) action(w http.ResponseWriter, r *http.Request) {
 	var res any
 	switch name := r.PathValue("name"); name {
 	case "credits":
+		// The Huawei channel reports credits through its subscription
+		// statistics, not through the WorkBuddy billing API.
+		if realm.IsCodeArts(acc.Record().Realm) {
+			out := map[string]any{"ok": false, "msg": "", "error": ""}
+			if o.CodeArts == nil {
+				out["error"] = "CodeArts 渠道未启用"
+				out["msg"] = out["error"]
+				res = out
+				break
+			}
+			b, err := o.CodeArts.Balance(ctx, acc)
+			out["remain"], out["total"] = b.Remaining, b.Total
+			out["plan"], out["reset"] = b.PlanName, b.ResetDate
+			if err != nil {
+				out["error"] = err.Error()
+				out["msg"] = err.Error()
+				res = out
+				break
+			}
+			out["ok"] = true
+			out["msg"] = fmt.Sprintf("剩 %g / %g 积分（%s，%s 重置）", b.Remaining, b.Total, orDefault(b.PlanName, "套餐"), b.ResetDate)
+			res = out
+			break
+		}
 		res = o.Ops.FetchCredits(ctx, acc)
 	case "checkin":
 		// The two channels have unrelated check-in APIs: the Huawei channel

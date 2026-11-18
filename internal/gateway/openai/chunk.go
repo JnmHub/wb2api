@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 )
 
 // rawObj is a JSON object whose values stay as raw bytes until inspected.
@@ -34,6 +35,23 @@ func upstreamSSEError(data []byte) (error, bool) {
 	var top rawObj
 	if err := json.Unmarshal(data, &top); err != nil || top == nil {
 		return nil, false
+	}
+	// The Huawei channel reports failures as a bare {"error_code", "error_msg"}
+	// frame inside an otherwise healthy HTTP 200 stream (for example
+	// InferHub.4291.200 "insufficient quota"). Missing this turns an exhausted
+	// account into a "successful but empty" answer and blocks failover.
+	if code, ok := top["error_code"]; ok {
+		var s string
+		if json.Unmarshal(code, &s) == nil && !sseCodeIsSuccess(s) {
+			msg := "upstream SSE error"
+			if raw, ok := top["error_msg"]; ok {
+				var m string
+				if json.Unmarshal(raw, &m) == nil && m != "" {
+					msg = m
+				}
+			}
+			return errors.New(msg + " (" + s + ")"), true
+		}
 	}
 	raw, ok := top["error"]
 	if !ok || isFalsyRaw(raw) {
@@ -259,4 +277,14 @@ func marshalNoEscape(v any) ([]byte, error) {
 		return nil, err
 	}
 	return bytes.TrimRight(b.Bytes(), "\n"), nil
+}
+
+// sseCodeIsSuccess reports the business codes that are not failures: an empty
+// code, 0/0000 or "success". Everything else (InferHub.*, TM.*) is a fault.
+func sseCodeIsSuccess(code string) bool {
+	switch strings.TrimSpace(strings.ToLower(code)) {
+	case "", "0", "0000", "00", "success", "ok":
+		return true
+	}
+	return false
 }

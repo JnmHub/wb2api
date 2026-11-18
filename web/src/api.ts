@@ -104,7 +104,7 @@ export interface Account {
   restricted_for?: number
   unavailable_reason?: string
   model_cooldowns?: { model: string; expires_at: number; reason?: string }[]
-  credits?: { remain?: number; total?: number }
+  credits?: { remain?: number; total?: number; used?: number; plan?: string; reset?: string; source?: string }
   refresh?: { failures: number; next_try: number; last_error: string }
   /** Last check-in result, normalised by the gateway for both channels. */
   checkin?: { at?: string | number; ok?: boolean; message?: string; credits?: number; channel?: string }

@@ -192,3 +192,56 @@ func TestFilterBatchRealmCoversBothCheckinChannels(t *testing.T) {
 		t.Fatalf("daily chat kept = %v", got)
 	}
 }
+
+// "刷新积分" on a CodeArts account reads the subscription statistics and stores
+// the aggregated balance on the record.
+func TestCodeArtsCreditsActionReadsStatistics(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != codearts.StatisticsPath {
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(404)
+			return
+		}
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "SDK-HMAC-SHA256 Access=AK") {
+			t.Errorf("statistics call not signed: %q", r.Header.Get("Authorization"))
+		}
+		fmt.Fprint(w, `{"end_date":"2026-12-01","package":{"spec_code":"trial","package_name_en":"Trial"},
+			"metrics":[
+			  {"name":"usageTotalPackageCredit","show":true,"package_credit_amount":10345.14,"package_credit_remain":5172.57},
+			  {"name":"usageBasicPackageCredit","show":true,"package_credit_amount":345.14,"package_credit_remain":172.57},
+			  {"name":"usageBonusPackageCredit","show":true,"package_credit_amount":10000,"package_credit_remain":5000}
+			]}`)
+	}))
+	defer srv.Close()
+
+	p := pool.New([]*accounts.Record{codeartsAccountRec("hw-1")})
+	var saved *accounts.Record
+	o := &Operations{
+		Pool:    p,
+		Persist: func(r *accounts.Record) error { saved = r; return nil },
+		CodeArts: &codeartsync.Service{Pool: p, Base: srv.URL,
+			Persist: func(r *accounts.Record) error { saved = r; return nil }},
+	}
+	mux := http.NewServeMux()
+	o.Register(mux, func(h http.Handler) http.Handler { return h })
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/accounts/hw-1/actions/credits", strings.NewReader("{}"))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["ok"] != true || out["remain"] != 5172.57 {
+		t.Fatalf("action result = %#v", out)
+	}
+	if saved == nil || saved.Credits == nil {
+		t.Fatal("the balance was not stored on the record")
+	}
+	if saved.Credits["remain"] != 5172.57 || saved.Credits["plan"] != "Trial" {
+		t.Fatalf("stored credits = %#v", saved.Credits)
+	}
+}

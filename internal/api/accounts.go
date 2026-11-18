@@ -174,7 +174,7 @@ func shortID(uid string) string {
 // the raw billing document.
 func summarizeCredits(c map[string]any) map[string]any {
 	out := map[string]any{}
-	for _, k := range []string{"remain", "total", "used", "updatedAt", "updated_at"} {
+	for _, k := range []string{"remain", "total", "used", "updatedAt", "updated_at", "plan", "reset", "source"} {
 		if v, ok := c[k]; ok {
 			out[k] = v
 		}

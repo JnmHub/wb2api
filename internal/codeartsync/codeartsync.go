@@ -313,3 +313,87 @@ func sameLocalDay(a, b time.Time) bool {
 	by, bm, bd := b.Local().Date()
 	return ay == by && am == bm && ad == bd
 }
+
+// Balance reads the subscription statistics of one account and stores the
+// aggregated credit position on the record, so the panel's credit column and
+// the account drawer can show a real balance instead of a tick-in amount.
+func (s *Service) Balance(ctx context.Context, acc *pool.Account) (codearts.Balance, error) {
+	if acc == nil {
+		return codearts.Balance{}, errors.New("account required")
+	}
+	rec := acc.Record()
+	now := s.now()
+	if s.stale(rec, now) {
+		s.renew(ctx, acc)
+		rec = acc.Record()
+	}
+	fetch := func() (*codearts.Statistics, error) {
+		return codearts.FetchStatistics(ctx, nil, s.base(rec), codearts.CredentialOf(rec))
+	}
+	st, err := fetch()
+	if err != nil && codearts.IsExpiredCredentialError(err) {
+		s.renew(ctx, acc)
+		rec = acc.Record()
+		st, err = fetch()
+	}
+	if err != nil {
+		return codearts.Balance{}, err
+	}
+	b := st.Aggregate()
+	if serr := s.storeBalance(acc, b, now); serr != nil {
+		return b, serr
+	}
+	return b, nil
+}
+
+// storeBalance writes the aggregated position into the shared record shape the
+// panel already renders (remain / total / used / plan / reset).
+func (s *Service) storeBalance(acc *pool.Account, b codearts.Balance, now time.Time) error {
+	credits := map[string]any{
+		"source":     "codearts",
+		"updated_at": float64(now.Unix()),
+	}
+	if b.HasRemaining {
+		credits["remain"] = b.Remaining
+	}
+	if b.HasTotal {
+		credits["total"] = b.Total
+	}
+	if b.HasRemaining && b.HasTotal {
+		credits["used"] = b.Used
+	}
+	if b.Plan != "" {
+		credits["plan_code"] = b.Plan
+	}
+	if b.PlanName != "" {
+		credits["plan"] = b.PlanName
+	}
+	if b.ResetDate != "" {
+		credits["reset"] = b.ResetDate
+	}
+	meters := make([]any, 0, len(b.Meters))
+	for _, m := range b.Meters {
+		row := map[string]any{"name": m.Name, "label": m.Label, "view": m.BalanceView()}
+		if m.CreditRemain != nil {
+			row["remain"] = *m.CreditRemain
+		}
+		if m.CreditTotal != nil {
+			row["total"] = *m.CreditTotal
+		}
+		if m.UsedPercent != nil {
+			row["used_percent"] = *m.UsedPercent
+		}
+		meters = append(meters, row)
+	}
+	if len(meters) > 0 {
+		credits["meters"] = meters
+	}
+	next, ok := s.Pool.Update(acc.UID, func(r *accounts.Record) { r.Credits = credits })
+	if !ok {
+		return errors.New("account disappeared while storing the balance")
+	}
+	if s.Persist != nil {
+		return s.Persist(next)
+	}
+	return nil
+}

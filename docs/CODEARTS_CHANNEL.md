@@ -509,6 +509,7 @@ realm.CodeArtsChatBase // https://snap-access.cn-north-4.myhuaweicloud.com
 | 签到（领 1000 积分） | 已接：面板手动 + 调度器自动（`Channel` 钩子） |
 | OAuth 登录（PKCE + ticket） | 已接：无回调端口的服务端登录流程 |
 | 账号校验（current/user） | 已接（`codearts.CurrentUser`），面板未单独开按钮 |
+| 积分余额 | 已接：`GET /snap-manager/v1/statistics/plugin`（v2.6.3），面板「积分」列与详情显示剩余/总量/套餐/重置日 |
 | 单账号并发 | 已按渠道生效：`realm.InflightFor` 把全局上限与渠道上限取小，默认 **3**（`WB_CODEARTS_INFLIGHT` 可调，0=不设渠道上限）；建池时同步写入 `SetMaxInflight`，Redis 共享限流也按账号取该值 |
 
 ### 9.6 新增接口

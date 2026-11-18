@@ -205,7 +205,19 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
                 { key: 'expires', label: 'Token 有效期', children: until(a.expires_at) },
                 { key: 'today', label: '今日', children: `${num(a.today.requests)} 次 · ${tokens(a.today.tokens)} tokens` },
                 ...(a.credits && (a.credits.remain != null || a.credits.total != null)
-                  ? [{ key: 'credits', label: '积分', children: `${credit(a.credits.remain)} / ${credit(a.credits.total)}` }]
+                  ? [
+                      {
+                        key: 'credits',
+                        label: '积分',
+                        children: (
+                          <span>
+                            {credit(a.credits.remain)} / {credit(a.credits.total)}
+                            {a.credits.plan ? ` · ${a.credits.plan}` : ''}
+                            {a.credits.reset ? ` · ${a.credits.reset} 重置` : ''}
+                          </span>
+                        ),
+                      },
+                    ]
                   : []),
                 ...(a.checkin
                   ? [
