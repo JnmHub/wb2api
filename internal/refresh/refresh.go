@@ -168,6 +168,12 @@ func (r *Refresher) due(a *pool.Account, now time.Time) bool {
 	}
 	exp := rec.ExpiresAt
 	if exp == 0 {
+		// The Huawei channel can carry a credential with no expiry (imported or
+		// hand-written): try once, then back off like a missing token, instead
+		// of never refreshing it.
+		if realm.IsCodeArts(rec.Realm) {
+			return st == nil || st.fails == 0
+		}
 		return false
 	}
 	return time.Unix(exp, 0).Sub(now) <= r.lead()+r.jitter(a.UID)

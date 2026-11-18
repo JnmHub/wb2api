@@ -64,6 +64,7 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
 
 ## 最新发行版
 
+[v2.6.2 更新说明](docs/releases/v2.6.2.md)：签到与模型发现在凭据过期时先续期、失败再重试，不再把 APIG.0602 暴露给面板；无过期时间的导入账号也会被后台刷新。
 [v2.6.1 更新说明](docs/releases/v2.6.1.md)：华为渠道登录打通（回调链路、STS 主机、身份兜底），支持 CodeArts 凭据导入与导出脱敏，面板补齐签到/积分显示。
 [v2.6.0 更新说明](docs/releases/v2.6.0.md)：新增华为云 CodeArts 渠道（SDK-HMAC 签名、DPoP 续期、三源模型发现与福利领取、一键登录、积分签到、按渠道并发）。
 [v2.5.1 更新说明](docs/releases/v2.5.1.md)：系统提示词净化三档可调（只中性化身份句，保留工具契约），思考截断的报错写清 max_tokens 原因。

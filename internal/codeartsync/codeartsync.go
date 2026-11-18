@@ -31,9 +31,49 @@ type Service struct {
 	// ClaimBenefit claims the free-plan models before listing them. The claim
 	// is idempotent upstream; without it those models answer 4004.200.
 	ClaimBenefit bool
+	// Refresh renews an account credential (nil = no renewer: calls fail the
+	// way they always did). Discover and Checkin renew proactively when the STS
+	// token is stale, and retry once when the upstream says it has expired.
+	Refresh func(context.Context, *pool.Account) error
+	// Lead is how long before expiry the credential is renewed (0 = 10m).
+	Lead time.Duration
 	// Now is the clock (tests).
 	Now func() time.Time
 	Log *slog.Logger
+}
+
+// defaultLead renews ten minutes before the STS token expires: a CodeArts
+// credential lives two hours, and a stale one fails every call with APIG.0602.
+const defaultLead = 10 * time.Minute
+
+func (s *Service) lead() time.Duration {
+	if s.Lead > 0 {
+		return s.Lead
+	}
+	return defaultLead
+}
+
+// stale reports whether the credential needs renewing before use. An unknown
+// expiry counts as stale: trying to refresh beats failing with 0602.
+func (s *Service) stale(rec *accounts.Record, now time.Time) bool {
+	if rec == nil {
+		return true
+	}
+	if rec.ExpiresAt == 0 {
+		return true
+	}
+	return !time.Unix(rec.ExpiresAt, 0).After(now.Add(s.lead()))
+}
+
+// renew runs the refresher, keeping the old credential on failure: a failed
+// renewal must not turn a usable token into no token.
+func (s *Service) renew(ctx context.Context, acc *pool.Account) {
+	if s.Refresh == nil {
+		return
+	}
+	if err := s.Refresh(ctx, acc); err != nil {
+		s.logger().Warn("codearts credential renewal failed", "account", short(acc.UID), "err", err)
+	}
 }
 
 func (s *Service) now() time.Time {
@@ -66,12 +106,25 @@ func (s *Service) Discover(ctx context.Context, acc *pool.Account) (codearts.Dis
 		return codearts.Discovery{}, errors.New("account required")
 	}
 	rec := acc.Record()
-	cred := codearts.CredentialOf(rec)
+	now := s.now()
+	if s.stale(rec, now) {
+		s.renew(ctx, acc)
+		rec = acc.Record()
+	}
 	benefitBase := s.BenefitBase
 	if benefitBase == "" {
 		benefitBase = codearts.BenefitBase
 	}
-	dis := codearts.DiscoverModelsWith(ctx, nil, s.base(rec), benefitBase, rec.UID, cred, s.ClaimBenefit)
+	discover := func() codearts.Discovery {
+		return codearts.DiscoverModelsWith(ctx, nil, s.base(rec), benefitBase, rec.UID, codearts.CredentialOf(rec), s.ClaimBenefit)
+	}
+	dis := discover()
+	if expiredAnywhere(dis.Errors) {
+		// The upstream rejected the STS token mid-flight: renew and retry once.
+		s.renew(ctx, acc)
+		rec = acc.Record()
+		dis = discover()
+	}
 	if len(dis.Models) == 0 {
 		if msg, ok := dis.Errors["all"]; ok {
 			return dis, errors.New(msg)
@@ -142,7 +195,17 @@ func (s *Service) Checkin(ctx context.Context, acc *pool.Account) (bool, string,
 	}
 	rec := acc.Record()
 	now := s.now()
+	if s.stale(rec, now) {
+		s.renew(ctx, acc)
+		rec = acc.Record()
+	}
 	res, err := codearts.Checkin(ctx, nil, s.base(rec), codearts.CredentialOf(rec), now)
+	if err != nil && codearts.IsExpiredCredentialError(err) {
+		// One renewal, one retry: this is the "idle for two hours" case.
+		s.renew(ctx, acc)
+		rec = acc.Record()
+		res, err = codearts.Checkin(ctx, nil, s.base(rec), codearts.CredentialOf(rec), now)
+	}
 
 	// A second pass the same day (the scheduler racing a manual click) finds
 	// nothing claimable and would overwrite a real "+4000" with "无可领取". Keep
@@ -156,6 +219,9 @@ func (s *Service) Checkin(ctx context.Context, acc *pool.Account) (bool, string,
 	message := res.Message
 	if message == "" && err != nil {
 		message = err.Error()
+	}
+	if err != nil && codearts.IsExpiredCredentialError(err) {
+		message = "凭据已过期，自动续期未成功（需要重新登录该账号）"
 	}
 	status := map[string]any{
 		"at":      float64(now.Unix()),
@@ -226,6 +292,17 @@ func lastCheckinParts(v any) (ok bool, at time.Time, credits float64, message st
 		return false, time.Time{}, 0, ""
 	}
 	return okFlag, time.Unix(int64(sec), 0), credits, message
+}
+
+// expiredAnywhere reports whether any discovery source failed because the STS
+// token expired.
+func expiredAnywhere(errs map[string]string) bool {
+	for _, msg := range errs {
+		if codearts.IsExpiredCredentialError(errors.New(msg)) {
+			return true
+		}
+	}
+	return false
 }
 
 func sameLocalDay(a, b time.Time) bool {

@@ -138,3 +138,17 @@ func truncate(s string, n int) string {
 	}
 	return s[:n]
 }
+
+// IsExpiredCredentialError reports an upstream rejection caused by an expired
+// STS token: some endpoints answer 401, snap-access answers 400 with
+// APIG.0602 "the security token has expired". Callers renew once and retry.
+func IsExpiredCredentialError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "apig.0602") ||
+		strings.Contains(s, "security token has expired") ||
+		strings.Contains(s, "token has expired") ||
+		strings.Contains(s, "http 401")
+}

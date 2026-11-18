@@ -211,3 +211,114 @@ func TestCheckinKeepsTheDaysRealResult(t *testing.T) {
 		t.Fatalf("the earlier result was downgraded: %#v", st)
 	}
 }
+
+// An idle account's STS token expires after two hours; every catalogue and
+// check-in call then answers APIG.0602 until the credential is renewed.
+func TestCheckinRenewsStaleCredentialFirst(t *testing.T) {
+	srv := fakeVendor(t, nil)
+	rec := syncAccount("hw-1")
+	rec.ExpiresAt = time.Now().Add(-time.Minute).Unix()
+	p := pool.New([]*accounts.Record{rec})
+	var renewed atomic.Int32
+	svc := &Service{Pool: p, Base: srv.URL,
+		Refresh: func(_ context.Context, acc *pool.Account) error {
+			renewed.Add(1)
+			p.Update(acc.UID, func(r *accounts.Record) {
+				r.AccessToken = "STS-NEW"
+				r.ExpiresAt = time.Now().Add(2 * time.Hour).Unix()
+			})
+			return nil
+		}}
+	ok, msg, err := svc.Checkin(context.Background(), p.Get("hw-1"))
+	if err != nil || !ok {
+		t.Fatalf("Checkin = (%v, %q, %v)", ok, msg, err)
+	}
+	if renewed.Load() != 1 {
+		t.Fatalf("refresh calls = %d, want 1", renewed.Load())
+	}
+}
+
+// A token that expires mid-flight is renewed once and the call retried.
+func TestCheckinRetriesOnceAfterExpiredAnswer(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("X-Security-Token") != "STS-NEW" {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error_code":"APIG.0602","error_msg":"Bad request: the security token has expired"}`)
+			return
+		}
+		calls.Add(1)
+		switch r.URL.Path {
+		case codearts.DeliveryPath:
+			fmt.Fprint(w, `{"code":0,"data":{"items":[{"campaignId":1,"title":"每日签到","status":"ELIGIBLE","claimable":true,"benefitUnit":"CREDIT","benefitAmount":1000}]}}`)
+		default:
+			fmt.Fprint(w, `{"code":0,"data":{}}`)
+		}
+	}))
+	defer srv.Close()
+
+	rec := syncAccount("hw-1")
+	rec.ExpiresAt = time.Now().Add(time.Hour).Unix() // not stale: the answer triggers the retry
+	p := pool.New([]*accounts.Record{rec})
+	var renewed atomic.Int32
+	svc := &Service{Pool: p, Base: srv.URL,
+		Refresh: func(_ context.Context, acc *pool.Account) error {
+			renewed.Add(1)
+			p.Update(acc.UID, func(r *accounts.Record) { r.AccessToken = "STS-NEW" })
+			return nil
+		}}
+	ok, msg, err := svc.Checkin(context.Background(), p.Get("hw-1"))
+	if err != nil || !ok {
+		t.Fatalf("Checkin = (%v, %q, %v)", ok, msg, err)
+	}
+	if renewed.Load() != 1 {
+		t.Fatalf("refresh calls = %d, want 1", renewed.Load())
+	}
+	if calls.Load() == 0 {
+		t.Fatal("the retry never reached the upstream")
+	}
+}
+
+// Discovery takes the same path: expire the token, renew, retry once.
+func TestDiscoverRetriesOnceAfterExpiredAnswer(t *testing.T) {
+	var listed atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("X-Security-Token") != "STS-NEW" {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error_code":"APIG.0602","error_msg":"the security token has expired"}`)
+			return
+		}
+		switch r.URL.Path {
+		case codearts.AgentListPath:
+			listed.Add(1)
+			fmt.Fprint(w, `{"agents":[{"agent_id":"a-1","agent_name":"CodeAgent","show_in_ide":true,"alias":{"alias_zh_cn":"智能体"}}]}`)
+		case codearts.AgentDetailPath:
+			fmt.Fprint(w, `{"gpts":{"models":[{"model_name":"GLM-5.2"}]}}`)
+		case codearts.BuiltinPath:
+			fmt.Fprint(w, `{"builtinModels":[]}`)
+		case codearts.BenefitClaimPath, codearts.BenefitConfigPath:
+			fmt.Fprint(w, `{"error_code":"4000","error_msg":"invalid channel, group not found"}`)
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	rec := syncAccount("hw-1")
+	rec.ExpiresAt = time.Now().Add(time.Hour).Unix()
+	p := pool.New([]*accounts.Record{rec})
+	svc := &Service{Pool: p, Base: srv.URL, BenefitBase: srv.URL,
+		Refresh: func(_ context.Context, acc *pool.Account) error {
+			p.Update(acc.UID, func(r *accounts.Record) { r.AccessToken = "STS-NEW" })
+			return nil
+		}}
+	dis, err := svc.Discover(context.Background(), p.Get("hw-1"))
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(dis.Models) == 0 || listed.Load() == 0 {
+		t.Fatalf("no models after the retry: %+v", dis)
+	}
+}

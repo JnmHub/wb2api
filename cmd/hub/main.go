@@ -655,6 +655,9 @@ func main() {
 	// the three never implement the same call twice.
 	codeArtsSvc := &codeartsync.Service{
 		Pool: p, Persist: persist, ClaimBenefit: codeArtsClaimBenefit(), Log: log,
+		// Renew before use: an idle account's STS token expires after two hours
+		// and every catalogue/check-in call would answer APIG.0602.
+		Refresh: refresher.Refresh,
 	}
 	sched.Channel = codeArtsSvc
 	accountsAPI.CodeArts = codeArtsSvc

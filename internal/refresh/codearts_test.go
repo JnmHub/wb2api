@@ -135,3 +135,30 @@ func TestCodeArtsRefreshTerminalFailure(t *testing.T) {
 		t.Fatalf("a failed refresh mutated the credential: %+v", rec)
 	}
 }
+
+// A CodeArts credential with no expiry (imported or hand-written) used to be
+// skipped forever: due() returned false for exp == 0. It now tries once and
+// then backs off like a missing token.
+func TestDueRefreshesCodeArtsWithoutExpiry(t *testing.T) {
+	p := pool.New(nil)
+	p.Add(&accounts.Record{UID: "hw-1", Realm: realm.CodeArts, AccessToken: "t", RefreshToken: "r"})
+	r := &Refresher{Pool: p}
+	acc := p.Get("hw-1")
+	now := time.Now()
+	if !r.due(acc, now) {
+		t.Fatal("an unknown expiry on the Huawei channel must be refreshable")
+	}
+	r.mu.Lock()
+	r.states = map[string]*state{"hw-1": {fails: 1, next: now.Add(time.Hour)}}
+	r.mu.Unlock()
+	if r.due(acc, now) {
+		t.Fatal("after a failure the account must back off")
+	}
+
+	// WorkBuddy keeps the old rule: a missing expiry is not treated as due.
+	p2 := pool.New(nil)
+	p2.Add(&accounts.Record{UID: "cn-1", Realm: realm.CN, AccessToken: "t", RefreshToken: "r"})
+	if (&Refresher{Pool: p2}).due(p2.Get("cn-1"), now) {
+		t.Fatal("WorkBuddy behaviour must not change")
+	}
+}
