@@ -22,6 +22,9 @@ const (
 	AgentListPath   = "/v1/agent-center/agents/useragents"
 	AgentDetailPath = "/v1/agent-center/agents/detail"
 	BuiltinPath     = "/v1/model/builtin"
+	// BenefitGatePath is the on/off switch of the free-plan gateway. It lives on
+	// snap-access; the catalogue itself is on another host.
+	BenefitGatePath = "/v1/benefit-gateway-config"
 
 	// BenefitBase hosts the limited-time free-plan models.
 	BenefitBase       = "https://opengw.developer.huaweicloud.com"
@@ -116,17 +119,26 @@ func DiscoverModelsWith(ctx context.Context, hc *http.Client, base, benefitBase,
 	} else if len(infos) > 0 {
 		sets = append(sets, infos)
 	}
-	if claimBenefit {
-		if err := ClaimBenefitAt(ctx, hc, benefitBase, cred); err != nil {
-			out.Errors["benefit_claim"] = err.Error()
-		} else {
-			out.Claimed = true
-		}
+	// The benefit gateway has its own on/off switch. A deployment that does not
+	// have it answers "disabled" rather than an error, so a disabled switch is
+	// not reported as a discovery failure.
+	benefitOn := true
+	if gate := fetchBenefitGate(ctx, hc, base, cred); gate != nil {
+		benefitOn = *gate
 	}
-	if infos, err := fetchBenefitModels(ctx, hc, benefitBase, cred); err != nil {
-		out.Errors["benefit"] = err.Error()
-	} else if len(infos) > 0 {
-		sets = append(sets, infos)
+	if benefitOn {
+		if claimBenefit {
+			if err := ClaimBenefitAt(ctx, hc, benefitBase, cred); err != nil {
+				out.Errors["benefit_claim"] = err.Error()
+			} else {
+				out.Claimed = true
+			}
+		}
+		if infos, err := fetchBenefitModels(ctx, hc, benefitBase, cred); err != nil {
+			out.Errors["benefit"] = err.Error()
+		} else if len(infos) > 0 {
+			sets = append(sets, infos)
+		}
 	}
 
 	out.Models = MergeModels(sets...)
@@ -403,4 +415,20 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// fetchBenefitGate reads the free-plan switch. A nil result means the endpoint
+// does not exist (older deployment): callers then behave as before.
+func fetchBenefitGate(ctx context.Context, hc *http.Client, base string, cred Credential) *bool {
+	raw, err := SignedGet(ctx, hc, strings.TrimRight(base, "/")+BenefitGatePath, cred, "")
+	if err != nil {
+		return nil
+	}
+	var out struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil || out.Enabled == nil {
+		return nil
+	}
+	return out.Enabled
 }

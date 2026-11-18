@@ -52,7 +52,7 @@ func (h *Handler) ProbeModel(ctx context.Context, acc *pool.Account, model strin
 	q.enc = map[string]*encoded{}
 	product := identity.NormalizeProduct(rec.Product)
 	out := h.buildOutbound(q, rec, product)
-	hdrs := h.chatHeaders(q, rec, product, out)
+	hdrs := h.chatHeaders(q, rec, product, out, "")
 
 	cctx, cancel := context.WithTimeout(ctx, quota.ProbeTimeout)
 	defer cancel()
@@ -123,7 +123,7 @@ func (h *Handler) Probe(ctx context.Context, acc *pool.Account, model string) Pr
 	q.enc = map[string]*encoded{}
 	product := identity.NormalizeProduct(rec.Product)
 	out := h.buildOutbound(q, rec, product)
-	hdrs := h.chatHeaders(q, rec, product, out)
+	hdrs := h.chatHeaders(q, rec, product, out, "")
 
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

@@ -26,12 +26,42 @@ var bodyKeys = []string{
 // SSE and reassembles locally, so the flag is forced to true here. A client
 // that asked for a non-stream response is served by wb2api's own aggregation
 // over that stream, which keeps one wire shape for both modes.
-func PrepareBody(shaped *jsonx.Obj, model, chatID string) ([]byte, error) {
+func PrepareBody(shaped *jsonx.Obj, model, chatID string) ([]byte, *ToolNameMap, error) {
 	out := jsonx.NewObj()
 	if shaped != nil {
 		for _, k := range bodyKeys {
 			if v, ok := shaped.Lookup(k); ok {
 				out.Set(k, v)
+			}
+		}
+	}
+	// The upstream rejects function names longer than 64 characters before it
+	// even parses the request; shorten them and keep the mapping for the reply.
+	var names *ToolNameMap
+	if v, ok := out.Lookup("tools"); ok {
+		if tools, ok := v.([]any); ok {
+			cp := make([]any, len(tools))
+			for i, t := range tools {
+				if m, ok := t.(map[string]any); ok {
+					mc := make(map[string]any, len(m))
+					for k, val := range m {
+						mc[k] = val
+					}
+					if fn, ok := mc["function"].(map[string]any); ok {
+						fc := make(map[string]any, len(fn))
+						for k, val := range fn {
+							fc[k] = val
+						}
+						mc["function"] = fc
+					}
+					cp[i] = mc
+					continue
+				}
+				cp[i] = t
+			}
+			if nm := ShortenTools(cp); nm != nil {
+				out.Set("tools", cp)
+				names = nm
 			}
 		}
 	}
@@ -42,7 +72,8 @@ func PrepareBody(shaped *jsonx.Obj, model, chatID string) ([]byte, error) {
 		out.Set("chat_id", chatID)
 		out.Set("prompt_cache_key", chatID)
 	}
-	return jsonx.Marshal(out)
+	body, err := jsonx.Marshal(out)
+	return body, names, err
 }
 
 // ChatHeaders builds and signs the outbound header set of one attempt.
@@ -50,7 +81,7 @@ func PrepareBody(shaped *jsonx.Obj, model, chatID string) ([]byte, error) {
 // The signature covers every header in the list, so maas_type (when the model
 // rides the free-benefit route) is added before signing and nothing that the
 // upstream verifies may be added afterwards.
-func ChatHeaders(cred Credential, token, traceID, language string, benefit bool, body []byte) identity.Headers {
+func ChatHeaders(cred Credential, token, traceID, language, sessionID string, benefit bool, body []byte) identity.Headers {
 	if strings.TrimSpace(traceID) == "" {
 		traceID = randomHex(8)
 	}
@@ -65,6 +96,11 @@ func ChatHeaders(cred Credential, token, traceID, language string, benefit bool,
 		identity.P("X-Language", language),
 		identity.P("app-id", "CodeAgent3.0"),
 		identity.P("is_confidential", "false"),
+	}
+	if strings.TrimSpace(sessionID) != "" {
+		// The upstream ties a chat to the busy lease that was registered for it;
+		// without this header the request counts against no session.
+		h = append(h, identity.P("user-session-id", sessionID))
 	}
 	if benefit {
 		h = append(h, identity.P(HeaderMaasType, MaasBenefit))

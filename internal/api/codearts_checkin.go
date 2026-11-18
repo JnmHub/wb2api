@@ -14,6 +14,6 @@ func (a *Accounts) checkinCodeArts(ctx context.Context, acc *pool.Account) error
 	if a.CodeArts == nil {
 		return errors.New("CodeArts 渠道未启用")
 	}
-	_, _, err := a.CodeArts.Checkin(ctx, acc)
+	_, _, err := a.CodeArts.Checkin(ctx, acc, true)
 	return err
 }

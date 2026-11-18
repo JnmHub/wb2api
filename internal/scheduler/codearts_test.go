@@ -20,7 +20,7 @@ type fakeChannel struct {
 
 func (f *fakeChannel) CanCheckin(acc *pool.Account) bool { return !f.done }
 
-func (f *fakeChannel) Checkin(ctx context.Context, acc *pool.Account) (bool, string, error) {
+func (f *fakeChannel) Checkin(ctx context.Context, acc *pool.Account, manual bool) (bool, string, error) {
 	f.calls++
 	if f.ok {
 		f.done = true

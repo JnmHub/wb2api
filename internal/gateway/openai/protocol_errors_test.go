@@ -109,7 +109,7 @@ func TestAggregateProtocolErrorsAreSanitized(t *testing.T) {
 				q := &request{r: r, w: w, payload: jsonx.NewObj(), start: time.Now()}
 				switch protocol {
 				case "chat":
-					h.aggregate(w, r, func() {}, time.Minute, body, testAccount(), "m", "", "", q.start)
+					h.aggregate(w, r, func() {}, time.Minute, body, testAccount(), "m", "", "", q.start, nil)
 				case "messages":
 					h.messagesWhole(q, testAccount(), func() {}, time.Minute, body, "m")
 				case "responses":

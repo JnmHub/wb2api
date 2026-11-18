@@ -28,6 +28,7 @@ func syncAccount(uid string) *accounts.Record {
 // fakeVendor serves the three catalogue sources plus the credit endpoints.
 func fakeVendor(t *testing.T, hits *atomic.Int32) *httptest.Server {
 	t.Helper()
+	var confirmed atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if hits != nil {
 			hits.Add(1)
@@ -40,13 +41,20 @@ func fakeVendor(t *testing.T, hits *atomic.Int32) *httptest.Server {
 			fmt.Fprint(w, `{"gpts":{"models":[{"model_name":"GLM-5.2","model_parameters":{"context_window":131072}}]}}`)
 		case codearts.BuiltinPath:
 			fmt.Fprint(w, `{"builtinModels":[{"model_id":"Qwen3-VL-235B"}]}`)
+		case codearts.BenefitGatePath:
+			fmt.Fprint(w, `{"enabled":true}`)
 		case codearts.BenefitClaimPath:
 			fmt.Fprint(w, `{"error_code":"0000"}`)
 		case codearts.BenefitConfigPath:
 			fmt.Fprint(w, `{"error_code":"0000","result":{"models":[{"model_id":"deepseek-v4.1-flash-1017"}]}}`)
 		case codearts.DeliveryPath:
-			fmt.Fprint(w, `{"code":0,"data":{"items":[{"campaignId":1,"title":"每日签到","status":"ELIGIBLE","claimable":true,"benefitUnit":"CREDIT","benefitAmount":1000}]}}`)
+			status := "ELIGIBLE"
+			if confirmed.Load() {
+				status = "CONFIRMED"
+			}
+			fmt.Fprintf(w, `{"code":0,"data":{"items":[{"campaignId":1,"title":"每日签到","status":"%s","claimable":true,"benefitUnit":"CREDIT","benefitAmount":1000}]}}`, status)
 		case codearts.ClaimPath, codearts.ConfirmPath:
+			confirmed.Store(true)
 			fmt.Fprint(w, `{"code":0,"data":{}}`)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
@@ -122,7 +130,7 @@ func TestCheckinRecordsAndGatesTheDay(t *testing.T) {
 	if !svc.CanCheckin(acc) {
 		t.Fatal("a fresh account needs its check-in")
 	}
-	ok, msg, err := svc.Checkin(context.Background(), acc)
+	ok, msg, err := svc.Checkin(context.Background(), acc, true)
 	if err != nil || !ok {
 		t.Fatalf("Checkin = (%v, %q, %v)", ok, msg, err)
 	}
@@ -203,7 +211,7 @@ func TestCheckinKeepsTheDaysRealResult(t *testing.T) {
 	}
 	p := pool.New([]*accounts.Record{rec})
 	svc := &Service{Pool: p, Base: srv.URL, Now: func() time.Time { return now }}
-	if _, _, err := svc.Checkin(context.Background(), p.Get("hw-1")); err != nil {
+	if _, _, err := svc.Checkin(context.Background(), p.Get("hw-1"), true); err != nil {
 		t.Fatalf("Checkin: %v", err)
 	}
 	st := p.Get("hw-1").Record().LastCheckin.(map[string]any)
@@ -229,7 +237,7 @@ func TestCheckinRenewsStaleCredentialFirst(t *testing.T) {
 			})
 			return nil
 		}}
-	ok, msg, err := svc.Checkin(context.Background(), p.Get("hw-1"))
+	ok, msg, err := svc.Checkin(context.Background(), p.Get("hw-1"), true)
 	if err != nil || !ok {
 		t.Fatalf("Checkin = (%v, %q, %v)", ok, msg, err)
 	}
@@ -241,6 +249,7 @@ func TestCheckinRenewsStaleCredentialFirst(t *testing.T) {
 // A token that expires mid-flight is renewed once and the call retried.
 func TestCheckinRetriesOnceAfterExpiredAnswer(t *testing.T) {
 	var calls atomic.Int32
+	var confirmed atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Header.Get("X-Security-Token") != "STS-NEW" {
@@ -251,8 +260,13 @@ func TestCheckinRetriesOnceAfterExpiredAnswer(t *testing.T) {
 		calls.Add(1)
 		switch r.URL.Path {
 		case codearts.DeliveryPath:
-			fmt.Fprint(w, `{"code":0,"data":{"items":[{"campaignId":1,"title":"每日签到","status":"ELIGIBLE","claimable":true,"benefitUnit":"CREDIT","benefitAmount":1000}]}}`)
+			status := "ELIGIBLE"
+			if confirmed.Load() {
+				status = "CONFIRMED"
+			}
+			fmt.Fprintf(w, `{"code":0,"data":{"items":[{"campaignId":1,"title":"每日签到","status":"%s","claimable":true,"benefitUnit":"CREDIT","benefitAmount":1000}]}}`, status)
 		default:
+			confirmed.Store(true)
 			fmt.Fprint(w, `{"code":0,"data":{}}`)
 		}
 	}))
@@ -268,7 +282,7 @@ func TestCheckinRetriesOnceAfterExpiredAnswer(t *testing.T) {
 			p.Update(acc.UID, func(r *accounts.Record) { r.AccessToken = "STS-NEW" })
 			return nil
 		}}
-	ok, msg, err := svc.Checkin(context.Background(), p.Get("hw-1"))
+	ok, msg, err := svc.Checkin(context.Background(), p.Get("hw-1"), true)
 	if err != nil || !ok {
 		t.Fatalf("Checkin = (%v, %q, %v)", ok, msg, err)
 	}
@@ -320,5 +334,64 @@ func TestDiscoverRetriesOnceAfterExpiredAnswer(t *testing.T) {
 	}
 	if len(dis.Models) == 0 || listed.Load() == 0 {
 		t.Fatalf("no models after the retry: %+v", dis)
+	}
+}
+
+// The unattended loop has a daily write budget: six attempts, ten minutes
+// apart. Manual requests bypass it.
+func TestCheckinDailyBudget(t *testing.T) {
+	var hits atomic.Int32
+	srv := fakeVendor(t, &hits)
+	now := time.Date(2026, 11, 18, 9, 0, 0, 0, time.Local)
+	rec := syncAccount("hw-1")
+	rec.Extra["codearts"].(map[string]any)["claim_ledger"] = map[string]any{
+		"day": "2026-11-18", "attempts": float64(6), "last_at": float64(now.Add(-time.Hour).Unix()),
+	}
+	p := pool.New([]*accounts.Record{rec})
+	svc := &Service{Pool: p, Base: srv.URL, Now: func() time.Time { return now }}
+	acc := p.Get("hw-1")
+
+	ok, msg, err := svc.Checkin(context.Background(), acc, false)
+	if err != nil || !ok {
+		t.Fatalf("auto Checkin = (%v, %q, %v)", ok, msg, err)
+	}
+	if !strings.Contains(msg, "上限") {
+		t.Fatalf("message = %q", msg)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("the upstream was called %d times despite the budget", hits.Load())
+	}
+	if svc.CanCheckin(acc) {
+		t.Fatal("a spent budget must not look due")
+	}
+
+	// Manual bypasses the budget.
+	if _, _, err := svc.Checkin(context.Background(), acc, true); err != nil {
+		t.Fatalf("manual Checkin: %v", err)
+	}
+	if hits.Load() == 0 {
+		t.Fatal("manual check-in did not reach the upstream")
+	}
+}
+
+func TestCanCheckinHonoursTheGap(t *testing.T) {
+	now := time.Date(2026, 11, 18, 9, 0, 0, 0, time.Local)
+	rec := syncAccount("hw-1")
+	rec.Extra["codearts"].(map[string]any)["claim_ledger"] = map[string]any{
+		"day": "2026-11-18", "attempts": float64(1), "last_at": float64(now.Add(-2 * time.Minute).Unix()),
+	}
+	p := pool.New([]*accounts.Record{rec})
+	svc := &Service{Pool: p, Now: func() time.Time { return now }}
+	if svc.CanCheckin(p.Get("hw-1")) {
+		t.Fatal("two minutes after an attempt is inside the gap")
+	}
+	svc.Now = func() time.Time { return now.Add(9 * time.Minute) }
+	if !svc.CanCheckin(p.Get("hw-1")) {
+		t.Fatal("after the gap it is due again")
+	}
+	// A new day resets the budget.
+	svc.Now = func() time.Time { return now.Add(24 * time.Hour) }
+	if !svc.CanCheckin(p.Get("hw-1")) {
+		t.Fatal("the next day must be due")
 	}
 }

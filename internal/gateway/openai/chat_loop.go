@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"wb2api/internal/codeartsync"
 	"wb2api/internal/gateway/ratelimit"
 	"wb2api/internal/jsonx"
 	"wb2api/internal/pool"
@@ -624,7 +626,44 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 	product := identity.NormalizeProduct(rec.Product)
 	out := h.buildOutbound(q, rec, product)
 
-	hdrs := h.chatHeaders(q, rec, product, out)
+	if realm.IsCodeArts(rec.Realm) {
+		if blocked, reason := h.sizeGate.blocked(acc.UID, len(out.body), time.Now()); blocked {
+			h.logger().Warn("codearts request exceeds a measured size wall; failing over",
+				"account", short(acc.UID), "bytes", len(out.body), "wall", reason)
+			h.noteAccountFull(q, acc)
+			q.at.skipped++
+			return result{kind: retry}
+		}
+	}
+	q.attemptBytes = len(out.body)
+	q.toolNames = out.names
+
+	// The Huawei channel gates each account to three upstream conversations:
+	// register the lease first so a full account fails over instead of earning
+	// a TM.00001041 from the upstream.
+	sessionID := ""
+	if realm.IsCodeArts(rec.Realm) && h.Sessions != nil {
+		sess, serr := h.Sessions.Begin(q.r.Context(), acc)
+		switch {
+		case serr == nil:
+			defer sess.Close()
+			sessionID = sess.ID()
+		case errors.Is(serr, codeartsync.ErrSessionsFull):
+			// The account already holds its three leases: let the picker choose
+			// another one instead of earning a TM.00001041.
+			h.noteAccountFull(q, acc)
+			q.at.skipped++
+			return result{kind: retry}
+		default:
+			// Registration failed for another reason (permissions, endpoint
+			// drift). Degrade to no lease: the account still serves requests,
+			// and the local concurrency cap keeps us from overrunning.
+			h.logger().Warn("codearts session registration failed; sending without a lease",
+				"account", short(acc.UID), "err", serr)
+		}
+	}
+
+	hdrs := h.chatHeaders(q, rec, product, out, sessionID)
 	cfg := h.Settings.UpstreamConfig()
 
 	ctx, cancel := context.WithCancel(q.r.Context())
@@ -680,9 +719,9 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 	if q.sink != nil {
 		q.sink(q, acc, cancel, idle, body)
 	} else if q.stream {
-		h.pipeStream(q.w, q.r, cancel, idle, body, acc, q.viewModel(), q.keyID, q.effort(h), q.start, q.maxTPS)
+		h.pipeStream(q.w, q.r, cancel, idle, body, acc, q.viewModel(), q.keyID, q.effort(h), q.start, q.maxTPS, q.toolNames)
 	} else {
-		h.aggregate(q.w, q.r, cancel, idle, body, acc, q.viewModel(), q.keyID, q.effort(h), q.start)
+		h.aggregate(q.w, q.r, cancel, idle, body, acc, q.viewModel(), q.keyID, q.effort(h), q.start, q.toolNames)
 	}
 	return result{kind: done}
 }
@@ -704,6 +743,8 @@ func (h *Handler) persistRecord(rec *accounts.Record) {
 type outbound struct {
 	body []byte
 	gz   bool
+	// names restores the tool names shortened for the Huawei channel.
+	names *codearts.ToolNameMap
 }
 
 // chatPathFor returns the chat endpoint of an upstream channel.
@@ -717,11 +758,11 @@ func chatPathFor(r string) string {
 // buildOutbound renders the body of one attempt for the account's channel.
 func (h *Handler) buildOutbound(q *request, rec *accounts.Record, product string) outbound {
 	if realm.IsCodeArts(rec.Realm) {
-		body, err := codearts.PrepareBody(q.shaped, q.model, identity.ConversationIDFor(rec.UID, q.sessionKey))
+		body, names, err := codearts.PrepareBody(q.shaped, q.model, identity.ConversationIDFor(rec.UID, q.sessionKey))
 		if err != nil {
 			return outbound{body: []byte("{}")}
 		}
-		return outbound{body: body}
+		return outbound{body: body, names: names}
 	}
 	enc, gz := q.bodyFor(product)
 	return outbound{body: enc.wire(gz), gz: gz}
@@ -730,9 +771,9 @@ func (h *Handler) buildOutbound(q *request, rec *accounts.Record, product string
 // chatHeaders builds the outbound headers of one attempt for the account's
 // identity: the conversation id is stable per (account, session key), the turn
 // request id is shared by every retry of one user turn.
-func (h *Handler) chatHeaders(q *request, rec *accounts.Record, product string, out outbound) identity.Headers {
+func (h *Handler) chatHeaders(q *request, rec *accounts.Record, product string, out outbound, sessionID string) identity.Headers {
 	if realm.IsCodeArts(rec.Realm) {
-		return codearts.ChatHeaders(codearts.CredentialOf(rec), rec.AccessToken, q.turnID, "",
+		return codearts.ChatHeaders(codearts.CredentialOf(rec), rec.AccessToken, q.turnID, "", sessionID,
 			codearts.IsBenefitModel(rec, q.model), out.body)
 	}
 	conv := ""
@@ -841,6 +882,12 @@ func (h *Handler) classify(q *request, acc *pool.Account, status int, body []byt
 	now := time.Now()
 	q.at.kind, q.at.lastStatus, q.at.lastBody, q.at.lastErr = failHTTP, status, body, nil
 	if realm.IsCodeArts(acc.Realm) {
+		// A too-large body comes back as 413 (API gateway) or 001001005 (the
+		// inference backend); remember the measured wall so the same size does
+		// not burn another round trip.
+		if status == http.StatusRequestEntityTooLarge || (codearts.IsFatalRequestError(body) && q.attemptBytes >= sizeGateMinBytes) {
+			h.sizeGate.record(acc.UID, q.attemptBytes, now, fmt.Sprintf("HTTP %d: %s", status, truncate(string(body), 120)))
+		}
 		// A rejected request body is the client's problem: no account rotation
 		// and no cooldown, or one malformed call would park the whole channel.
 		if codearts.IsFatalRequestError(body) {

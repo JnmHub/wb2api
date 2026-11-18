@@ -146,6 +146,7 @@ func Checkin(ctx context.Context, hc *http.Client, base string, cred Credential,
 		return CheckinResult{Message: err.Error()}, err
 	}
 	out := CheckinResult{OK: true, Campaigns: make([]ClaimResult, 0, len(campaigns))}
+	worked := map[int]bool{}
 	for _, c := range campaigns {
 		if c.ID != 1 && c.ID != 4 {
 			continue
@@ -153,11 +154,36 @@ func Checkin(ctx context.Context, hc *http.Client, base string, cred Credential,
 		if c.BenefitUnit != "" && c.BenefitUnit != "CREDIT" {
 			continue
 		}
-		res := claimCampaign(ctx, hc, base, cred, c, now)
+		res, wrote := claimCampaign(ctx, hc, base, cred, c, now)
+		if wrote {
+			worked[c.ID] = true
+		}
 		out.Campaigns = append(out.Campaigns, res)
 		out.OK = out.OK && res.OK
 		out.Credits += res.Credits
 	}
+	// Re-read the official list: claim/confirm answering code:0 only means the
+	// request was accepted, not that the credit landed. Reporting success
+	// before the list says CONFIRMED is how a panel shows "+4000" that was
+	// never granted.
+	if len(worked) > 0 {
+		if verified, verr := FetchCampaigns(ctx, hc, base, cred); verr == nil {
+			for i := range out.Campaigns {
+				if !worked[out.Campaigns[i].CampaignID] {
+					continue
+				}
+				if !campaignConfirmed(verified, out.Campaigns[i].CampaignID) {
+					out.Campaigns[i].OK = false
+					out.Campaigns[i].Message = "已提交，官方活动列表尚未确认到账"
+					out.OK = false
+				}
+			}
+		} else {
+			out.OK = false
+			out.Message = "领取已提交，但回读活动列表失败：" + verr.Error()
+		}
+	}
+
 	parts := make([]string, 0, len(out.Campaigns))
 	for _, res := range out.Campaigns {
 		parts = append(parts, res.Title+": "+res.Message)
@@ -169,29 +195,44 @@ func Checkin(ctx context.Context, hc *http.Client, base string, cred Credential,
 	return out, nil
 }
 
-func claimCampaign(ctx context.Context, hc *http.Client, base string, cred Credential, c Campaign, now time.Time) ClaimResult {
+// campaignConfirmed reports whether the re-read list shows the campaign as
+// credited.
+func campaignConfirmed(list []Campaign, id int) bool {
+	for _, c := range list {
+		if c.ID != id {
+			continue
+		}
+		switch strings.ToUpper(strings.TrimSpace(c.Status)) {
+		case "CONFIRMED", "CONSUMED":
+			return true
+		}
+	}
+	return false
+}
+
+func claimCampaign(ctx context.Context, hc *http.Client, base string, cred Credential, c Campaign, now time.Time) (ClaimResult, bool) {
 	res := ClaimResult{CampaignID: c.ID, Title: c.Title, Status: strings.TrimSpace(c.Status), OK: true}
 	if res.Title == "" {
 		res.Title = fmt.Sprintf("积分活动 %d", c.ID)
 	}
 	if end, err := time.Parse(time.RFC3339Nano, c.Extra.EndTime); err == nil && !now.Before(end) {
 		res.Message = "活动已结束"
-		return res
+		return res, false
 	}
 	if start, err := time.Parse(time.RFC3339Nano, c.Extra.StartTime); err == nil && now.Before(start) {
 		res.Message = "活动尚未开始"
-		return res
+		return res, false
 	}
 	switch res.Status {
 	case "CONFIRMED", "CONSUMED":
 		res.Message = "已领取"
-		return res
+		return res, false
 	case "CLAIMED":
 		// Credited but not confirmed: never claim again, only confirm.
 	case "ELIGIBLE":
 		if !c.Claimable {
 			res.OK, res.Message = false, "暂不可领取，稍后重试"
-			return res
+			return res, false
 		}
 		_, err := creditRequest(ctx, hc, base, http.MethodPost, ClaimPath, map[string]any{
 			"campaignId":    c.ID,
@@ -200,7 +241,7 @@ func claimCampaign(ctx context.Context, hc *http.Client, base string, cred Crede
 		}, cred)
 		if err != nil {
 			res.OK, res.Message = false, err.Error()
-			return res
+			return res, false
 		}
 		res.Status = "CLAIMED"
 		res.Credits = c.PendingTotalAmount
@@ -209,19 +250,19 @@ func claimCampaign(ctx context.Context, hc *http.Client, base string, cred Crede
 		}
 	case "":
 		res.Message = "未获得活动资格"
-		return res
+		return res, false
 	default:
 		res.OK, res.Message = false, "未知活动状态: "+res.Status
-		return res
+		return res, false
 	}
 	if _, err := creditRequest(ctx, hc, base, http.MethodPost, ConfirmPath, map[string]any{"campaignId": c.ID}, cred); err != nil {
 		res.OK, res.Message = false, "已领取，确认失败，稍后重试: "+err.Error()
-		return res
+		return res, true
 	}
 	res.Status = "CONFIRMED"
 	res.Message = "已补确认"
 	if res.Credits > 0 {
 		res.Message = fmt.Sprintf("领取成功（%g 积分）", res.Credits)
 	}
-	return res
+	return res, true
 }

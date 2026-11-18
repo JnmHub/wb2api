@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"wb2api/internal/codeartsync"
 	"wb2api/internal/gateway/leak"
 	"wb2api/internal/gateway/shape"
 	"wb2api/internal/guards"
@@ -32,6 +33,7 @@ import (
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/store/settings"
 	"wb2api/internal/upstream"
+	"wb2api/internal/upstream/codearts"
 	"wb2api/internal/upstream/identity"
 	"wb2api/internal/usageest"
 )
@@ -129,6 +131,11 @@ type Handler struct {
 	// another account is tried. Headers are held until semantic output exists.
 	// Zero disables the guard.
 	FirstOutputTimeout time.Duration
+	// Sessions holds the Huawei channel's upstream conversation leases (nil =
+	// the channel is used without session registration).
+	Sessions *codeartsync.Sessions
+	// sizeGate remembers measured request-size walls of the Huawei channel.
+	sizeGate sizeGate
 	// Sched optionally lets sticky routing escape a slow/error-prone account.
 	Sched SchedulerFeedback
 	// DefaultRealm is the fallback when CurrentRealm gives none (intl).
@@ -342,6 +349,8 @@ type request struct {
 	effortDone          bool
 	anth                bool
 
+	attemptBytes    int
+	toolNames       *codearts.ToolNameMap
 	refreshed       map[string]bool
 	degradedRetried bool
 	restrictedRot   int

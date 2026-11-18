@@ -661,6 +661,10 @@ func main() {
 	}
 	sched.Channel = codeArtsSvc
 	accountsAPI.CodeArts = codeArtsSvc
+	// The upstream gates each account to three concurrent conversations and
+	// rejects the fourth with TM.00001041, so the gateway registers a busy
+	// lease per attempt instead of firing blindly.
+	h.Sessions = &codeartsync.Sessions{Pool: p, Log: log}
 	background.start(func() {
 		(&codeartsync.Scanner{Service: codeArtsSvc}).Run(bg)
 	})

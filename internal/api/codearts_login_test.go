@@ -62,6 +62,8 @@ func (t *ticketServer) handler(tb *testing.T) http.HandlerFunc {
 			fmt.Fprint(w, `{"gpts":{"models":[{"model_name":"GLM-5.2"}]}}`)
 		case r.URL.Path == codearts.BuiltinPath:
 			fmt.Fprint(w, `{"builtinModels":[{"model_id":"Qwen3-VL-235B"}]}`)
+		case r.URL.Path == codearts.BenefitGatePath:
+			fmt.Fprint(w, `{"enabled":true}`)
 		case r.URL.Path == codearts.BenefitClaimPath:
 			fmt.Fprint(w, `{"error_code":"0000"}`)
 		case r.URL.Path == codearts.BenefitConfigPath:
@@ -342,6 +344,8 @@ func TestCodeArtsLoginResolvesIdentityWhenMissing(t *testing.T) {
 			fmt.Fprint(w, `{"gpts":{"models":[{"model_name":"GLM-5.2"}]}}`)
 		case codearts.BuiltinPath:
 			fmt.Fprint(w, `{"builtinModels":[]}`)
+		case codearts.BenefitGatePath:
+			fmt.Fprint(w, `{"enabled":true}`)
 		case codearts.BenefitClaimPath, codearts.BenefitConfigPath:
 			fmt.Fprint(w, `{"error_code":"0000","result":{"models":[]}}`)
 		default:

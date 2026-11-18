@@ -17,6 +17,7 @@ import (
 
 	"wb2api/internal/gateway/leak"
 	"wb2api/internal/pool"
+	"wb2api/internal/upstream/codearts"
 )
 
 const sseReadBlock = 64 << 10
@@ -162,7 +163,7 @@ func usageTotal(u json.RawMessage) int64 {
 
 // pipeStream relays an upstream SSE stream to the client.
 func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp func(), idleD time.Duration, body io.Reader,
-	acc *pool.Account, model, keyID, effort string, start time.Time, maxTPS float64) {
+	acc *pool.Account, model, keyID, effort string, start time.Time, maxTPS float64, names *codearts.ToolNameMap) {
 
 	hdr := w.Header()
 	hdr.Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -281,6 +282,12 @@ loop:
 				if upstreamErr, isErr := upstreamSSEError(data); isErr {
 					streamErr = upstreamErr
 					break loop
+				}
+				if names != nil {
+					// The client only knows the original tool names.
+					if restored, changed := names.RestoreJSON(data); changed {
+						data = restored
+					}
 				}
 				nChunks++
 				c, ok := parseChunk(data)
@@ -629,9 +636,20 @@ func (c *collected) usageEvent(acc *pool.Account, model, keyID, effort string, s
 
 // aggregate folds the upstream stream into one chat.completion response.
 func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp func(), idleD time.Duration, body io.Reader,
-	acc *pool.Account, model, keyID, effort string, start time.Time) {
+	acc *pool.Account, model, keyID, effort string, start time.Time, names *codearts.ToolNameMap) {
 
 	res := h.collect(r, cancelUp, idleD, body, model, true)
+	if names != nil {
+		for _, call := range res.calls {
+			fn, ok := call["function"].(map[string]any)
+			if !ok {
+				continue
+			}
+			if name, ok := fn["name"].(string); ok {
+				fn["name"] = names.RestoreName(name)
+			}
+		}
+	}
 	ev := res.usageEvent(acc, model, keyID, effort, start)
 	if res.err != nil {
 		markCollectedError(&ev, r)

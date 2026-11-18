@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"wb2api/internal/codeartsync"
 	"wb2api/internal/pool"
 	"wb2api/internal/realm"
 	"wb2api/internal/store/accounts"
@@ -290,5 +291,80 @@ func TestModelsEndpointListsChannelCatalogue(t *testing.T) {
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("header status = %d", w.Code)
+	}
+}
+
+// A tool name over 64 characters is shortened on the wire and restored before
+// the client sees it; the upstream would otherwise reject the whole request
+// with InferHub.001001017.
+func TestCodeArtsLongToolNamesAreRestored(t *testing.T) {
+	long := strings.Repeat("mcp_server_very_long_tool_", 4) // > 64 chars
+	var upstreamBody []byte
+	var sentName string
+	var env *codeartsEnv
+	env = newCodeartsEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		upstreamBody = env.body // the harness already drained r.Body
+		var doc struct {
+			Tools []struct {
+				Function struct {
+					Name string `json:"name"`
+				} `json:"function"`
+			} `json:"tools"`
+		}
+		if err := json.Unmarshal(upstreamBody, &doc); err != nil {
+			t.Errorf("upstream body: %v", err)
+		}
+		if len(doc.Tools) != 1 {
+			t.Errorf("tools = %d (body: %s)", len(doc.Tools), upstreamBody)
+			return
+		}
+		sentName = doc.Tools[0].Function.Name
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"GLM-5.2","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":""}]}`+"\n\n")
+		fmt.Fprintf(w, `data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"GLM-5.2","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":%q,"arguments":"{}"}}]},"finish_reason":""}]}`+"\n\n", sentName)
+		fmt.Fprint(w, "data: [DONE]\n\n")
+	})
+
+	reqBody := `{"model":"GLM-5.2","stream":true,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"` + long + `","parameters":{"type":"object"}}}]}`
+	resp := env.post(t, reqBody)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body = %s", resp.StatusCode, raw)
+	}
+	if len([]rune(sentName)) > 64 {
+		t.Fatalf("upstream saw a %d-char name: %q", len([]rune(sentName)), sentName)
+	}
+	if sentName == long {
+		t.Fatal("the long name was forwarded unchanged")
+	}
+	if !strings.Contains(string(raw), long) {
+		t.Fatalf("the client did not get its original tool name back: %s", raw)
+	}
+}
+
+// If the heartbeat endpoint is unavailable the channel must still serve: no
+// lease, local concurrency cap, warning in the log.
+func TestCodeArtsServesWithoutLeaseWhenHeartbeatFails(t *testing.T) {
+	var sawSession string
+	var env *codeartsEnv
+	env = newCodeartsEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		sawSession = r.Header.Get("user-session-id")
+		codeartsSSE(w, r)
+	})
+	// The harness upstream has no heartbeat route: 404 on every PUT.
+	env.h.Sessions = &codeartsync.Sessions{Pool: env.h.Pool, Base: env.h.UpstreamOverride}
+
+	resp := env.post(t, `{"model":"GLM-5.2","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body = %s", resp.StatusCode, raw)
+	}
+	if sawSession != "" {
+		t.Fatalf("a session id was sent without a lease: %q", sawSession)
+	}
+	if !strings.Contains(string(raw), "你好") {
+		t.Fatalf("stream lost: %s", raw)
 	}
 }

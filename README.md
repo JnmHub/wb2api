@@ -64,6 +64,7 @@ OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种兼容�
 
 ## 最新发行版
 
+[v2.7.0 更新说明](docs/releases/v2.7.0.md)：华为渠道补齐会话心跳（3 路上游并发）、工具名 64 字符改写与还原、体积门、福利网关开关、签到回读确认与写入预算。
 [v2.6.3 更新说明](docs/releases/v2.6.3.md)：华为渠道接入订阅统计接口，账号详情与列表显示真实积分余额；流内 `error_code` 不再是「成功」。
 [v2.6.2 更新说明](docs/releases/v2.6.2.md)：签到与模型发现在凭据过期时先续期、失败再重试，不再把 APIG.0602 暴露给面板；无过期时间的导入账号也会被后台刷新。
 [v2.6.1 更新说明](docs/releases/v2.6.1.md)：华为渠道登录打通（回调链路、STS 主机、身份兜底），支持 CodeArts 凭据导入与导出脱敏，面板补齐签到/积分显示。

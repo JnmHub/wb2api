@@ -69,7 +69,7 @@ func TestCodeArtsAttemptBodyAndSignature(t *testing.T) {
 		t.Fatal("a session key must derive a chat id")
 	}
 
-	hdrs := h.chatHeaders(q, rec, identity.ProductDesktop, out)
+	hdrs := h.chatHeaders(q, rec, identity.ProductDesktop, out, "")
 	if v, _ := hdrs.Get("x-auth-token"); v != "STS-hw1" {
 		t.Fatalf("x-auth-token = %q", v)
 	}

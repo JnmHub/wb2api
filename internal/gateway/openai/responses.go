@@ -315,7 +315,7 @@ func (h *Handler) openFollowUp(q *request, acc *pool.Account, chat *jsonx.Obj) (
 	rec := acc.Record()
 	product := identity.NormalizeProduct(rec.Product)
 	out := h.buildOutbound(&q2, rec, product)
-	hdrs := h.chatHeaders(&q2, rec, product, out)
+	hdrs := h.chatHeaders(&q2, rec, product, out, "")
 	cfg := h.Settings.UpstreamConfig()
 	ctx, cancel := context.WithCancel(q.r.Context())
 	beginAttempt(ctx)

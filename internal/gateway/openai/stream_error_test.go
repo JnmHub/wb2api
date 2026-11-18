@@ -36,7 +36,7 @@ func TestPipeStreamDoesNotSendDoneAfterUpstreamReadError(t *testing.T) {
 	body := &failAfterReader{data: []byte("data: {\"id\":\"u\",\"choices\":[{\"delta\":{\"content\":\"part\"},\"finish_reason\":null}]}\n\n")}
 	r := httptest.NewRequest("POST", "/", nil)
 	w := httptest.NewRecorder()
-	h.pipeStream(w, r, func() {}, time.Second, body, testAccount(), "m", "", "", time.Now(), 0)
+	h.pipeStream(w, r, func() {}, time.Second, body, testAccount(), "m", "", "", time.Now(), 0, nil)
 	text := w.Body.String()
 	if strings.Contains(text, "data: [DONE]") {
 		t.Fatalf("unexpected success terminator after upstream error: %s", text)
@@ -59,7 +59,7 @@ func TestPipeStreamUpstreamErrorEnvelopeAbortsWithoutDone(t *testing.T) {
 		"data: {\"error\":{\"message\":\"upstream failed\",\"type\":\"server_error\"}}\n\n")
 	r := httptest.NewRequest("POST", "/", nil)
 	w := httptest.NewRecorder()
-	h.pipeStream(w, r, func() {}, time.Second, body, testAccount(), "m", "", "", time.Now(), 0)
+	h.pipeStream(w, r, func() {}, time.Second, body, testAccount(), "m", "", "", time.Now(), 0, nil)
 	text := w.Body.String()
 	if strings.Contains(text, "data: [DONE]") {
 		t.Fatalf("unexpected success terminator after SSE error: %s", text)
@@ -83,7 +83,7 @@ func TestAggregateClientCancellationDoesNotEmitUpstreamFailure(t *testing.T) {
 	r = r.WithContext(ctx)
 	cancel()
 	w := httptest.NewRecorder()
-	h.aggregate(w, r, func() {}, time.Second, strings.NewReader(""), testAccount(), "m", "", "", time.Now())
+	h.aggregate(w, r, func() {}, time.Second, strings.NewReader(""), testAccount(), "m", "", "", time.Now(), nil)
 	ev := <-events
 	if ev.Outcome != "client_aborted" {
 		t.Fatalf("outcome = %q", ev.Outcome)

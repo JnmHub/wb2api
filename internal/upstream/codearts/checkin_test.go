@@ -14,16 +14,20 @@ import (
 
 // creditServer emulates the delivery / claim / confirm endpoints.
 type creditServer struct {
-	mu      sync.Mutex
-	written []string
-	srv     *httptest.Server
-	sawAuth []string
-	sawDate []string
+	mu        sync.Mutex
+	written   []string
+	srv       *httptest.Server
+	sawAuth   []string
+	sawDate   []string
+	campaigns []map[string]any // the delivery list, mutated as claims land
 }
 
 func newCreditServer(t *testing.T, campaigns string, claimFails bool) *creditServer {
 	t.Helper()
 	cs := &creditServer{}
+	if err := json.Unmarshal([]byte(campaigns), &cs.campaigns); err != nil {
+		t.Fatalf("bad campaign fixture: %v", err)
+	}
 	cs.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cs.mu.Lock()
 		cs.sawAuth = append(cs.sawAuth, r.Header.Get("Authorization"))
@@ -35,19 +39,39 @@ func newCreditServer(t *testing.T, campaigns string, claimFails bool) *creditSer
 			if got := r.URL.Query().Get("channel"); got != CreditChannel {
 				t.Errorf("delivery channel = %q", got)
 			}
-			fmt.Fprintf(w, `{"code":0,"data":{"items":%s}}`, campaigns)
-		case r.URL.Path == ClaimPath:
+			// Claimed campaigns come back as CONFIRMED: the re-read after
+			// claim/confirm is what decides success.
+			items := make([]map[string]any, 0, len(cs.campaigns))
 			cs.mu.Lock()
-			cs.written = append(cs.written, "claim")
+			for _, c := range cs.campaigns {
+				copy := map[string]any{}
+				for k, v := range c {
+					copy[k] = v
+				}
+				items = append(items, copy)
+			}
 			cs.mu.Unlock()
+			raw, _ := json.Marshal(items)
+			fmt.Fprintf(w, `{"code":0,"data":{"items":%s}}`, raw)
+		case r.URL.Path == ClaimPath:
 			if claimFails {
+				cs.mu.Lock()
+				cs.written = append(cs.written, "claim")
+				cs.mu.Unlock()
 				fmt.Fprint(w, `{"code":4004,"message":"claim rejected"}`)
 				return
 			}
+			id := campaignIDOf(r)
+			cs.mu.Lock()
+			cs.written = append(cs.written, "claim")
+			cs.setStatus(id, "CLAIMED")
+			cs.mu.Unlock()
 			fmt.Fprint(w, `{"code":0,"data":{}}`)
 		case r.URL.Path == ConfirmPath:
+			id := campaignIDOf(r)
 			cs.mu.Lock()
 			cs.written = append(cs.written, "confirm")
+			cs.setStatus(id, "CONFIRMED")
 			cs.mu.Unlock()
 			fmt.Fprint(w, `{"code":0,"data":{}}`)
 		default:
@@ -57,6 +81,24 @@ func newCreditServer(t *testing.T, campaigns string, claimFails bool) *creditSer
 	}))
 	t.Cleanup(cs.srv.Close)
 	return cs
+}
+
+// setStatus applies a state transition to the fixture row (caller holds the lock).
+func (c *creditServer) setStatus(id int, status string) {
+	for _, row := range c.campaigns {
+		if v, ok := row["campaignId"].(float64); ok && int(v) == id {
+			row["status"] = status
+		}
+	}
+}
+
+// campaignIDOf reads campaignId from a claim/confirm body.
+func campaignIDOf(r *http.Request) int {
+	var body struct {
+		CampaignID int `json:"campaignId"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	return body.CampaignID
 }
 
 func (c *creditServer) writes() []string {
@@ -88,8 +130,9 @@ func TestCheckinClaimsEligibleCampaign(t *testing.T) {
 	if got := strings.Join(cs.writes(), ","); got != "claim,confirm" {
 		t.Fatalf("writes = %s", got)
 	}
-	if len(cs.sawAuth) != 3 {
-		t.Fatalf("expected three signed calls, got %d", len(cs.sawAuth))
+	// delivery → claim → confirm → re-read delivery
+	if len(cs.sawAuth) != 4 {
+		t.Fatalf("expected four signed calls, got %d", len(cs.sawAuth))
 	}
 	for i, a := range cs.sawAuth {
 		if !strings.HasPrefix(a, "SDK-HMAC-SHA256 Access=AK, ") {

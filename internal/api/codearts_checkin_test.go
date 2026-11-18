@@ -28,15 +28,22 @@ func codeartsAccountRec(uid string) *accounts.Record {
 	}
 }
 
-// vendor serves the credit endpoints and prints nothing else.
+// vendor serves the credit endpoints and prints nothing else. Claimed
+// campaigns come back CONFIRMED, because the gateway re-reads the list.
 func vendor(t *testing.T) *httptest.Server {
 	t.Helper()
+	confirmed := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case codearts.DeliveryPath:
-			fmt.Fprint(w, `{"code":0,"data":{"items":[{"campaignId":1,"title":"每日签到","status":"ELIGIBLE","claimable":true,"benefitUnit":"CREDIT","benefitAmount":1000}]}}`)
+			status := "ELIGIBLE"
+			if confirmed {
+				status = "CONFIRMED"
+			}
+			fmt.Fprintf(w, `{"code":0,"data":{"items":[{"campaignId":1,"title":"每日签到","status":"%s","claimable":true,"benefitUnit":"CREDIT","benefitAmount":1000}]}}`, status)
 		case codearts.ClaimPath, codearts.ConfirmPath:
+			confirmed = true
 			fmt.Fprint(w, `{"code":0,"data":{}}`)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)

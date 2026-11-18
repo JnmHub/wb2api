@@ -220,9 +220,9 @@ func TestLatencyThreeProtocolStreamsAndWhole(t *testing.T) {
 				switch protocol {
 				case "chat":
 					if stream {
-						h.pipeStream(w, r, func() {}, time.Minute, body, testAccount(), "m", "", "", start, 0)
+						h.pipeStream(w, r, func() {}, time.Minute, body, testAccount(), "m", "", "", start, 0, nil)
 					} else {
-						h.aggregate(w, r, func() {}, time.Minute, body, testAccount(), "m", "", "", start)
+						h.aggregate(w, r, func() {}, time.Minute, body, testAccount(), "m", "", "", start, nil)
 					}
 				case "messages":
 					if stream {

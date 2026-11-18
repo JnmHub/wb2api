@@ -179,7 +179,7 @@ func (o *Operations) action(w http.ResponseWriter, r *http.Request) {
 				res = out
 				break
 			}
-			ok, msg, err := o.CodeArts.Checkin(ctx, acc)
+			ok, msg, err := o.CodeArts.Checkin(ctx, acc, true)
 			out["ok"] = ok && err == nil
 			out["msg"] = msg
 			if err != nil {

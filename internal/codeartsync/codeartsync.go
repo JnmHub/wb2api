@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -187,18 +188,105 @@ func (s *Service) store(acc *pool.Account, dis codearts.Discovery) error {
 	return nil
 }
 
+// Claim write budget: the activity list is a write-capable endpoint, so an
+// unattended loop must not hammer it. Manual requests bypass both limits.
+const (
+	maxClaimAttempts = 6
+	minClaimGap      = 10 * time.Minute
+	claimDayOffset   = 8 * 3600 // the activity period is UTC+8 midnight
+)
+
+// claimLedger is the per-account, per-day write budget.
+type claimLedger struct {
+	Day      string `json:"day"`
+	Attempts int    `json:"attempts"`
+	LastAt   int64  `json:"last_at"`
+}
+
+// claimDay reports the activity day of t (UTC+8).
+func claimDay(t time.Time) string {
+	return t.In(time.FixedZone("CST", claimDayOffset)).Format("2006-01-02")
+}
+
+func ledgerOf(rec *accounts.Record, now time.Time) claimLedger {
+	led := claimLedger{}
+	if m := codearts.Extra(rec); m != nil {
+		if raw, ok := m["claim_ledger"].(map[string]any); ok {
+			led.Day, _ = raw["day"].(string)
+			if v, ok := raw["attempts"].(float64); ok {
+				led.Attempts = int(v)
+			}
+			if v, ok := raw["last_at"].(float64); ok {
+				led.LastAt = int64(v)
+			}
+		}
+	}
+	if led.Day != claimDay(now) {
+		led = claimLedger{Day: claimDay(now)}
+	}
+	return led
+}
+
+// gapRemaining is how long until the next automatic attempt may run.
+func (l claimLedger) gapRemaining(now time.Time) time.Duration {
+	if l.LastAt == 0 {
+		return 0
+	}
+	next := time.Unix(l.LastAt, 0).Add(minClaimGap)
+	if now.Before(next) {
+		return next.Sub(now)
+	}
+	return 0
+}
+
+// recordAttempt bumps the write budget and stores it on the record.
+func (s *Service) recordAttempt(acc *pool.Account, now time.Time) {
+	led := ledgerOf(acc.Record(), now)
+	led.Attempts++
+	led.LastAt = now.Unix()
+	store := map[string]any{"day": led.Day, "attempts": led.Attempts, "last_at": float64(led.LastAt)}
+	next, ok := s.Pool.Update(acc.UID, func(r *accounts.Record) {
+		m := codearts.Extra(r)
+		cp := make(map[string]any, len(m)+1)
+		for k, v := range m {
+			cp[k] = v
+		}
+		cp["claim_ledger"] = store
+		extra := make(map[string]any, len(r.Extra)+1)
+		for k, v := range r.Extra {
+			extra[k] = v
+		}
+		extra[codearts.ExtraKey] = cp
+		r.Extra = extra
+	})
+	if ok && s.Persist != nil {
+		_ = s.Persist(next)
+	}
+}
+
 // Checkin claims the daily credits of one account and records the outcome in
-// LastCheckin (the panel renders it there).
-func (s *Service) Checkin(ctx context.Context, acc *pool.Account) (bool, string, error) {
+// LastCheckin (the panel renders it there). manual bypasses the daily write
+// budget, which only exists to keep the unattended loop polite.
+func (s *Service) Checkin(ctx context.Context, acc *pool.Account, manual bool) (bool, string, error) {
 	if acc == nil {
 		return false, "", errors.New("account required")
 	}
 	rec := acc.Record()
 	now := s.now()
+	if !manual {
+		led := ledgerOf(rec, now)
+		if led.Attempts >= maxClaimAttempts {
+			return true, "今日领取尝试已达上限（6 次），明天再试", nil
+		}
+		if gap := led.gapRemaining(now); gap > 0 {
+			return true, fmt.Sprintf("距上次尝试不足 10 分钟，%s 后可再试", gap.Round(time.Second)), nil
+		}
+	}
 	if s.stale(rec, now) {
 		s.renew(ctx, acc)
 		rec = acc.Record()
 	}
+	s.recordAttempt(acc, now)
 	res, err := codearts.Checkin(ctx, nil, s.base(rec), codearts.CredentialOf(rec), now)
 	if err != nil && codearts.IsExpiredCredentialError(err) {
 		// One renewal, one retry: this is the "idle for two hours" case.
@@ -256,7 +344,12 @@ func (s *Service) CanCheckin(acc *pool.Account) bool {
 	if !realm.IsCodeArts(rec.Realm) || !rec.IsEnabled() {
 		return false
 	}
-	return !checkedInToday(rec.LastCheckin, s.now())
+	now := s.now()
+	led := ledgerOf(rec, now)
+	if led.Attempts >= maxClaimAttempts || led.gapRemaining(now) > 0 {
+		return false
+	}
+	return !checkedInToday(rec.LastCheckin, now)
 }
 
 func checkedInToday(v any, now time.Time) bool {

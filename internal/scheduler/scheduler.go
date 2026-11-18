@@ -35,8 +35,9 @@ type Tokens interface {
 type Channel interface {
 	// CanCheckin reports whether the account still needs today's check-in.
 	CanCheckin(acc *pool.Account) bool
-	// Checkin runs it; ok is the upstream verdict, msg explains it.
-	Checkin(ctx context.Context, acc *pool.Account) (ok bool, msg string, err error)
+	// Checkin runs it; ok is the upstream verdict, msg explains it. manual
+	// requests bypass the channel's unattended write budget.
+	Checkin(ctx context.Context, acc *pool.Account, manual bool) (ok bool, msg string, err error)
 }
 
 func errText(err error) string {
@@ -334,7 +335,7 @@ func (s *Scheduler) cycle(ctx context.Context, reason string, force bool) {
 			// The Huawei channel has exactly one chore: claiming the daily
 			// points. It has no activity report, growth tasks or daily chat.
 			if checkinDue && s.Channel != nil && s.Channel.CanCheckin(acc) {
-				ok, msg, err := s.Channel.Checkin(ctx, acc)
+				ok, msg, err := s.Channel.Checkin(ctx, acc, false)
 				if ok && err == nil {
 					hwCheckin++
 					s.note("✓ 账号 [%s] 华为 CodeArts 签到: %s", uid8, msg)

@@ -34,6 +34,8 @@ func discoveryServer(t *testing.T, opts discoveryOpts) *httptest.Server {
 			}
 			fmt.Fprint(w, `{"gpts":{"models":[
 				{"model_name":"GLM-5.2","model_id":"glm-5.2","model_parameters":{"context_window":131072,"max_tokens":8192,"model_desc":"主力"}}]}}`)
+		case r.URL.Path == BenefitGatePath:
+			fmt.Fprint(w, `{"enabled":true}`)
 		case r.URL.Path == BuiltinPath:
 			if r.Header.Get("Agent-Type") != "PromptCenter" {
 				t.Errorf("builtin Agent-Type = %q", r.Header.Get("Agent-Type"))
@@ -203,6 +205,8 @@ func TestDiscoverTreatsNoBenefitGroupAsEmpty(t *testing.T) {
 			fmt.Fprint(w, `{"agents":[{"agent_id":"a-1","agent_name":"CodeAgent","show_in_ide":true,"alias":{"alias_zh_cn":"智能体"}}]}`)
 		case AgentDetailPath, BuiltinPath:
 			fmt.Fprint(w, `{"builtinModels":[],"gpts":{"models":[]}}`)
+		case BenefitGatePath:
+			fmt.Fprint(w, `{"enabled":true}`)
 		case BenefitClaimPath, BenefitConfigPath:
 			fmt.Fprint(w, `{"error_code":"4000","error_msg":"invalid channel, group not found"}`)
 		default:
