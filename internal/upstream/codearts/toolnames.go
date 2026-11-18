@@ -23,10 +23,20 @@ var toolNameHashWidths = []int{7, 10, 14}
 // the client only knows the original names.
 type ToolNameMap struct {
 	sent map[string]string // name sent upstream → original name
+	rev  map[string]string // original name → name sent upstream
 }
 
 // Empty reports whether nothing was rewritten.
 func (m *ToolNameMap) Empty() bool { return m == nil || len(m.sent) == 0 }
+
+// SentName maps a client tool name to the one that goes on the wire.
+func (m *ToolNameMap) SentName(name string) (string, bool) {
+	if m == nil {
+		return name, false
+	}
+	short, ok := m.rev[name]
+	return short, ok
+}
 
 // RestoreName maps a name we sent back to the client's name.
 func (m *ToolNameMap) RestoreName(name string) string {
@@ -56,7 +66,7 @@ func ShortenTools(tools []any) *ToolNameMap {
 			taken[name] = true
 		}
 	}
-	out := &ToolNameMap{sent: map[string]string{}}
+	out := &ToolNameMap{sent: map[string]string{}, rev: map[string]string{}}
 	for _, t := range tools {
 		original := toolFunctionName(t)
 		if original == "" || len([]rune(original)) <= MaxToolNameChars {
@@ -68,12 +78,48 @@ func ShortenTools(tools []any) *ToolNameMap {
 		}
 		if setToolFunctionName(t, short) {
 			out.sent[short] = original
+			out.rev[original] = short
 		}
 	}
 	if len(out.sent) == 0 {
 		return nil
 	}
 	return out
+}
+
+// objGet reads a key from either body shape: the ordered jsonx object the
+// gateway parses or a plain decoded map.
+func objGet(v any, key string) (any, bool) {
+	switch t := v.(type) {
+	case map[string]any:
+		x, ok := t[key]
+		return x, ok
+	case *jsonx.Obj:
+		return t.Lookup(key)
+	}
+	return nil, false
+}
+
+func objStr(v any, key string) (string, bool) {
+	x, ok := objGet(v, key)
+	if !ok {
+		return "", false
+	}
+	s, ok := x.(string)
+	return s, ok
+}
+
+// objSet writes a key into either shape.
+func objSet(v any, key string, val any) bool {
+	switch t := v.(type) {
+	case map[string]any:
+		t[key] = val
+		return true
+	case *jsonx.Obj:
+		t.Set(key, val)
+		return true
+	}
+	return false
 }
 
 func toolFunctionName(tool any) string {
@@ -208,4 +254,73 @@ func containsAny(data []byte, names map[string]string) bool {
 		}
 	}
 	return false
+}
+
+// RewriteToolChoice keeps an explicit tool_choice pointing at the tool that is
+// actually declared: shortening only the declaration leaves the choice
+// referencing a name the request no longer contains, and the upstream answers
+// InferHub.001001005.
+func (m *ToolNameMap) RewriteToolChoice(out *jsonx.Obj) {
+	if m.Empty() || out == nil {
+		return
+	}
+	v, ok := out.Lookup("tool_choice")
+	if !ok {
+		return
+	}
+	if name, isStr := v.(string); isStr {
+		if wire, hit := m.SentName(name); hit {
+			out.Set("tool_choice", wire)
+		}
+		return
+	}
+	fn, ok := objGet(v, "function")
+	if !ok {
+		return
+	}
+	if name, ok := objStr(fn, "name"); ok {
+		if wire, hit := m.SentName(name); hit {
+			objSet(fn, "name", wire)
+		}
+	}
+}
+
+// RewriteHistory points earlier assistant tool calls at the shortened names:
+// the model matches a follow-up tool result by name, so history that still
+// carries the 65-character original would not line up with the declaration.
+func (m *ToolNameMap) RewriteHistory(out *jsonx.Obj) {
+	if m.Empty() || out == nil {
+		return
+	}
+	v, ok := out.Lookup("messages")
+	if !ok {
+		return
+	}
+	msgs, ok := v.([]any)
+	if !ok {
+		return
+	}
+	for _, raw := range msgs {
+		calls, ok := objGet(raw, "tool_calls")
+		if !ok {
+			continue
+		}
+		list, ok := calls.([]any)
+		if !ok {
+			continue
+		}
+		for _, c := range list {
+			fn, ok := objGet(c, "function")
+			if !ok {
+				continue
+			}
+			name, ok := objStr(fn, "name")
+			if !ok {
+				continue
+			}
+			if wire, hit := m.SentName(name); hit {
+				objSet(fn, "name", wire)
+			}
+		}
+	}
 }

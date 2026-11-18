@@ -20,6 +20,28 @@ var bodyKeys = []string{
 	"seed", "user", "response_format", "n",
 }
 
+// sanitiseParams removes the combinations the upstream rejects with a bare
+// InferHub.001001005 "The request param is invalid":
+//
+//   - max_tokens together with max_completion_tokens (two output budgets)
+//   - n > 1 (only one choice is ever produced)
+//   - stream_options (streaming is forced on; include_usage is our business)
+//
+// Everything else is forwarded untouched: the upstream may still reject it, but
+// silently rewriting a value the client asked for would be worse than a clear
+// error with the diagnostic record.
+func sanitiseParams(out *jsonx.Obj) {
+	if out.Has("max_completion_tokens") && out.Has("max_tokens") {
+		out.Delete("max_completion_tokens")
+	}
+	if v, ok := out.Lookup("n"); ok {
+		if n, ok := v.(float64); !ok || n != 1 {
+			out.Delete("n")
+		}
+	}
+	out.Delete("stream_options")
+}
+
 // PrepareBody renders the CodeArts chat body from the already-shaped request.
 //
 // The upstream is stream-only in practice: the official client always asks for
@@ -42,6 +64,20 @@ func PrepareBody(shaped *jsonx.Obj, model, chatID string) ([]byte, *ToolNameMap,
 		if tools, ok := v.([]any); ok {
 			cp := make([]any, len(tools))
 			for i, t := range tools {
+				// Clone before rewriting: the shaped body is shared by every
+				// attempt of this request, so shortening in place would leave the
+				// next attempt with already-shortened names and a stale mapping.
+				if o, ok := t.(*jsonx.Obj); ok {
+					co := o.Clone()
+					// Clone is shallow: the function object is still shared, and
+					// rewriting its name in place would leak into every later
+					// attempt of the same request.
+					if fn, ok := co.Obj("function"); ok {
+						co.Set("function", fn.Clone())
+					}
+					cp[i] = co
+					continue
+				}
 				if m, ok := t.(map[string]any); ok {
 					mc := make(map[string]any, len(m))
 					for k, val := range m {
@@ -62,9 +98,13 @@ func PrepareBody(shaped *jsonx.Obj, model, chatID string) ([]byte, *ToolNameMap,
 			if nm := ShortenTools(cp); nm != nil {
 				out.Set("tools", cp)
 				names = nm
+				// Everything else that references a tool name has to move with it.
+				nm.RewriteToolChoice(out)
+				nm.RewriteHistory(out)
 			}
 		}
 	}
+	sanitiseParams(out)
 	out.Set("model", model)
 	out.Set("stream", true)
 	out.Set("tool_stream", true)

@@ -48,11 +48,20 @@ func EventFromGateway(ev openai.UsageEvent, realmOf func(uid string) string) usa
 	latency.AdmissionWaitMs = durationMillis(ev.AdmissionWait)
 	latency.KeyWaitMs = durationMillis(ev.KeyWait)
 	latency.CancelLatencyMs = durationMillis(ev.CancelLatency)
+	latency.RequestID = ev.RequestID
+	latency.UpstreamCode = ev.UpstreamCode
+	latency.RequestShape = ev.Shape
 	if b, err := json.Marshal(latency); err == nil && string(b) != "{}" {
 		e.Extra = b
 	}
 	if ev.Outcome == "failed" && ev.Status >= 400 {
-		e.Error = http.StatusText(ev.Status)
+		// The upstream business code is what tells two 400s apart; without it
+		// every rejection is the same string.
+		if ev.UpstreamCode != "" {
+			e.Error = "upstream " + ev.UpstreamCode
+		} else {
+			e.Error = http.StatusText(ev.Status)
+		}
 	}
 	return e
 }
@@ -66,6 +75,12 @@ type gatewayLatencyExtra struct {
 	AdmissionWaitMs float64 `json:"admission_wait_ms,omitempty"`
 	KeyWaitMs       float64 `json:"key_wait_ms,omitempty"`
 	CancelLatencyMs float64 `json:"cancel_latency_ms,omitempty"`
+
+	// Failure diagnostics: the id the client saw, the vendor code, and a
+	// structural summary of what was sent. No content, headers or credentials.
+	RequestID    string               `json:"request_id,omitempty"`
+	UpstreamCode string               `json:"upstream_code,omitempty"`
+	RequestShape *openai.RequestShape `json:"request_shape,omitempty"`
 }
 
 func durationMillis(d time.Duration) float64 {

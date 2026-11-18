@@ -368,3 +368,57 @@ func TestCodeArtsServesWithoutLeaseWhenHeartbeatFails(t *testing.T) {
 		t.Fatalf("stream lost: %s", raw)
 	}
 }
+
+// A rejection must leave a trail that ties the client's error to the usage
+// record: same id, the vendor's business code, and a structural summary of the
+// outbound body. "Bad Request" alone cannot be diagnosed.
+func TestCodeArtsParamErrorCarriesDiagnostics(t *testing.T) {
+	e := newCodeartsEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error_code":"InferHub.001001005.400","error_msg":"The request param is invalid, Please check it"}`)
+	})
+	resp := e.post(t, `{"model":"GLM-5.2","messages":[{"role":"user","content":"你好"}],"stream":true,
+		"tools":[{"type":"function","function":{"name":"`+strings.Repeat("a", 70)+`","parameters":{"type":"object"}}}],
+		"tool_choice":"auto"}`)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", resp.StatusCode, raw)
+	}
+	header := resp.Header.Get("X-Request-Id")
+	if header == "" {
+		t.Fatal("no X-Request-Id header on the error response")
+	}
+	var body struct {
+		Error struct {
+			RequestID    string `json:"request_id"`
+			UpstreamCode string `json:"upstream_code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.RequestID != header {
+		t.Fatalf("body id %q != header %q", body.Error.RequestID, header)
+	}
+	if body.Error.UpstreamCode != "InferHub.001001005.400" {
+		t.Fatalf("upstream_code = %q", body.Error.UpstreamCode)
+	}
+
+	ev := <-e.events
+	if ev.UpstreamCode != "InferHub.001001005.400" {
+		t.Fatalf("usage event code = %q", ev.UpstreamCode)
+	}
+	if ev.RequestID != header {
+		t.Fatalf("usage event id = %q, want %q", ev.RequestID, header)
+	}
+	if ev.Shape == nil {
+		t.Fatal("no request shape recorded")
+	}
+	if ev.Shape.Messages < 1 || ev.Shape.Tools != 1 || !ev.Shape.HasToolChoice || ev.Shape.Bytes == 0 {
+		t.Fatalf("shape = %+v", ev.Shape)
+	}
+	if ev.Shape.LongToolNames != 1 {
+		t.Fatalf("long tool names = %d", ev.Shape.LongToolNames)
+	}
+}

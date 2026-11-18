@@ -436,7 +436,8 @@ loop:
 	}
 
 	ev := UsageEvent{At: start, Model: model, Account: acc.UID, KeyID: keyID, Stream: true,
-		Outcome: outcome, Status: status, Elapsed: time.Since(start), HeldFor: heldTotal, Usage: lastUsage, Chunks: nChunks, Effort: effort}
+		Outcome: outcome, Status: status, Elapsed: time.Since(start), HeldFor: heldTotal, Usage: lastUsage, Chunks: nChunks, Effort: effort,
+		UpstreamCode: upstreamCodeOf([]byte(errText(streamErr))), RequestID: requestIDOf(r)}
 	if !firstAt.IsZero() {
 		ev.TTFT = firstAt.Sub(start)
 		ev.Gen = lastAt.Sub(firstAt)

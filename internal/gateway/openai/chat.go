@@ -233,12 +233,32 @@ type apiError struct {
 	Type        string `json:"type"`
 	Code        int    `json:"code,omitempty"`
 	GatewayHint string `json:"gateway_hint,omitempty"`
+	// RequestID is the gateway's own id for this call. It is the only reliable
+	// way to find the matching usage record: the client sees it here and in the
+	// X-Request-Id header.
+	RequestID string `json:"request_id,omitempty"`
+	// UpstreamCode carries the upstream business code (InferHub.*, TM.*) when
+	// the failure came from the vendor, so "Bad Request" is not the only clue.
+	UpstreamCode string `json:"upstream_code,omitempty"`
 }
 
 func writeError(w http.ResponseWriter, status int, msg, typ string) {
+	writeErrorFields(w, status, msg, typ, "", "")
+}
+
+// writeErrorFields also reports the gateway request id and the upstream
+// business code, so a client-side failure can be found in the usage ledger and
+// told apart from other failures that share the same HTTP status.
+func writeErrorFields(w http.ResponseWriter, status int, msg, typ, requestID, upstreamCode string) {
 	w.Header().Set("Content-Type", "application/json")
+	if requestID != "" {
+		w.Header().Set("X-Request-Id", requestID)
+	}
 	w.WriteHeader(status)
-	b, _ := marshalNoEscape(map[string]apiError{"error": {Message: msg, Type: typ, Code: status, GatewayHint: gatewayHint(status, msg)}})
+	b, _ := marshalNoEscape(map[string]apiError{"error": {
+		Message: msg, Type: typ, Code: status, GatewayHint: gatewayHint(status, msg),
+		RequestID: requestID, UpstreamCode: upstreamCode,
+	}})
 	_, _ = w.Write(append(b, '\n'))
 }
 
@@ -350,6 +370,9 @@ type request struct {
 	anth                bool
 
 	attemptBytes    int
+	requestID       string
+	upstreamCode    string
+	shape           *RequestShape
 	toolNames       *codearts.ToolNameMap
 	refreshed       map[string]bool
 	degradedRetried bool

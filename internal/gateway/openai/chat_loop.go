@@ -91,11 +91,14 @@ func (q *request) demote(h *Handler, acc *pool.Account) {
 
 // httpErr reports an error in the style of the endpoint being served.
 func (q *request) httpErr(status int, msg, typ string) {
+	if q.requestID != "" {
+		q.w.Header().Set("X-Request-Id", q.requestID)
+	}
 	if q.anth {
 		writeAnthropicError(q.w, status, msg)
 		return
 	}
-	writeError(q.w, status, msg, typ)
+	writeErrorFields(q.w, status, msg, typ, q.requestID, q.upstreamCode)
 }
 
 // rateErr answers 429 with Retry-After in the endpoint's style.
@@ -194,6 +197,7 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 		}
 	}
 	q.turnID = identity.NewTurnRequestID()
+	q.requestID = q.turnID
 	if key != nil {
 		// Count local unlimited requests too, so enabling a cap does not forget
 		// work that started while the key's limit was disabled.
@@ -576,8 +580,11 @@ func (h *Handler) finishError(q *request, acc *pool.Account, res result) {
 	if res.status == http.StatusForbidden {
 		typ = "invalid_request_error"
 	}
+	code := upstreamCodeOf(res.body)
+	q.upstreamCode = code
 	h.emitWithLatency(q.r.Context(), UsageEvent{At: q.start, Model: q.model, Account: acc.UID, KeyID: q.keyID, Stream: q.stream,
-		Outcome: "failed", Status: res.status, Elapsed: time.Since(q.start)})
+		Outcome: "failed", Status: res.status, Elapsed: time.Since(q.start),
+		UpstreamCode: code, RequestID: q.requestID, Shape: q.shape})
 	q.httpErr(res.status, fmt.Sprintf("upstream %d: %s", res.status, detail), typ)
 }
 
@@ -637,6 +644,9 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 	}
 	q.attemptBytes = len(out.body)
 	q.toolNames = out.names
+	if realm.IsCodeArts(rec.Realm) {
+		q.shape = requestShapeOf(q.shaped, out.body)
+	}
 
 	// The Huawei channel gates each account to three upstream conversations:
 	// register the lease first so a full account fails over instead of earning
@@ -1182,7 +1192,8 @@ func (h *Handler) fail(q *request) {
 	a := &q.at
 	emit := func(status int, acc string) {
 		h.emitWithLatency(q.r.Context(), UsageEvent{At: q.start, Model: q.model, Account: acc, KeyID: q.keyID, Stream: q.stream,
-			Outcome: "failed", Status: status, Elapsed: time.Since(q.start)})
+			Outcome: "failed", Status: status, Elapsed: time.Since(q.start),
+			UpstreamCode: q.upstreamCode, RequestID: q.requestID, Shape: q.shape})
 	}
 	if a.lastUID != "" || a.kind != failNone {
 		switch {
