@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ func codeartsAccountRec(uid string) *accounts.Record {
 	return &accounts.Record{
 		UID: uid, Realm: realm.CodeArts, AccessToken: "STS",
 		RefreshToken: "refresh",
+		ExpiresAt:    time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC).Unix(),
 		Extra: map[string]any{"codearts": map[string]any{
 			"access_key_id": "AK", "secret_access_key": "SK",
 		}},
@@ -32,19 +34,21 @@ func codeartsAccountRec(uid string) *accounts.Record {
 // campaigns come back CONFIRMED, because the gateway re-reads the list.
 func vendor(t *testing.T) *httptest.Server {
 	t.Helper()
-	confirmed := false
+	var confirmed atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case codearts.DeliveryPath:
 			status := "ELIGIBLE"
-			if confirmed {
+			if confirmed.Load() {
 				status = "CONFIRMED"
 			}
-			fmt.Fprintf(w, `{"code":0,"data":{"items":[{"campaignId":1,"title":"每日签到","status":"%s","claimable":true,"benefitUnit":"CREDIT","benefitAmount":1000}]}}`, status)
+			fmt.Fprintf(w, `{"code":0,"data":{"items":[{"campaignId":34,"type":"USER_LOGIN","title":"每日签到","status":"%s","claimable":%t,"benefitUnit":"CREDIT","benefitAmount":1000}]}}`, status, status == "ELIGIBLE")
 		case codearts.ClaimPath, codearts.ConfirmPath:
-			confirmed = true
-			fmt.Fprint(w, `{"code":0,"data":{}}`)
+			confirmed.Store(true)
+			fmt.Fprint(w, `{"code":0,"data":{"campaignId":34}}`)
+		case codearts.StatisticsPath:
+			fmt.Fprint(w, `{"metrics":[{"name":"usageBonusPackageCredit","show":true,"package_credit_amount":1000,"package_credit_remain":1000}]}`)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 			w.WriteHeader(404)
@@ -90,7 +94,7 @@ func TestCheckinCodeArtsFailureIsRecorded(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == codearts.DeliveryPath {
-			fmt.Fprint(w, `{"code":0,"data":{"items":[{"campaignId":1,"title":"每日签到","status":"ELIGIBLE","claimable":true,"benefitAmount":1000}]}}`)
+			fmt.Fprint(w, `{"code":0,"data":{"items":[{"campaignId":34,"type":"USER_LOGIN","benefitUnit":"CREDIT","title":"每日签到","status":"ELIGIBLE","claimable":true,"benefitAmount":1000}]}}`)
 			return
 		}
 		fmt.Fprint(w, `{"code":4004,"message":"claim rejected"}`)

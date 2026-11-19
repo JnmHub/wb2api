@@ -49,6 +49,19 @@ func (m *ToolNameMap) RestoreName(name string) string {
 	return name
 }
 
+// HasSentPrefix identifies a partial wire alias in a streamed function name.
+func (m *ToolNameMap) HasSentPrefix(prefix string) bool {
+	if m.Empty() || prefix == "" {
+		return false
+	}
+	for name := range m.sent {
+		if strings.HasPrefix(name, prefix) && name != prefix {
+			return true
+		}
+	}
+	return false
+}
+
 // ShortenTools rewrites every tools[].function.name longer than the limit and
 // returns the map needed to restore the response. tools is the decoded
 // []any from the request body; it is modified in place.
@@ -72,7 +85,10 @@ func ShortenTools(tools []any) *ToolNameMap {
 		if original == "" || len([]rune(original)) <= MaxToolNameChars {
 			continue
 		}
-		short, ok := shortToolName(original, taken)
+		short, ok := out.rev[original]
+		if !ok {
+			short, ok = shortToolName(original, taken)
+		}
 		if !ok {
 			continue
 		}
@@ -120,6 +136,29 @@ func objSet(v any, key string, val any) bool {
 		return true
 	}
 	return false
+}
+
+func cloneChatObject(v any) any {
+	switch t := v.(type) {
+	case *jsonx.Obj:
+		return t.Clone()
+	case map[string]any:
+		cp := make(map[string]any, len(t))
+		for k, value := range t {
+			cp[k] = value
+		}
+		return cp
+	default:
+		return v
+	}
+}
+
+func cloneWithFunction(v any) any {
+	if fn, ok := objGet(v, "function"); ok {
+		v = cloneChatObject(v)
+		objSet(v, "function", cloneChatObject(fn))
+	}
+	return v
 }
 
 func toolFunctionName(tool any) string {
@@ -256,60 +295,23 @@ func containsAny(data []byte, names map[string]string) bool {
 	return false
 }
 
-// RewriteToolChoice keeps an explicit tool_choice pointing at the tool that is
-// actually declared: shortening only the declaration leaves the choice
-// referencing a name the request no longer contains, and the upstream answers
-// InferHub.001001005.
-func (m *ToolNameMap) RewriteToolChoice(out *jsonx.Obj) {
-	if m.Empty() || out == nil {
-		return
-	}
-	v, ok := out.Lookup("tool_choice")
-	if !ok {
-		return
-	}
-	if name, isStr := v.(string); isStr {
-		if wire, hit := m.SentName(name); hit {
-			out.Set("tool_choice", wire)
-		}
-		return
-	}
-	fn, ok := objGet(v, "function")
-	if !ok {
-		return
-	}
-	if name, ok := objStr(fn, "name"); ok {
-		if wire, hit := m.SentName(name); hit {
-			objSet(fn, "name", wire)
-		}
-	}
-}
-
 // RewriteHistory points earlier assistant tool calls at the shortened names:
-// the model matches a follow-up tool result by name, so history that still
-// carries the 65-character original would not line up with the declaration.
+// role, call ID, tool arguments and tool response content stay intact. The
+// original request is reused by failed attempts, so every edit copies its path.
 func (m *ToolNameMap) RewriteHistory(out *jsonx.Obj) {
 	if m.Empty() || out == nil {
 		return
 	}
-	v, ok := out.Lookup("messages")
+	msgs, ok := out.Arr("messages")
 	if !ok {
 		return
 	}
-	msgs, ok := v.([]any)
-	if !ok {
-		return
-	}
-	for _, raw := range msgs {
-		calls, ok := objGet(raw, "tool_calls")
-		if !ok {
-			continue
-		}
-		list, ok := calls.([]any)
-		if !ok {
-			continue
-		}
-		for _, c := range list {
+	var changed []any
+	for i, raw := range msgs {
+		calls, _ := objGet(raw, "tool_calls")
+		list, _ := calls.([]any)
+		var rewritten []any
+		for j, c := range list {
 			fn, ok := objGet(c, "function")
 			if !ok {
 				continue
@@ -319,8 +321,35 @@ func (m *ToolNameMap) RewriteHistory(out *jsonx.Obj) {
 				continue
 			}
 			if wire, hit := m.SentName(name); hit {
-				objSet(fn, "name", wire)
+				if rewritten == nil {
+					rewritten = append([]any(nil), list...)
+				}
+				call := cloneWithFunction(c)
+				f, _ := objGet(call, "function")
+				objSet(f, "name", wire)
+				rewritten[j] = call
 			}
 		}
+		role, _ := objStr(raw, "role")
+		name, _ := objStr(raw, "name")
+		wire, renamed := m.SentName(name)
+		renameResult := renamed && (role == "tool" || role == "function")
+		if rewritten == nil && !renameResult {
+			continue
+		}
+		if changed == nil {
+			changed = append([]any(nil), msgs...)
+		}
+		msg := cloneChatObject(raw)
+		if rewritten != nil {
+			objSet(msg, "tool_calls", rewritten)
+		}
+		if renameResult {
+			objSet(msg, "name", wire)
+		}
+		changed[i] = msg
+	}
+	if changed != nil {
+		out.Set("messages", changed)
 	}
 }

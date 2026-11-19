@@ -2,6 +2,7 @@ package codearts
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"strconv"
 	"strings"
@@ -17,10 +18,10 @@ import (
 // its request schema strictly and answers an unknown field with
 // InferHub.001001005 instead of ignoring it.
 var bodyKeys = []string{
-	"messages", "stream_options", "tools", "tool_choice",
+	"messages", "tools", "tool_choice", "parallel_tool_calls",
 	"temperature", "top_p", "max_tokens", "max_completion_tokens",
-	"stop", "reasoning_effort", "presence_penalty", "frequency_penalty",
-	"seed", "user", "response_format", "n",
+	"stop", "reasoning_effort", "reasoning", "thinking", "enable_thinking",
+	"presence_penalty", "frequency_penalty", "seed", "user", "response_format",
 }
 
 const maxOutputTokens = 65536
@@ -45,12 +46,12 @@ func wholeTokenNumber(n json.Number) bool {
 // sanitiseParams removes unsupported options, caps the selected output budget
 // and returns its positive integer value for request diagnostics.
 func sanitiseParams(out *jsonx.Obj) int64 {
-	if v, ok := out.Lookup("n"); ok {
-		if n, ok := v.(float64); !ok || n != 1 {
-			out.Delete("n")
-		}
+	if effort, _ := out.Str("reasoning_effort"); strings.EqualFold(effort, "off") || strings.EqualFold(effort, "none") {
+		out.Delete("reasoning_effort")
 	}
-	out.Delete("stream_options")
+	if out.Get("enable_thinking") == false {
+		out.Delete("enable_thinking")
+	}
 
 	key := "max_tokens"
 	if out.Has(key) {
@@ -85,7 +86,17 @@ func sanitiseParams(out *jsonx.Obj) int64 {
 	return int64(tokens)
 }
 
-// PrepareBody renders the CodeArts chat body from the already-shaped request.
+// IncludeUsage reports whether the client opted in to stream usage frames.
+func IncludeUsage(payload *jsonx.Obj) bool {
+	if payload == nil {
+		return false
+	}
+	value, _ := objGet(payload.Get("stream_options"), "include_usage")
+	include, _ := value.(bool)
+	return include
+}
+
+// PrepareBody renders the CodeArts chat body from a Chat Completions request.
 func PrepareBody(shaped *jsonx.Obj, model, chatID string) ([]byte, *ToolNameMap, error) {
 	body, names, _, err := PrepareBodyWithBudget(shaped, model, chatID)
 	return body, names, err
@@ -99,71 +110,114 @@ func PrepareBody(shaped *jsonx.Obj, model, chatID string) ([]byte, *ToolNameMap,
 // that asked for a non-stream response is served by wb2api's own aggregation
 // over that stream, which keeps one wire shape for both modes.
 func PrepareBodyWithBudget(shaped *jsonx.Obj, model, chatID string) ([]byte, *ToolNameMap, int64, error) {
+	if shaped == nil {
+		return nil, nil, 0, errors.New("messages must be an array")
+	}
+	if _, ok := shaped.Arr("messages"); !ok {
+		return nil, nil, 0, errors.New("messages must be an array")
+	}
+	if !singleChatChoice(shaped.Get("n")) {
+		return nil, nil, 0, errors.New("CodeArts supports only n=1")
+	}
 	out := jsonx.NewObj()
-	if shaped != nil {
-		for _, k := range bodyKeys {
-			if v, ok := shaped.Lookup(k); ok {
-				out.Set(k, v)
-			}
+	for _, k := range bodyKeys {
+		if v, ok := shaped.Lookup(k); ok {
+			out.Set(k, v)
 		}
+	}
+	tools, _ := out.Arr("tools")
+	selected, err := selectChatTool(out, tools)
+	if err != nil {
+		return nil, nil, 0, err
 	}
 	// The upstream rejects function names longer than 64 characters before it
 	// even parses the request; shorten them and keep the mapping for the reply.
 	var names *ToolNameMap
-	if v, ok := out.Lookup("tools"); ok {
-		if tools, ok := v.([]any); ok {
-			cp := make([]any, len(tools))
-			for i, t := range tools {
-				// Clone before rewriting: the shaped body is shared by every
-				// attempt of this request, so shortening in place would leave the
-				// next attempt with already-shortened names and a stale mapping.
-				if o, ok := t.(*jsonx.Obj); ok {
-					co := o.Clone()
-					// Clone is shallow: the function object is still shared, and
-					// rewriting its name in place would leak into every later
-					// attempt of the same request.
-					if fn, ok := co.Obj("function"); ok {
-						co.Set("function", fn.Clone())
-					}
-					cp[i] = co
-					continue
-				}
-				if m, ok := t.(map[string]any); ok {
-					mc := make(map[string]any, len(m))
-					for k, val := range m {
-						mc[k] = val
-					}
-					if fn, ok := mc["function"].(map[string]any); ok {
-						fc := make(map[string]any, len(fn))
-						for k, val := range fn {
-							fc[k] = val
-						}
-						mc["function"] = fc
-					}
-					cp[i] = mc
-					continue
-				}
-				cp[i] = t
-			}
-			if nm := ShortenTools(cp); nm != nil {
-				out.Set("tools", cp)
-				names = nm
-				// Everything else that references a tool name has to move with it.
-				nm.RewriteToolChoice(out)
-				nm.RewriteHistory(out)
+	if len(tools) > 0 {
+		cp := append([]any(nil), tools...)
+		for i, tool := range tools {
+			if name := toolFunctionName(tool); len([]rune(name)) > MaxToolNameChars {
+				cp[i] = cloneWithFunction(tool)
 			}
 		}
+		names = ShortenTools(cp)
+		names.RewriteHistory(out)
+		if selected >= 0 {
+			// CodeArts takes a string choice; limiting the declarations preserves
+			// the client's named selection when we translate it to required.
+			cp = cp[selected : selected+1]
+		}
+		out.Set("tools", cp)
 	}
 	budget := sanitiseParams(out)
 	out.Set("model", model)
 	out.Set("stream", true)
 	out.Set("tool_stream", true)
+	usageOptions := jsonx.NewObj()
+	usageOptions.Set("include_usage", true)
+	out.Set("stream_options", usageOptions)
 	if chatID = strings.TrimSpace(chatID); chatID != "" {
 		out.Set("chat_id", chatID)
 		out.Set("prompt_cache_key", chatID)
 	}
 	body, err := jsonx.Marshal(out)
 	return body, names, budget, err
+}
+
+func singleChatChoice(v any) bool {
+	switch n := v.(type) {
+	case nil:
+		return true
+	case json.Number:
+		return n == "1"
+	case int:
+		return n == 1
+	case int64:
+		return n == 1
+	case float64:
+		return n == 1
+	default:
+		return false
+	}
+}
+
+func selectChatTool(out *jsonx.Obj, tools []any) (int, error) {
+	var name string
+	switch choice := out.Get("tool_choice").(type) {
+	case nil:
+		out.Delete("tool_choice")
+		return -1, nil
+	case string:
+		switch choice {
+		case "auto", "none":
+			return -1, nil
+		case "required":
+			if len(tools) == 0 {
+				return -1, errors.New("tool_choice required needs at least one tool")
+			}
+			return -1, nil
+		}
+		name = choice
+	case *jsonx.Obj, map[string]any:
+		typ, _ := objStr(choice, "type")
+		if typ == "function" {
+			fn, _ := objGet(choice, "function")
+			name, _ = objStr(fn, "name")
+			if name == "" { // Responses uses a flat name on a named choice.
+				name, _ = objStr(choice, "name")
+			}
+		}
+	}
+	if name == "" {
+		return -1, errors.New("invalid tool_choice")
+	}
+	for i, tool := range tools {
+		if toolFunctionName(tool) == name {
+			out.Set("tool_choice", "required")
+			return i, nil
+		}
+	}
+	return -1, errors.New("tool_choice references an undeclared tool")
 }
 
 // ChatHeaders builds and signs the outbound header set of one attempt.

@@ -31,7 +31,6 @@ import (
 	"wb2api/internal/realm"
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/upstream"
-	"wb2api/internal/upstream/codearts"
 	"wb2api/internal/upstream/identity"
 )
 
@@ -51,6 +50,11 @@ type Refresher struct {
 	// BaseURL overrides the upstream base per account (tests, mock).
 	BaseURL func(*pool.Account) string
 
+	// Optional shared credential coordination for PostgreSQL deployments.
+	LockCodeArts    func(context.Context, string) (func(), error)
+	LoadLatest      func(context.Context, string) (*accounts.Record, error)
+	WaitCodeArtsSTS func(context.Context, string) error
+
 	// Lead is how long before expiry a token is renewed (default 15 min).
 	Lead time.Duration
 	// Tick is the scan interval (default 20 s).
@@ -62,20 +66,24 @@ type Refresher struct {
 	// Now is the clock (tests).
 	Now func() time.Time
 
-	mu     sync.Mutex
-	inflt  map[string]*call
-	states map[string]*state
+	mu      sync.Mutex
+	inflt   map[string]*call
+	states  map[string]*state
+	pending map[string]codeArtsMutation
+	egress  map[string]time.Time
 }
 
 type call struct {
-	done chan struct{}
-	err  error
+	done     chan struct{}
+	observed *accounts.Record
+	err      error
 }
 
 type state struct {
 	fails   int
 	next    time.Time
 	lastErr string
+	version string
 }
 
 // Status describes the refresh health of one account.
@@ -116,9 +124,18 @@ func (r *Refresher) logger() *slog.Logger {
 
 // StatusOf returns the refresh state of uid.
 func (r *Refresher) StatusOf(uid string) Status {
+	var record *accounts.Record
+	if r.Pool != nil {
+		if a := r.Pool.Get(uid); a != nil {
+			record = a.Record()
+		}
+	}
+	if durable := record.CodeArtsAuthState(); durable.Reason != "" {
+		return Status{Failures: durable.Failures, NextTry: durable.RetryAt, LastErr: durable.Reason}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if s := r.states[uid]; s != nil {
+	if s := r.states[uid]; s != nil && matchesState(s, record) {
 		return Status{Failures: s.fails, NextTry: s.next, LastErr: s.lastErr}
 	}
 	return Status{}
@@ -154,26 +171,39 @@ func (r *Refresher) jitter(uid string) time.Duration {
 // due reports whether the account should be refreshed now.
 func (r *Refresher) due(a *pool.Account, now time.Time) bool {
 	rec := a.Record()
-	if rec == nil || rec.RefreshToken == "" || !rec.IsEnabled() {
+	if rec == nil || !rec.IsEnabled() {
+		return false
+	}
+	if realm.IsCodeArts(rec.Realm) {
+		auth := rec.CodeArtsAuthState()
+		if auth.Login || (auth.Reason != codeArtsInProgress && now.Before(auth.RetryAt)) {
+			return false
+		}
+		if rec.RefreshToken == "" && rec.CodeArtsAccessUsable(now) {
+			return false
+		}
+	} else if rec.RefreshToken == "" {
 		return false
 	}
 	r.mu.Lock()
-	st := r.states[a.UID]
+	failures := 0
+	delayed := false
+	if st := r.states[a.UID]; st != nil && matchesState(st, rec) {
+		failures, delayed = st.fails, now.Before(st.next)
+	}
 	r.mu.Unlock()
-	if st != nil && now.Before(st.next) {
+	if delayed {
 		return false
 	}
+	if realm.IsCodeArts(rec.Realm) && (a.CodeArtsAccessRejected() || !rec.CodeArtsAccessUsable(now) ||
+		rec.CodeArtsAuthState().Reason == codeArtsInProgress) {
+		return true
+	}
 	if rec.AccessToken == "" {
-		return st == nil || st.fails == 0 // missing token: try once, then wait for a re-login
+		return failures == 0 // missing token: try once, then wait for a re-login
 	}
 	exp := rec.ExpiresAt
 	if exp == 0 {
-		// The Huawei channel can carry a credential with no expiry (imported or
-		// hand-written): try once, then back off like a missing token, instead
-		// of never refreshing it.
-		if realm.IsCodeArts(rec.Realm) {
-			return st == nil || st.fails == 0
-		}
 		return false
 	}
 	return time.Unix(exp, 0).Sub(now) <= r.lead()+r.jitter(a.UID)
@@ -250,13 +280,63 @@ func short(uid string) string {
 // Refresh renews one account now. Concurrent calls for the same account share
 // one upstream request.
 func (r *Refresher) Refresh(ctx context.Context, a *pool.Account) error {
+	return r.refreshObserved(ctx, a, a.Record(), false)
+}
+
+// RefreshObserved refreshes the observed credential. A failure from a request
+// signed with an older credential cannot rotate the replacement's token.
+func (r *Refresher) RefreshObserved(ctx context.Context, a *pool.Account, observed *accounts.Record) error {
+	if realm.IsCodeArts(a.Realm) && observed != nil {
+		a.RejectCodeArtsAccess(observed)
+	}
+	return r.refreshObserved(ctx, a, observed, true)
+}
+
+func (r *Refresher) refreshObserved(ctx context.Context, a *pool.Account, observed *accounts.Record, rejected bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	isCodeArts := realm.IsCodeArts(a.Realm)
+	if isCodeArts && !sameCodeArtsGeneration(a.Record(), observed) {
+		return codeArtsCurrentOutcome(a.Record(), r.now())
+	}
 	r.mu.Lock()
 	if r.inflt == nil {
 		r.inflt = map[string]*call{}
+	}
+	if r.states == nil {
 		r.states = map[string]*state{}
 	}
 	if c, ok := r.inflt[a.UID]; ok {
 		r.mu.Unlock()
+		select {
+		case <-c.done:
+			if isCodeArts && !sameCodeArtsGeneration(c.observed, observed) {
+				return r.refreshObserved(ctx, a, observed, rejected)
+			}
+			return c.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if isCodeArts {
+		if s := r.states[a.UID]; s != nil && matchesState(s, observed) && r.now().Before(s.next) &&
+			(!rejected || observed.CodeArtsAuthState().AccessRejected) {
+			err := &RetryError{At: s.next, Cause: errors.New(s.lastErr)}
+			r.mu.Unlock()
+			return err
+		}
+	}
+	c := &call{done: make(chan struct{}), observed: observed}
+	r.inflt[a.UID] = c
+	r.mu.Unlock()
+
+	if isCodeArts {
+		// Once accepted, finish the rotating exchange even when the initiating
+		// request disconnects. Other callers can join until it is committed.
+		go func() {
+			r.complete(a, c, r.refreshCodeArts(context.WithoutCancel(ctx), a, observed))
+		}()
 		select {
 		case <-c.done:
 			return c.err
@@ -264,22 +344,40 @@ func (r *Refresher) Refresh(ctx context.Context, a *pool.Account) error {
 			return ctx.Err()
 		}
 	}
-	c := &call{done: make(chan struct{})}
-	r.inflt[a.UID] = c
-	r.mu.Unlock()
+	return r.complete(a, c, r.doRefresh(ctx, a))
+}
 
-	err := r.doRefresh(ctx, a)
-
+func (r *Refresher) complete(a *pool.Account, c *call, err error) error {
+	observed := c.observed
+	isCodeArts := realm.IsCodeArts(a.Realm)
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	delete(r.inflt, a.UID)
 	st := r.states[a.UID]
-	if st == nil {
+	if st == nil || !matchesState(st, observed) {
 		st = &state{}
 		r.states[a.UID] = st
+	}
+	if isCodeArts {
+		st.version = observed.CodeArtsCredentialVersion()
 	}
 	switch {
 	case err == nil:
 		*st = state{}
+	case isCodeArts && errors.Is(err, ErrNeedsLogin):
+		// The terminal state is already in the credential record.
+		delete(r.states, a.UID)
+	case isCodeArts:
+		if at, ok := RetryTime(err); ok {
+			if !st.next.Equal(at) || st.lastErr != err.Error() {
+				st.fails++
+			}
+			st.next, st.lastErr = at, err.Error()
+		} else {
+			st.fails++
+			st.next, st.lastErr = r.now().Add(r.backoff(st.fails)), err.Error()
+			err = &RetryError{At: st.next, Cause: err}
+		}
 	case errors.Is(err, ErrNeedsLogin):
 		st.fails++
 		st.lastErr = err.Error()
@@ -289,7 +387,6 @@ func (r *Refresher) Refresh(ctx context.Context, a *pool.Account) error {
 		st.lastErr = err.Error()
 		st.next = r.now().Add(r.backoff(st.fails))
 	}
-	r.mu.Unlock()
 	c.err = err
 	close(c.done)
 	return err
@@ -367,15 +464,6 @@ func (r *Refresher) doRefresh(ctx context.Context, a *pool.Account) error {
 	if r.BaseURL != nil {
 		base = r.BaseURL(a)
 	}
-	if realm.IsCodeArts(rec.Realm) {
-		// The OAuth2 token endpoint lives on the STS host, not on the
-		// snap-access root the chat endpoint uses.
-		sts := codearts.STSHost
-		if r.BaseURL != nil {
-			sts = r.BaseURL(a)
-		}
-		return r.refreshCodeArts(ctx, a, rec, sts)
-	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	resp, err := r.Up.Wire(a.UID, a.Proxy()).Do(ctx, upstream.Request{
@@ -431,32 +519,6 @@ func (r *Refresher) doRefresh(ctx context.Context, a *pool.Account) error {
 	a.MarkTokenBad(false)
 	if r.Persist != nil {
 		if err := r.Persist(&next); err != nil {
-			return fmt.Errorf("token refreshed but not saved: %w", err)
-		}
-	}
-	return nil
-}
-
-// refreshCodeArts renews the STS credential chain of a CodeArts account:
-// OAuth2 refresh_token -> fresh AK/SK + security_token, with the DPoP proof
-// signed by the key the credential was originally issued with.
-func (r *Refresher) refreshCodeArts(ctx context.Context, a *pool.Account, rec *accounts.Record, base string) error {
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
-	defer cancel()
-	res, err := codearts.Refresh(ctx, nil, base,
-		rec.RefreshToken, codearts.CodeVerifierOf(rec), codearts.DPoPKeyOf(rec))
-	if err != nil {
-		if errors.Is(err, codearts.ErrRefreshExpired) {
-			a.MarkTokenBad(true)
-			return fmt.Errorf("%w (%v)", ErrNeedsLogin, err)
-		}
-		return err
-	}
-	next := codearts.ApplyToken(rec, res)
-	a.SetRecord(next)
-	a.MarkTokenBad(false)
-	if r.Persist != nil {
-		if err := r.Persist(next); err != nil {
 			return fmt.Errorf("token refreshed but not saved: %w", err)
 		}
 	}

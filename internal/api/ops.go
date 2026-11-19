@@ -21,6 +21,7 @@ import (
 	"wb2api/internal/realm"
 	"wb2api/internal/scheduler"
 	"wb2api/internal/store/accounts"
+	"wb2api/internal/store/settings"
 )
 
 // Prober tests an account with a real request.
@@ -323,9 +324,11 @@ func (o *Operations) activityList(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	f := activity.Filter{Range: q.Get("range"), UID: q.Get("uid"), Task: q.Get("task"), Result: q.Get("result"), Limit: limit}
 	switch f.Result {
-	case "", "ok", "failed":
+	case "", "ok", "failed", codeartsync.DailyClaimed, codeartsync.DailyAlready,
+		codeartsync.DailyUnavailable, codeartsync.DailyWaiting, codeartsync.DailyPending,
+		codeartsync.DailyNeedsLogin, codeartsync.DailyExhausted:
 	default:
-		writeErr(w, http.StatusBadRequest, "result must be ok or failed")
+		writeErr(w, http.StatusBadRequest, "unknown activity result")
 		return
 	}
 	writeJSON(w, http.StatusOK, o.Activity.Query(f))
@@ -337,11 +340,22 @@ func (o *Operations) schedulerGet(w http.ResponseWriter, r *http.Request) {
 
 func (o *Operations) schedulerPatch(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Enabled  *bool          `json:"enabled"`
-		Schedule map[string]any `json:"schedule"`
+		Enabled  *bool                        `json:"enabled"`
+		Schedule map[string]any               `json:"schedule"`
+		CodeArts *settings.CodeArtsDailyPatch `json:"codearts_daily"`
 	}
 	if !decode(w, r, &in) {
 		return
+	}
+	if in.CodeArts != nil {
+		if err := in.CodeArts.Validate(); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := o.Scheduler.Settings.SetCodeArtsDaily(*in.CodeArts); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	if in.Schedule != nil {
 		if _, err := o.Scheduler.Settings.SetScheduleHours(in.Schedule); err != nil {
@@ -364,6 +378,18 @@ func (o *Operations) schedulerTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "msg": "已触发后台调度执行"})
+}
+
+func (o *Operations) schedulerTriggerCodeArts(w http.ResponseWriter, r *http.Request) {
+	if o.Scheduler.Channel == nil {
+		writeErr(w, http.StatusServiceUnavailable, "CodeArts 签到未启用")
+		return
+	}
+	if !o.Scheduler.TriggerCodeArts() {
+		writeErr(w, http.StatusConflict, "已有 CodeArts 签到任务正在执行")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "msg": "已触发 CodeArts 签到"})
 }
 
 // Register mounts the endpoints; wrap is the panel authentication.
@@ -390,6 +416,7 @@ func (o *Operations) Register(mux *http.ServeMux, wrap func(http.Handler) http.H
 	mux.Handle("GET /api/v2/scheduler", h(o.schedulerGet))
 	mux.Handle("PATCH /api/v2/scheduler", h(o.schedulerPatch))
 	mux.Handle("POST /api/v2/scheduler/trigger", h(o.schedulerTrigger))
+	mux.Handle("POST /api/v2/scheduler/trigger-codearts", h(o.schedulerTriggerCodeArts))
 	mux.Handle("GET /api/v2/tasks", h(o.tasksGet))
 	mux.Handle("POST /api/v2/tasks/run", h(o.tasksRun))
 	mux.Handle("POST /api/v2/tasks/travel", h(o.tasksTravel))

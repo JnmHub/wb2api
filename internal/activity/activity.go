@@ -22,7 +22,10 @@ const (
 	TaskCheckin   = "checkin"
 	TaskDailyChat = "daily_chat"
 	TaskReport    = "activity_report"
+	TaskCodeArts  = "codearts_checkin"
 )
+
+var beijing = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 const (
 	historyName   = "activity_history.jsonl"
@@ -38,14 +41,18 @@ const (
 
 // Row is one attempt.
 type Row struct {
-	TS       string `json:"ts"`
-	UID      string `json:"uid"`
-	Nickname string `json:"nickname"`
-	Realm    string `json:"realm"`
-	Task     string `json:"task"`
-	Trigger  string `json:"trigger"`
-	OK       bool   `json:"ok"`
-	Message  string `json:"message"`
+	TS        string  `json:"ts"`
+	UID       string  `json:"uid"`
+	Nickname  string  `json:"nickname"`
+	Realm     string  `json:"realm"`
+	Task      string  `json:"task"`
+	Trigger   string  `json:"trigger"`
+	OK        bool    `json:"ok"`
+	Message   string  `json:"message"`
+	State     string  `json:"state,omitempty"`
+	Day       string  `json:"day,omitempty"`
+	Credits   float64 `json:"credits,omitempty"`
+	NextRetry int64   `json:"next_retry_at,omitempty"`
 }
 
 // Log is the history file.
@@ -90,7 +97,7 @@ func SafeMessage(text string) string {
 
 func normTrigger(t string) string {
 	switch t {
-	case "scheduler", "manual", "account_add", "account_import":
+	case "scheduler", "makeup", "manual", "account_add", "account_import":
 		return t
 	}
 	return "unknown"
@@ -102,7 +109,7 @@ func (l *Log) Record(r Row) {
 	if l == nil || l.Dir == "" {
 		return
 	}
-	r.TS = l.now().Format("2006-01-02 15:04:05")
+	r.TS = l.now().Format(timeLayout)
 	r.Trigger = normTrigger(r.Trigger)
 	r.Message = SafeMessage(r.Message)
 	b, err := json.Marshal(r)
@@ -146,7 +153,7 @@ func (l *Log) readLocked() []Row {
 
 func (l *Log) compactLocked() {
 	rows := l.readLocked()
-	cutoff := l.now().AddDate(0, 0, -maxAgeDays).Format("2006-01-02 15:04:05")
+	cutoff := historyCutoff(l.now(), "90d")
 	var keep []Row
 	for _, r := range rows {
 		if r.TS >= cutoff {
@@ -173,7 +180,7 @@ type Filter struct {
 	Range  string // today | 1d | 7d | 30d | 90d | all (default 7d)
 	UID    string
 	Task   string
-	Result string // ok | failed
+	Result string // ok | failed | a task-specific state
 	Limit  int
 }
 
@@ -194,29 +201,24 @@ func (l *Log) Query(f Filter) Result {
 		f.Limit = maxLimit
 	}
 	now := l.now()
-	cutoff := ""
-	switch f.Range {
-	case "today":
-		cutoff = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Format("2006-01-02 15:04:05")
-	case "all":
-	case "1d":
-		cutoff = now.AddDate(0, 0, -1).Format("2006-01-02 15:04:05")
-	case "30d":
-		cutoff = now.AddDate(0, 0, -30).Format("2006-01-02 15:04:05")
-	case "90d":
-		cutoff = now.AddDate(0, 0, -90).Format("2006-01-02 15:04:05")
-	default:
-		cutoff = now.AddDate(0, 0, -defaultWindow).Format("2006-01-02 15:04:05")
-	}
+	cutoff := historyCutoff(now, f.Range)
+	dailyToday := now.In(beijing).Format("2006-01-02")
 	l.mu.Lock()
 	rows := l.readLocked()
 	l.mu.Unlock()
 	var matched []Row
 	for _, r := range rows {
-		if r.TS < cutoff || (f.UID != "" && r.UID != f.UID) || (f.Task != "" && r.Task != f.Task) {
+		beforeCutoff := r.TS < cutoff
+		if f.Range == "today" && r.Task == TaskCodeArts && r.Day != "" {
+			beforeCutoff = r.Day != dailyToday
+		}
+		if beforeCutoff || (f.UID != "" && r.UID != f.UID) || (f.Task != "" && r.Task != f.Task) {
 			continue
 		}
 		if f.Result == "ok" && !r.OK || f.Result == "failed" && r.OK {
+			continue
+		}
+		if f.Result != "" && f.Result != "ok" && f.Result != "failed" && f.Result != r.State {
 			continue
 		}
 		matched = append(matched, r)
@@ -230,4 +232,23 @@ func (l *Log) Query(f Filter) Result {
 		res.Rows = []Row{}
 	}
 	return res
+}
+
+const timeLayout = "2006-01-02 15:04:05"
+
+func historyCutoff(now time.Time, filter string) string {
+	switch filter {
+	case "today":
+		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Format(timeLayout)
+	case "all":
+		return ""
+	case "1d":
+		return now.AddDate(0, 0, -1).Format(timeLayout)
+	case "30d":
+		return now.AddDate(0, 0, -30).Format(timeLayout)
+	case "90d":
+		return now.AddDate(0, 0, -maxAgeDays).Format(timeLayout)
+	default:
+		return now.AddDate(0, 0, -defaultWindow).Format(timeLayout)
+	}
 }

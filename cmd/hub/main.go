@@ -201,10 +201,40 @@ func main() {
 	var accountCursor int64 // guarded with accountMu after startup
 	var accountPool *pool.Pool
 	persist := func(rec *accounts.Record) error {
+		if rec != nil && realm.IsCodeArts(rec.Realm) {
+			accountMu.Lock()
+			defer accountMu.Unlock()
+			latest, err := accounts.SaveReconciled(*accountsDir, rec, time.Now())
+			if accountPool != nil {
+				switch {
+				case latest != nil:
+					accountPool.ApplyChanges([]*accounts.Record{latest}, nil)
+					if a := accountPool.Get(latest.UID); a != nil {
+						a.SetMaxInflight(realm.InflightFor(latest.Realm, *perAccount))
+					}
+				case errors.Is(err, accounts.ErrDeleted):
+					accountPool.ApplyChanges(nil, []string{rec.UID})
+				}
+			}
+			return err
+		}
 		_, err := accounts.Save(*accountsDir, rec)
 		return err
 	}
-	deleteFn := accounts.Delete
+	deleteFn := func(rec *accounts.Record) error {
+		if rec != nil && realm.IsCodeArts(rec.Realm) {
+			accountMu.Lock()
+			defer accountMu.Unlock()
+			if err := accounts.Delete(rec); err != nil {
+				return err
+			}
+			if accountPool != nil {
+				accountPool.ApplyChanges(nil, []string{rec.UID})
+			}
+			return nil
+		}
+		return accounts.Delete(rec)
+	}
 	if pgDB != nil {
 		var err error
 		recs, errs, accountCursor, err = pgaccounts.LoadSnapshot(startupCtx, pgDB.Pool, *accountsDir)
@@ -309,6 +339,9 @@ func main() {
 	}
 	up := upstream.NewManager(upstream.DefaultTimeouts())
 	refresher := &refresh.Refresher{Pool: p, Up: up, Log: log, Persist: persist}
+	if pgDB != nil {
+		refresher.SetCodeArtsPostgres(pgDB.Pool)
+	}
 	feedback := sched.NewStats(time.Duration(*stickyTTFT)*time.Millisecond, *stickyErr)
 	if *upstreamOverride != "" {
 		refresher.BaseURL = func(*pool.Account) string { return *upstreamOverride }
@@ -654,17 +687,26 @@ func main() {
 	// Its service is shared by the panel, the scheduler and the scan below so
 	// the three never implement the same call twice.
 	codeArtsSvc := &codeartsync.Service{
-		Pool: p, Persist: persist, ClaimBenefit: codeArtsClaimBenefit(), Log: log,
+		Pool: p, Persist: persist, ClaimBenefit: codeArtsClaimBenefit(), Activity: activityLog, Log: log,
 		// Renew before use: an idle account's STS token expires after two hours
 		// and every catalogue/check-in call would answer APIG.0602.
-		Refresh: refresher.Refresh,
+		Refresh:         refresher.Refresh,
+		RefreshObserved: refresher.RefreshObserved,
+	}
+	if pgDB != nil {
+		codeArtsSvc.LoadCheckinRecord = func(ctx context.Context, uid string) (*accounts.Record, error) {
+			return pgaccounts.LoadOne(ctx, pgDB.Pool, uid)
+		}
+		codeArtsSvc.WithCheckinLock = func(ctx context.Context, uid string, run func(context.Context) error) error {
+			return pgaccounts.WithCodeArtsCheckinLock(ctx, pgDB.Pool, uid, run)
+		}
 	}
 	sched.Channel = codeArtsSvc
 	accountsAPI.CodeArts = codeArtsSvc
 	// The upstream gates each account to three concurrent conversations and
 	// rejects the fourth with TM.00001041, so the gateway registers a busy
 	// lease per attempt instead of firing blindly.
-	h.Sessions = &codeartsync.Sessions{Pool: p, Log: log}
+	h.Sessions = &codeartsync.Sessions{Pool: p, Log: log, Base: *upstreamOverride, Client: up.LeaseHTTPClient}
 	log.Info("codearts session gate enabled", "slots_per_account", realm.CodeArtsInflight())
 	background.start(func() {
 		(&codeartsync.Scanner{Service: codeArtsSvc}).Run(bg)

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"wb2api/internal/realm"
 )
 
 // NonAccountFiles live next to the credentials but are not accounts.
@@ -95,18 +97,29 @@ func LoadStrict(dir string, now time.Time) ([]*Record, []LoadError, error) {
 			errs = append(errs, LoadError{n, err})
 			continue
 		}
-		m, err := decodeObject(raw)
+		rec, err := decodeFileRecord(raw, p, now)
 		if err != nil {
 			errs = append(errs, LoadError{n, err})
 			continue
 		}
-		rec := FromMap(m, p, now)
 		if rec.UID == "" {
 			continue
 		}
 		out = append(out, rec)
 	}
 	return out, errs, nil
+}
+
+func decodeFileRecord(raw []byte, path string, now time.Time) (*Record, error) {
+	m, err := decodeObject(raw)
+	if err != nil {
+		return nil, err
+	}
+	rec := FromMap(m, path, now)
+	if realm.IsCodeArts(rec.Realm) {
+		rec.SharedBaseline = raw
+	}
+	return rec, nil
 }
 
 // ordered builds the persisted document in the legacy key order.
@@ -216,20 +229,18 @@ var saveMu sync.Mutex
 // Save writes the record into dir atomically (temp file in the same directory,
 // fsync, rename) and sets r.Path. Concurrent saves are serialised.
 func Save(dir string, r *Record) (string, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
+	if realm.IsCodeArts(r.Realm) {
+		latest, err := SaveReconciled(dir, r, time.Now())
+		if err != nil {
+			return "", err
+		}
+		r.Path = latest.Path
+		return latest.Path, nil
 	}
-	name, ok := r.FileName()
-	if !ok {
-		var b [16]byte
-		_, _ = rand.Read(b[:])
-		name = hex.EncodeToString(b[:]) + ".json"
-	}
-	absDir, err := filepath.Abs(dir)
+	path, err := recordPath(dir, r)
 	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(absDir, name)
 	data, err := r.Marshal()
 	if err != nil {
 		return "", err
@@ -241,6 +252,90 @@ func Save(dir string, r *Record) (string, error) {
 	}
 	r.Path = path
 	return path, nil
+}
+
+func recordPath(dir string, r *Record) (string, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	if r.SharedBaseline != nil && r.Path != "" {
+		path, err := filepath.Abs(r.Path)
+		if err != nil {
+			return "", err
+		}
+		if filepath.Dir(path) != absDir {
+			return "", errors.New("account file is outside the accounts directory")
+		}
+		return path, nil
+	}
+	name, ok := r.FileName()
+	if !ok {
+		var b [16]byte
+		_, _ = rand.Read(b[:])
+		name = hex.EncodeToString(b[:]) + ".json"
+	}
+	return filepath.Join(absDir, name), nil
+}
+
+// SaveReconciled saves a CodeArts file and returns its committed record without
+// changing the proposed record. A merge conflict returns the current record
+// so callers can reconcile an optimistic in-memory update. A tracked account
+// whose file was deleted returns ErrDeleted without recreating it.
+func SaveReconciled(dir string, proposed *Record, now time.Time) (*Record, error) {
+	if proposed == nil || proposed.UID == "" || !realm.IsCodeArts(proposed.Realm) {
+		return nil, errors.New("invalid CodeArts account")
+	}
+	path, err := recordPath(dir, proposed)
+	if err != nil {
+		return nil, err
+	}
+	data, err := proposed.Marshal()
+	if err != nil {
+		return nil, err
+	}
+	saveMu.Lock()
+	defer saveMu.Unlock()
+	var current *Record
+	raw, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		current, err = decodeFileRecord(raw, path, now)
+		if err != nil {
+			return nil, err
+		}
+		if current.UID != proposed.UID || current.Realm != proposed.Realm {
+			return nil, fmt.Errorf("%w: account identity changed", ErrConflict)
+		}
+	case errors.Is(err, os.ErrNotExist):
+		if proposed.SharedBaseline != nil {
+			return nil, fmt.Errorf("%w: %w", ErrConflict, ErrDeleted)
+		}
+	default:
+		return nil, err
+	}
+	if proposed.SharedBaseline != nil {
+		data, err = MergeJSON(proposed.SharedBaseline, data, raw)
+		if err != nil {
+			return current, err
+		}
+	}
+	next, err := decodeFileRecord(data, path, now)
+	if err != nil {
+		return current, err
+	}
+	data, err = next.Marshal()
+	if err != nil {
+		return current, err
+	}
+	if err := writeFileAtomic(path, data); err != nil {
+		return current, err
+	}
+	next.SharedBaseline = data
+	return next, nil
 }
 
 func writeFileAtomic(path string, data []byte) error {
@@ -281,6 +376,8 @@ func Delete(r *Record) error {
 	if r.Path == "" {
 		return nil
 	}
+	saveMu.Lock()
+	defer saveMu.Unlock()
 	if err := os.Remove(r.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}

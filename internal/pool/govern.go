@@ -610,6 +610,14 @@ func (a *Account) UnavailableReason(model string, now time.Time) string {
 	if a.Record().AccessToken == "" {
 		return "无凭证"
 	}
+	if realm.IsCodeArts(a.Realm) {
+		if a.Record().CodeArtsNeedsLogin() {
+			return "刷新凭据已失效，需要重新登录"
+		}
+		if a.CodeArtsAccessRejected() || !a.Record().CodeArtsAccessUsable(now) {
+			return "STS 凭据不可用，等待刷新"
+		}
+	}
 	if a.tokenBad.Load() {
 		return "凭证已过期"
 	}

@@ -2,94 +2,95 @@ package scheduler
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
+	"wb2api/internal/codeartsync"
 	"wb2api/internal/pool"
+	"wb2api/internal/store/accounts"
+	"wb2api/internal/store/settings"
 )
 
-// fakeChannel mirrors codeartsync: a check-in that is due until it succeeds,
-// then quiet for the rest of the day.
 type fakeChannel struct {
-	calls int
-	done  bool
-	ok    bool
-	msg   string
+	pool  *pool.Pool
+	now   func() time.Time
+	calls chan string
 }
 
-func (f *fakeChannel) CanCheckin(acc *pool.Account) bool { return !f.done }
+func (f *fakeChannel) CanCheckin(acc *pool.Account) bool {
+	return !codeartsync.DailyStatus(acc.Record(), f.now()).OK
+}
 
-func (f *fakeChannel) Checkin(ctx context.Context, acc *pool.Account, manual bool) (bool, string, error) {
-	f.calls++
-	if f.ok {
-		f.done = true
+func (f *fakeChannel) RunDaily(_ context.Context, acc *pool.Account, trigger string) (codeartsync.DailyResult, error) {
+	f.pool.Update(acc.UID, func(r *accounts.Record) {
+		r.LastCheckin = map[string]any{"ok": true, "state": "already_claimed", "channel": "codearts",
+			"day": f.now().In(beijing).Format("2006-01-02")}
+	})
+	f.calls <- acc.UID + "/" + trigger
+	return codeartsync.DailyResult{OK: true, State: codeartsync.DailyAlready}, nil
+}
+
+func awaitCodeArts(t *testing.T, f *fakeChannel, want string) {
+	t.Helper()
+	select {
+	case got := <-f.calls:
+		if got != want {
+			t.Fatalf("call = %q, want %q", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the CodeArts sweep did not run")
 	}
-	return f.ok, f.msg, nil
 }
 
-// The channel chore runs for its own realm only: a CN account must never be
-// handed to the Huawei endpoint, and the channel must not be called when the
-// check-in grid has not fired.
-func TestChannelCheckinRunsOnlyForItsRealm(t *testing.T) {
+func TestCodeArtsScheduleIsIndependentAndCatchesUp(t *testing.T) {
 	f := newFx(t,
 		map[string]any{"realm": "codearts", "uid": "hw-1"},
+		map[string]any{"realm": "codearts", "uid": "hw-2"},
 		map[string]any{"realm": "cn", "uid": "cn-1"},
 	)
-	ch := &fakeChannel{ok: true, msg: "领取成功（1000 积分）"}
+	now := time.Date(2026, 11, 20, 16, 5, 0, 0, time.UTC) // 00:05 in Beijing
+	f.s.Now = func() time.Time { return now }
+	ch := &fakeChannel{pool: f.s.Pool, now: f.s.Now, calls: make(chan string, 4)}
 	f.s.Channel = ch
-	f.atHour(9)
-	f.s.Cycle(context.Background(), "test")
-	if ch.calls != 1 {
-		t.Fatalf("channel check-in calls = %d, want 1 (only the CodeArts account)", ch.calls)
+	uids := []string{"hw-2"}
+	if err := f.s.Settings.SetCodeArtsDaily(settings.CodeArtsDailyPatch{UIDs: &uids}); err != nil {
+		t.Fatal(err)
 	}
-	st := f.s.Status()
-	joined := strings.Join(st.Logs, "|")
-	if !strings.Contains(joined, "华为 CodeArts 签到") {
-		t.Fatalf("log does not mention the channel: %s", joined)
+	if f.s.runCodeArts(context.Background(), false) {
+		t.Fatal("automatic check-in ran before its Beijing start time")
 	}
-	if !strings.Contains(st.LastRun, "") { // LastRun is always set
-		t.Fatalf("status = %+v", st)
+	// Simulate a WorkBuddy cycle occupying its single background slot.
+	f.s.running = true
+	now = now.Add(time.Hour)
+	if !f.s.runCodeArts(context.Background(), false) {
+		t.Fatal("the independent sweep failed to start after its scheduled time")
 	}
-	// The channel reports "done" now, so a second cycle is quiet.
-	f.s.Cycle(context.Background(), "again")
-	if ch.calls != 1 {
-		t.Fatalf("channel check-in ran twice in one day: %d", ch.calls)
+	awaitCodeArts(t, ch, "hw-2/makeup")
+	st := f.s.Status().CodeArts
+	if st.AccountCount != 1 || st.States[codeartsync.DailyAlready] != 1 || st.LastRun == "" {
+		t.Fatalf("daily status = %+v", st)
+	}
+	if f.s.runCodeArts(context.Background(), false) {
+		t.Fatal("the completed account was scheduled again")
 	}
 }
 
-// Before the check-in hour the channel is not called at all.
-func TestChannelCheckinFollowsTheGrid(t *testing.T) {
-	f := newFx(t, map[string]any{"realm": "codearts", "uid": "hw-1"})
-	ch := &fakeChannel{ok: true}
+func TestCodeArtsManualRunRespectsTasksAndRestrictions(t *testing.T) {
+	f := newFx(t,
+		map[string]any{"realm": "codearts", "uid": "hw-1"},
+		map[string]any{"realm": "codearts", "uid": "hw-2", "tasksEnabled": false},
+		map[string]any{"realm": "codearts", "uid": "hw-3", "enabled": false},
+		map[string]any{"realm": "codearts", "uid": "hw-4"},
+		map[string]any{"realm": "cn", "uid": "cn-1"},
+	)
+	f.s.Pool.Get("hw-4").NoteRestricted(f.s.now(), time.Hour)
+	ch := &fakeChannel{pool: f.s.Pool, now: f.s.now, calls: make(chan string, 4)}
 	f.s.Channel = ch
-	f.atHour(3) // the default check-in grid is 09:00
-	f.s.Cycle(context.Background(), "test")
-	if ch.calls != 0 {
-		t.Fatalf("channel check-in ran outside the grid: %d", ch.calls)
+	if err := f.s.Settings.SetSchedulerEnabled(false); err != nil {
+		t.Fatal(err)
 	}
-}
-
-// A failure is reported but does not retry the same account in one cycle.
-func TestChannelCheckinFailureIsLogged(t *testing.T) {
-	f := newFx(t, map[string]any{"realm": "codearts", "uid": "hw-1"})
-	ch := &fakeChannel{ok: false, msg: "活动已结束"}
-	f.s.Channel = ch
-	f.atHour(9)
-	f.s.Cycle(context.Background(), "test")
-	if ch.calls != 1 {
-		t.Fatalf("calls = %d", ch.calls)
+	if f.s.runCodeArts(context.Background(), false) || !f.s.TriggerCodeArts() {
+		t.Fatal("the manual task should run while automatic tasks are disabled")
 	}
-	joined := strings.Join(f.s.Status().Logs, "|")
-	if !strings.Contains(joined, "签到未成功") || !strings.Contains(joined, "活动已结束") {
-		t.Fatalf("failure not logged: %s", joined)
-	}
-}
-
-// With no channel configured the scheduler simply skips the realm.
-func TestNoChannelSkipsCodeArts(t *testing.T) {
-	f := newFx(t, map[string]any{"realm": "codearts", "uid": "hw-1"})
-	f.atHour(9)
-	f.s.Cycle(context.Background(), "test") // must not panic
-	_ = time.Now
+	awaitCodeArts(t, ch, "hw-1/manual")
 }

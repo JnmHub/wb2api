@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"wb2api/internal/realm"
 	"wb2api/internal/store/accounts"
 )
 
@@ -29,7 +30,8 @@ type Account struct {
 	rec atomic.Pointer[accounts.Record] // replaced wholesale when credentials change
 
 	enabled      atomic.Bool
-	tokenBad     atomic.Bool  // no usable token (expired and refresh failed / missing)
+	tokenBad     atomic.Bool // no usable token (expired and refresh failed / missing)
+	rejectedSTS  atomic.Pointer[string]
 	expiresAt    atomic.Int64 // unix seconds
 	cooldownTo   atomic.Int64 // unix nanoseconds; account-wide cooldown
 	restrictedTo atomic.Int64 // unix nanoseconds; upstream risk-control hold
@@ -133,6 +135,9 @@ func (a *Account) ready(model string, now time.Time, checkCapacity bool) bool {
 	if !a.enabled.Load() || a.tokenBad.Load() {
 		return false
 	}
+	if realm.IsCodeArts(a.Realm) && (a.CodeArtsAccessRejected() || !a.Record().CodeArtsAccessUsable(now)) {
+		return false
+	}
 	ns := now.UnixNano()
 	if a.cooldownTo.Load() > ns || a.restrictedTo.Load() > ns || a.breakerTo.Load() > ns ||
 		a.degradeTo.Load() > ns || a.balanceTo.Load() > ns {
@@ -230,6 +235,26 @@ func (a *Account) setCoolWhyLocked(model, why string) {
 
 // MarkTokenBad flags the credential as unusable (needs re-login or refresh).
 func (a *Account) MarkTokenBad(bad bool) { a.tokenBad.Store(bad); a.touch() }
+
+// RejectCodeArtsAccess prevents dispatch using the STS token observed by an
+// upstream failure. A newer token can immediately resume serving.
+func (a *Account) RejectCodeArtsAccess(observed *accounts.Record) {
+	a.updMu.Lock()
+	if a.Record().AccessToken == observed.AccessToken {
+		version := observed.CodeArtsAccessVersion()
+		a.rejectedSTS.Store(&version)
+	}
+	a.updMu.Unlock()
+	a.touch()
+}
+
+func (a *Account) CodeArtsAccessRejected() bool {
+	rec := a.Record()
+	if v := a.rejectedSTS.Load(); v != nil && *v == rec.CodeArtsAccessVersion() {
+		return true
+	}
+	return rec.CodeArtsAuthState().AccessRejected
+}
 
 // SetExpiresAt records a refreshed token expiry (unix seconds).
 func (a *Account) SetExpiresAt(sec int64) { a.expiresAt.Store(sec); a.touch() }

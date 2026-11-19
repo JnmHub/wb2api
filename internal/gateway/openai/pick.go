@@ -13,6 +13,10 @@ import (
 func (h *Handler) pickAccount(q *request) *pool.Account {
 	h.normaliseModelName(q)
 	h.startAdmission(q)
+	better := h.betterAccount
+	if realm.IsCodeArts(q.realm) {
+		better = nil // keep the most recent admitted account when it is healthy
+	}
 	candidates := h.capacityCandidates(q)
 	counts := h.loadOccupancy(q, candidates, false)
 	for pass := 0; pass < 2; pass++ {
@@ -28,6 +32,11 @@ func (h *Handler) pickAccount(q *request) *pool.Account {
 			base[uid] = struct{}{}
 		}
 		for _, a := range candidates {
+			if realm.IsCodeArts(q.realm) && !codeArtsAllowsModel(a.Record(), q.model) {
+				base[a.UID] = struct{}{}
+				delete(q.at.full, a.UID)
+				continue
+			}
 			n, known := counts[a.UID]
 			_, denied := q.at.full[a.UID]
 			limit := h.accountLimit(a)
@@ -50,13 +59,13 @@ func (h *Handler) pickAccount(q *request) *pool.Account {
 		if len(q.keyDenied) > 0 {
 			exclude = unionExclude(exclude, q.keyDenied)
 		}
-		a := h.Pool.SelectForSessionBestContext(q.r.Context(), q.realm, q.sessionKey, exclude, q.model, q.page, h.betterAccount)
+		a := h.Pool.SelectForSessionBestContext(q.r.Context(), q.realm, q.sessionKey, exclude, q.model, q.page, better)
 		if a == nil && len(q.at.avoid) > 0 {
 			alt := base
 			if len(q.keyDenied) > 0 {
 				alt = unionExclude(base, q.keyDenied)
 			}
-			a = h.Pool.SelectForSessionBestContext(q.r.Context(), q.realm, q.sessionKey, alt, q.model, q.page, h.betterAccount)
+			a = h.Pool.SelectForSessionBestContext(q.r.Context(), q.realm, q.sessionKey, alt, q.model, q.page, better)
 		}
 		if a != nil {
 			return a

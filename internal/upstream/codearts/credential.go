@@ -10,15 +10,7 @@ import (
 // nested under Extra["codearts"] (what the importer writes) and flat, with the
 // keys directly in Extra (hand-written files). Both are read the same way.
 func extraMap(rec *accounts.Record) map[string]any {
-	if rec == nil || rec.Extra == nil {
-		return nil
-	}
-	if v, ok := rec.Extra[ExtraKey]; ok {
-		if m, ok := v.(map[string]any); ok {
-			return m
-		}
-	}
-	return rec.Extra
+	return rec.CodeArtsFields()
 }
 
 // Extra returns the account's CodeArts credential map. Callers that write to it
@@ -88,6 +80,14 @@ func CodeVerifierOf(rec *accounts.Record) string {
 	return extraStr(extraMap(rec), "code_verifier", "codeVerifier")
 }
 
+// ClientIDOf returns the OAuth binding that issued the refresh token.
+func ClientIDOf(rec *accounts.Record) string {
+	if id := extraStr(extraMap(rec), "client_id", "clientId"); id != "" {
+		return id
+	}
+	return ClientID
+}
+
 // ApplyToken folds a refreshed token response into a copy of the record: the
 // STS token, the rotated refresh token, the AK/SK pair and the expiry all move
 // together, because the next signature uses the new pair.
@@ -102,7 +102,9 @@ func ApplyToken(rec *accounts.Record, t *TokenResponse) *accounts.Record {
 	}
 	m := map[string]any{}
 	for k, v := range extraMap(rec) {
-		m[k] = v
+		if k != "codeartsAuth" {
+			m[k] = v
+		}
 	}
 	m["access_key_id"] = t.Credentials.AccessKeyID
 	m["secret_access_key"] = t.Credentials.SecretAccessKey
@@ -121,7 +123,7 @@ func ApplyToken(rec *accounts.Record, t *TokenResponse) *accounts.Record {
 	}
 	extra[ExtraKey] = m
 	next.Extra = extra
-	return &next
+	return next.WithCodeArtsAuth(accounts.CodeArtsAuth{})
 }
 
 // IsBenefitModel reports whether the account classifies model as a limited-time

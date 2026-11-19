@@ -91,6 +91,12 @@ func keyPairFrom(jwk DPoPKey) (*keyPair, error) {
 	}, nil
 }
 
+// ValidateDPoPKey checks a migrated private key without generating a proof.
+func ValidateDPoPKey(jwk DPoPKey) error {
+	_, err := keyPairFrom(jwk)
+	return err
+}
+
 // SignProof builds the DPoP proof JWT for one token-endpoint POST. htu must be
 // the exact target URL: STS rejects a proof whose htu differs.
 func SignProof(jwk DPoPKey, htu string, now time.Time) (string, error) {

@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"reflect"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -134,7 +133,7 @@ func decode(uid string, raw []byte, now time.Time) (*accounts.Record, error) {
 }
 
 // ErrConflict means another replica changed a field this save also changed.
-var ErrConflict = errors.New("account changed concurrently")
+var ErrConflict = accounts.ErrConflict
 
 // Save deliberately upserts fresh imports. Records loaded from PostgreSQL carry
 // a baseline: their changed fields are merged under a row lock, and a deleted
@@ -189,52 +188,8 @@ func Save(ctx context.Context, pool *pgxpool.Pool, rec *accounts.Record) error {
 	return nil
 }
 
-// merge applies only fields changed relative to the observed snapshot. Compare
-// decoded values so PostgreSQL jsonb whitespace/key ordering is immaterial.
 func merge(baseline, proposed, current []byte) ([]byte, error) {
-	decodeMap := func(raw []byte) (map[string]any, error) {
-		var m map[string]any
-		d := json.NewDecoder(bytes.NewReader(raw))
-		d.UseNumber()
-		err := d.Decode(&m)
-		return m, err
-	}
-	before, err := decodeMap(baseline)
-	if err != nil {
-		return nil, err
-	}
-	next, err := decodeMap(proposed)
-	if err != nil {
-		return nil, err
-	}
-	latest, err := decodeMap(current)
-	if err != nil {
-		return nil, err
-	}
-	keys := make(map[string]bool)
-	for k := range before {
-		keys[k] = true
-	}
-	for k := range next {
-		keys[k] = true
-	}
-	for k := range keys {
-		old, had := before[k]
-		value, has := next[k]
-		if had == has && reflect.DeepEqual(old, value) {
-			continue
-		}
-		live, exists := latest[k]
-		if !(had == exists && reflect.DeepEqual(old, live)) && !(has == exists && reflect.DeepEqual(value, live)) {
-			return nil, fmt.Errorf("%w: field %s", ErrConflict, k)
-		}
-		if has {
-			latest[k] = value
-		} else {
-			delete(latest, k)
-		}
-	}
-	return json.Marshal(latest)
+	return accounts.MergeJSON(baseline, proposed, current)
 }
 
 // Delete removes one account by uid.

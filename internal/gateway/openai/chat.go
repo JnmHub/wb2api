@@ -21,6 +21,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"wb2api/internal/codeartsync"
 	"wb2api/internal/gateway/leak"
@@ -356,6 +357,7 @@ type request struct {
 	keyID               string
 	realm               string
 	sessionKey          string
+	unscopedSessionKey  string
 	affinityObservation pool.AffinityObservation
 	turnID              string // X-Conversation-Request-ID, one per user turn (all retries)
 	vscodeConv          string
@@ -369,14 +371,17 @@ type request struct {
 	effortDone          bool
 	anth                bool
 
-	attemptBytes    int
-	requestID       string
-	upstreamCode    string
-	shape           *RequestShape
-	toolNames       *codearts.ToolNameMap
-	refreshed       map[string]bool
-	degradedRetried bool
-	restrictedRot   int
+	attemptBytes      int
+	codeArtsDeadline  time.Time
+	codeArtsAttempt   time.Duration
+	codeArtsSessionID string
+	requestID         string
+	upstreamCode      string
+	shape             *RequestShape
+	toolNames         *codearts.ToolNameMap
+	refreshed         map[string]bool
+	degradedRetried   bool
+	restrictedRot     int
 }
 
 type encoded struct {
@@ -498,6 +503,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusBadRequest, "cannot read request body", "invalid_request_error")
+		return
+	}
+	if !utf8.Valid(body) {
+		writeError(w, http.StatusBadRequest, "request body must be UTF-8", "invalid_request_error")
 		return
 	}
 	payload, err := jsonx.UnmarshalObj(body)

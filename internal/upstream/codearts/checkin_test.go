@@ -7,234 +7,80 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
 
-// creditServer emulates the delivery / claim / confirm endpoints.
-type creditServer struct {
-	mu        sync.Mutex
-	written   []string
-	srv       *httptest.Server
-	sawAuth   []string
-	sawDate   []string
-	campaigns []map[string]any // the delivery list, mutated as claims land
-}
-
-func newCreditServer(t *testing.T, campaigns string, claimFails bool) *creditServer {
-	t.Helper()
-	cs := &creditServer{}
-	if err := json.Unmarshal([]byte(campaigns), &cs.campaigns); err != nil {
-		t.Fatalf("bad campaign fixture: %v", err)
-	}
-	cs.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cs.mu.Lock()
-		cs.sawAuth = append(cs.sawAuth, r.Header.Get("Authorization"))
-		cs.sawDate = append(cs.sawDate, r.Header.Get("X-Sdk-Date"))
-		cs.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.URL.Path == DeliveryPath:
-			if got := r.URL.Query().Get("channel"); got != CreditChannel {
-				t.Errorf("delivery channel = %q", got)
-			}
-			// Claimed campaigns come back as CONFIRMED: the re-read after
-			// claim/confirm is what decides success.
-			items := make([]map[string]any, 0, len(cs.campaigns))
-			cs.mu.Lock()
-			for _, c := range cs.campaigns {
-				copy := map[string]any{}
-				for k, v := range c {
-					copy[k] = v
-				}
-				items = append(items, copy)
-			}
-			cs.mu.Unlock()
-			raw, _ := json.Marshal(items)
-			fmt.Fprintf(w, `{"code":0,"data":{"items":%s}}`, raw)
-		case r.URL.Path == ClaimPath:
-			if claimFails {
-				cs.mu.Lock()
-				cs.written = append(cs.written, "claim")
-				cs.mu.Unlock()
-				fmt.Fprint(w, `{"code":4004,"message":"claim rejected"}`)
-				return
-			}
-			id := campaignIDOf(r)
-			cs.mu.Lock()
-			cs.written = append(cs.written, "claim")
-			cs.setStatus(id, "CLAIMED")
-			cs.mu.Unlock()
-			fmt.Fprint(w, `{"code":0,"data":{}}`)
-		case r.URL.Path == ConfirmPath:
-			id := campaignIDOf(r)
-			cs.mu.Lock()
-			cs.written = append(cs.written, "confirm")
-			cs.setStatus(id, "CONFIRMED")
-			cs.mu.Unlock()
-			fmt.Fprint(w, `{"code":0,"data":{}}`)
-		default:
-			t.Errorf("unexpected path %s", r.URL.Path)
-			w.WriteHeader(404)
+func TestCreditProtocolPreservesCampaignIDTypeAndSigns(t *testing.T) {
+	calls := make(chan string, 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "SDK-HMAC-SHA256 Access=AK, ") || r.Header.Get("X-Sdk-Date") == "" {
+			t.Error("missing credit request signature")
 		}
+		if r.URL.Path == DeliveryPath {
+			if r.Method != http.MethodGet || r.URL.Query().Get("channel") != CreditChannel {
+				t.Errorf("delivery request = %s %s", r.Method, r.URL)
+			}
+			fmt.Fprint(w, `{"code":0,"data":{"items":[{"campaignId":34,"type":"USER_LOGIN","benefitUnit":"CREDIT"},{"campaignId":"new-daily","type":"USER_LOGIN","benefitUnit":"CREDIT"}]}}`)
+			return
+		}
+		var fields map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&fields); err != nil {
+			t.Error(err)
+		}
+		calls <- r.URL.Path + ":" + string(fields["campaignId"])
+		if r.Method != http.MethodPost {
+			t.Errorf("write method = %s", r.Method)
+		}
+		if r.URL.Path == ClaimPath && (string(fields["idempotentKey"]) != `"daily-key"` || string(fields["channel"]) != `"IDE"`) {
+			t.Errorf("claim fields = %s", fields)
+		}
+		fmt.Fprintf(w, `{"code":0,"data":{"campaignId":%s}}`, fields["campaignId"])
 	}))
-	t.Cleanup(cs.srv.Close)
-	return cs
-}
-
-// setStatus applies a state transition to the fixture row (caller holds the lock).
-func (c *creditServer) setStatus(id int, status string) {
-	for _, row := range c.campaigns {
-		if v, ok := row["campaignId"].(float64); ok && int(v) == id {
-			row["status"] = status
+	defer srv.Close()
+	ctx := context.Background()
+	cred := Credential{AccessKeyID: "AK", SecretAccessKey: "SK", SecurityToken: "STS"}
+	items, err := FetchCampaigns(ctx, srv.Client(), srv.URL, cred)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("items = %v, err = %v", items, err)
+	}
+	if items[0].Key() != "34" || items[1].Key() != "new-daily" {
+		t.Fatalf("unexpected keys = %s, %s", items[0].Key(), items[1].Key())
+	}
+	for _, c := range items {
+		if !c.IsDailyCredit() {
+			t.Fatalf("campaign = %+v", c)
+		}
+		if err := ClaimCredit(ctx, srv.Client(), srv.URL, cred, c, "daily-key"); err != nil {
+			t.Fatal(err)
+		}
+		if err := ConfirmCredit(ctx, srv.Client(), srv.URL, cred, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(calls)
+	for _, want := range []string{ClaimPath + ":34", ConfirmPath + ":34", ClaimPath + `:"new-daily"`, ConfirmPath + `:"new-daily"`} {
+		if got := <-calls; got != want {
+			t.Fatalf("request = %q, want %q", got, want)
 		}
 	}
 }
 
-// campaignIDOf reads campaignId from a claim/confirm body.
-func campaignIDOf(r *http.Request) int {
-	var body struct {
-		CampaignID int `json:"campaignId"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	return body.CampaignID
-}
-
-func (c *creditServer) writes() []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]string(nil), c.written...)
-}
-
-func creditCred() Credential {
-	return Credential{AccessKeyID: "AK", SecretAccessKey: "SK", SecurityToken: "STS"}
-}
-
-func TestCheckinClaimsEligibleCampaign(t *testing.T) {
-	cs := newCreditServer(t, `[
-		{"campaignId":1,"title":"每日签到","status":"ELIGIBLE","claimable":true,"benefitUnit":"CREDIT","benefitAmount":1000},
-		{"campaignId":2,"title":"别的活动","status":"ELIGIBLE","claimable":true,"benefitAmount":50}
-	]`, false)
-	now := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
-	res, err := Checkin(context.Background(), cs.srv.Client(), cs.srv.URL, creditCred(), now)
-	if err != nil {
-		t.Fatalf("Checkin: %v", err)
-	}
-	if !res.OK || res.Credits != 1000 {
-		t.Fatalf("result = %+v", res)
-	}
-	if len(res.Campaigns) != 1 || res.Campaigns[0].CampaignID != 1 {
-		t.Fatalf("campaigns = %+v (only ids 1 and 4 are claimed)", res.Campaigns)
-	}
-	if got := strings.Join(cs.writes(), ","); got != "claim,confirm" {
-		t.Fatalf("writes = %s", got)
-	}
-	// delivery → claim → confirm → re-read delivery
-	if len(cs.sawAuth) != 4 {
-		t.Fatalf("expected four signed calls, got %d", len(cs.sawAuth))
-	}
-	for i, a := range cs.sawAuth {
-		if !strings.HasPrefix(a, "SDK-HMAC-SHA256 Access=AK, ") {
-			t.Fatalf("call %d is unsigned: %q", i, a)
-		}
-		if cs.sawDate[i] == "" {
-			t.Fatalf("call %d has no signing date", i)
-		}
-	}
-}
-
-// A CLAIMED campaign is credited but unconfirmed: confirm only, never claim
-// twice.
-func TestCheckinConfirmsWithoutReclaiming(t *testing.T) {
-	cs := newCreditServer(t, `[
-		{"campaignId":1,"title":"每日签到","status":"CLAIMED","benefitUnit":"CREDIT","pendingTotalAmount":1000}
-	]`, false)
-	res, err := Checkin(context.Background(), cs.srv.Client(), cs.srv.URL, creditCred(), time.Now())
-	if err != nil {
-		t.Fatalf("Checkin: %v", err)
-	}
-	if !res.OK {
-		t.Fatalf("result = %+v", res)
-	}
-	if got := strings.Join(cs.writes(), ","); got != "confirm" {
-		t.Fatalf("writes = %s, want only confirm", got)
-	}
-}
-
-func TestCheckinConfirmedCampaignWritesNothing(t *testing.T) {
-	cs := newCreditServer(t, `[
-		{"campaignId":1,"title":"每日签到","status":"CONFIRMED","benefitUnit":"CREDIT"}
-	]`, false)
-	res, err := Checkin(context.Background(), cs.srv.Client(), cs.srv.URL, creditCred(), time.Now())
-	if err != nil {
-		t.Fatalf("Checkin: %v", err)
-	}
-	if got := cs.writes(); len(got) != 0 {
-		t.Fatalf("writes = %v, want none", got)
-	}
-	if !strings.Contains(res.Message, "已领取") {
-		t.Fatalf("message = %q", res.Message)
-	}
-}
-
-func TestCheckinReportsUpstreamClaimFailure(t *testing.T) {
-	cs := newCreditServer(t, `[
-		{"campaignId":1,"title":"每日签到","status":"ELIGIBLE","claimable":true,"benefitAmount":1000}
-	]`, true)
-	res, err := Checkin(context.Background(), cs.srv.Client(), cs.srv.URL, creditCred(), time.Now())
-	if err != nil {
-		t.Fatalf("Checkin returned a transport error: %v", err)
-	}
-	if res.OK {
-		t.Fatal("a rejected claim must not be reported as success")
-	}
-	if !strings.Contains(res.Message, "4004") {
-		t.Fatalf("message = %q", res.Message)
-	}
-}
-
-func TestCheckinSkipsEndedCampaign(t *testing.T) {
-	cs := newCreditServer(t, `[
-		{"campaignId":1,"title":"每日签到","status":"ELIGIBLE","claimable":true,"benefitAmount":1000,
-		 "extra":{"startTime":"2026-01-01T00:00:00Z","endTime":"2026-02-01T00:00:00Z"}}
-	]`, false)
-	res, err := Checkin(context.Background(), cs.srv.Client(), cs.srv.URL, creditCred(), time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC))
-	if err != nil {
-		t.Fatalf("Checkin: %v", err)
-	}
-	if len(cs.writes()) != 0 {
-		t.Fatal("an ended campaign must not be claimed")
-	}
-	if !strings.Contains(res.Message, "已结束") {
-		t.Fatalf("message = %q", res.Message)
-	}
-}
-
-// The envelope code is the upstream's business result: a non-zero code is an
-// error even on HTTP 200.
 func TestFetchCampaignsRejectsBusinessError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"code":4004,"message":"benefit not found"}`)
 	}))
 	defer srv.Close()
-	_, err := FetchCampaigns(context.Background(), srv.Client(), srv.URL, creditCred())
+	_, err := FetchCampaigns(context.Background(), srv.Client(), srv.URL, Credential{})
 	if err == nil || !strings.Contains(err.Error(), "4004") {
 		t.Fatalf("err = %v", err)
 	}
 }
 
-func TestFetchCampaignsParsesItems(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"code":0,"data":{"items":[{"campaignId":4,"title":"新用户","status":"ELIGIBLE","claimable":true,"benefitAmount":4000}]}}`)
-	}))
-	defer srv.Close()
-	items, err := FetchCampaigns(context.Background(), srv.Client(), srv.URL, creditCred())
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, _ := json.Marshal(items)
-	if !strings.Contains(string(b), `"campaignId":4`) {
-		t.Fatalf("items = %s", b)
+func TestCreditRetryTimeUsesRetryAfter(t *testing.T) {
+	now := time.Date(2026, 11, 20, 3, 0, 0, 0, time.UTC)
+	err := &CreditHTTPError{Status: http.StatusTooManyRequests, RetryAfter: "120"}
+	if got := CreditRetryTime(err, now); !got.Equal(now.Add(2 * time.Minute)) {
+		t.Fatalf("retry time = %v", got)
 	}
 }

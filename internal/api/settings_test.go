@@ -227,6 +227,18 @@ func TestSchedulerEndpoints(t *testing.T) {
 	if code, _ := f.do(t, "POST", "/api/v2/scheduler/trigger", `{}`); code != 202 && code != 409 {
 		t.Errorf("trigger: %d", code)
 	}
+	code, st = f.do(t, "PATCH", "/api/v2/scheduler", `{"codearts_daily":{"enabled":false,"time":"07:15","uids":["hw-2","hw-2","  hw-1 "]}}`)
+	daily := st["codearts_daily"].(map[string]any)
+	uids := daily["uids"].([]any)
+	if code != 200 || daily["time"] != "07:15" || daily["enabled"] != false || len(uids) != 2 || uids[0] != "hw-2" || uids[1] != "hw-1" {
+		t.Fatalf("daily settings: %d %+v", code, daily)
+	}
+	if code, _ := f.do(t, "PATCH", "/api/v2/scheduler", `{"codearts_daily":{"time":"28:90"}}`); code != 400 {
+		t.Fatalf("invalid daily time accepted: %d", code)
+	}
+	if code, _ := f.do(t, "POST", "/api/v2/scheduler/trigger-codearts", `{}`); code != http.StatusServiceUnavailable {
+		t.Fatalf("trigger without CodeArts service: %d", code)
+	}
 }
 
 func TestActivityEndpointValidatesTheFilter(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"wb2api/internal/jsonx"
 	"wb2api/internal/pool"
@@ -22,7 +23,7 @@ func codeartsAccount(uid string, models ...string) *accounts.Record {
 		list = append(list, m)
 	}
 	return &accounts.Record{
-		UID: uid, Realm: realm.CodeArts, AccessToken: "STS-" + uid,
+		UID: uid, Realm: realm.CodeArts, AccessToken: "STS-" + uid, ExpiresAt: time.Now().Add(time.Hour).Unix(),
 		Extra: map[string]any{"codearts": map[string]any{
 			"access_key_id": "AK-" + uid, "secret_access_key": "SK-" + uid,
 			"models": list,
@@ -39,6 +40,35 @@ func TestCodeArtsChatPath(t *testing.T) {
 	}
 }
 
+func TestCodeArtsSessionNamespace(t *testing.T) {
+	h := &Handler{Pool: pool.New(nil)}
+	payload := jsonx.NewObj()
+	payload.Set("prompt_cache_key", "chat")
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set("X-Session-Id", "explicit")
+	session := codeArtsSessionKey(r, payload)
+	if session != "explicit" {
+		t.Fatalf("selected session %q", session)
+	}
+	q := &request{model: "model-a", realm: realm.CodeArts, keyID: "key-a", unscopedSessionKey: session}
+	h.scopeCodeArtsSession(q)
+	first := q.sessionKey
+	h.scopeCodeArtsSession(q)
+	if q.sessionKey != first || first == session {
+		t.Fatalf("scope changed across the same session")
+	}
+	q.keyID = "key-b"
+	h.scopeCodeArtsSession(q)
+	if q.sessionKey == first {
+		t.Fatalf("separate API keys shared an affinity key")
+	}
+	q.keyID, q.model = "key-a", "model-b"
+	h.scopeCodeArtsSession(q)
+	if q.sessionKey == first {
+		t.Fatalf("separate models shared an affinity key")
+	}
+}
+
 // A CodeArts attempt must send the reduced body, uncompressed, and sign exactly
 // those bytes: a gzip layer would break the payload hash.
 func TestCodeArtsAttemptBodyAndSignature(t *testing.T) {
@@ -48,7 +78,11 @@ func TestCodeArtsAttemptBodyAndSignature(t *testing.T) {
 	payload.Set("stream", false)
 	payload.Set("metadata", jsonx.NewObj())
 	payload.Set("conversation_id", "conv-1")
-	q := &request{model: "GLM-5.2", realm: realm.CodeArts, shaped: payload, sessionKey: "sess-1"}
+	message := jsonx.NewObj()
+	message.Set("role", "user")
+	message.Set("content", "hi")
+	payload.Set("messages", []any{message})
+	q := &request{model: "GLM-5.2", realm: realm.CodeArts, payload: payload, sessionKey: "sess-1"}
 
 	rec := codeartsAccount("hw1")
 	out := h.buildOutbound(q, rec, identity.ProductDesktop)

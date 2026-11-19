@@ -1,6 +1,8 @@
 package accounts_test
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -59,5 +61,70 @@ func TestCodeArtsRecordRoundTrip(t *testing.T) {
 	}
 	if filepath.Base(got.Path) != "hw-1.json" {
 		t.Fatalf("path = %s", got.Path)
+	}
+}
+
+func TestCodeArtsFileStorePreservesConcurrentCredentialAndCheckin(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	initial, err := accounts.SaveReconciled(dir, &accounts.Record{
+		UID: "hw-merge", Realm: realm.CodeArts, AccessToken: "sts-before", RefreshToken: "rt-before",
+		ExpiresAt: now.Add(2 * time.Hour).Unix(),
+		Extra: map[string]any{"codearts": map[string]any{
+			"access_key_id": "ak-before", "secret_access_key": "sk-before", "security_token": "sts-before",
+		}},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkin := *initial
+	checkin.LastCheckin = map[string]any{"ok": true}
+	refresh := codearts.ApplyToken(initial, &codearts.TokenResponse{
+		RefreshToken: "rt-after",
+		Credentials: codearts.Credential{
+			AccessKeyID: "ak-after", SecretAccessKey: "sk-after", SecurityToken: "sts-after",
+			Expiration: now.Add(24 * time.Hour).UTC().Format(time.RFC3339),
+		},
+	})
+	rotated, err := accounts.SaveReconciled(dir, refresh, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged, err := accounts.SaveReconciled(dir, &checkin, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.RefreshToken != rotated.RefreshToken || codearts.CredentialOf(merged) != codearts.CredentialOf(rotated) ||
+		merged.LastCheckin == nil {
+		t.Fatal("stale check-in must preserve the complete rotated STS credential")
+	}
+
+	terminal := merged.WithCodeArtsAuth(accounts.CodeArtsAuth{Reason: "refresh_token_used", Login: true})
+	if _, err := accounts.SaveReconciled(dir, terminal, now); err != nil {
+		t.Fatal(err)
+	}
+	admin := *merged
+	admin.Note = "operator note"
+	saved, err := accounts.SaveReconciled(dir, &admin, now)
+	if err != nil || saved.Note != "operator note" || !saved.CodeArtsNeedsLogin() {
+		t.Fatalf("stale admin edit must preserve terminal state: %v", err)
+	}
+
+	catalog := *initial
+	catalog.Extra = map[string]any{"codearts": map[string]any{"models": []string{"test-model"}}}
+	authoritative, err := accounts.SaveReconciled(dir, &catalog, now)
+	if !errors.Is(err, accounts.ErrConflict) || authoritative == nil || !authoritative.CodeArtsNeedsLogin() ||
+		authoritative.AccessToken != rotated.AccessToken {
+		t.Fatalf("stale catalog write must return authoritative credentials: %v", err)
+	}
+
+	if err := accounts.Delete(saved); err != nil {
+		t.Fatal(err)
+	}
+	if latest, err := accounts.SaveReconciled(dir, &admin, now); latest != nil || !errors.Is(err, accounts.ErrDeleted) {
+		t.Fatalf("stale save after deletion must fail: %v", err)
+	}
+	if _, err := os.Stat(saved.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale save recreated the account file: %v", err)
 	}
 }

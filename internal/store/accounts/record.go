@@ -72,7 +72,7 @@ type Record struct {
 	// Path is where the record was loaded from / last saved to.
 	Path string
 
-	// SharedBaseline is an immutable persisted snapshot used by shared-store
+	// SharedBaseline is an immutable persisted snapshot used by
 	// optimistic merges. It is runtime metadata and is never marshaled.
 	SharedBaseline []byte
 }

@@ -2,6 +2,8 @@ package codeartsync
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"time"
 
 	"wb2api/internal/pool"
@@ -101,17 +103,18 @@ func (s *Scanner) due(acc *pool.Account, now time.Time) bool {
 		return false
 	}
 	rec := acc.Record()
-	if rec == nil || !realm.IsCodeArts(rec.Realm) || !rec.IsEnabled() {
+	if rec == nil || !realm.IsCodeArts(rec.Realm) || !rec.IsEnabled() || rec.CodeArtsNeedsLogin() {
 		return false
 	}
-	if rec.AccessToken == "" {
+	if (!rec.CodeArtsAccessUsable(now) || acc.CodeArtsAccessRejected()) &&
+		(rec.RefreshToken == "" || rec.CodeArtsAuthState().RetryAt.After(now)) {
 		return false
 	}
 	m := codearts.Extra(rec)
 	if m == nil {
 		return true
 	}
-	at, _ := m["models_at"].(float64)
+	at, _ := strconv.ParseFloat(fmt.Sprint(m["models_at"]), 64)
 	if at == 0 {
 		return true
 	}

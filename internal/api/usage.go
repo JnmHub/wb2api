@@ -51,6 +51,7 @@ func EventFromGateway(ev openai.UsageEvent, realmOf func(uid string) string) usa
 	latency.RequestID = ev.RequestID
 	latency.UpstreamCode = ev.UpstreamCode
 	latency.RequestShape = ev.Shape
+	latency.CodeArtsAttempts = ev.CodeArtsAttempts
 	if b, err := json.Marshal(latency); err == nil && string(b) != "{}" {
 		e.Extra = b
 	}
@@ -78,9 +79,10 @@ type gatewayLatencyExtra struct {
 
 	// Failure diagnostics: the id the client saw, the vendor code, and a
 	// structural summary of what was sent. No content, headers or credentials.
-	RequestID    string               `json:"request_id,omitempty"`
-	UpstreamCode string               `json:"upstream_code,omitempty"`
-	RequestShape *openai.RequestShape `json:"request_shape,omitempty"`
+	RequestID        string                   `json:"request_id,omitempty"`
+	UpstreamCode     string                   `json:"upstream_code,omitempty"`
+	RequestShape     *openai.RequestShape     `json:"request_shape,omitempty"`
+	CodeArtsAttempts []openai.CodeArtsAttempt `json:"codearts_attempts,omitempty"`
 }
 
 func durationMillis(d time.Duration) float64 {
@@ -104,6 +106,9 @@ func addLatencyExtra(dst map[string]any, extra json.RawMessage) {
 	}
 	if latency.RequestShape != nil {
 		dst["request_shape"] = latency.RequestShape
+	}
+	if len(latency.CodeArtsAttempts) > 0 {
+		dst["codearts_attempts"] = latency.CodeArtsAttempts
 	}
 	for key, value := range map[string]float64{
 		"upstream_ttft_ms":  latency.UpstreamTTFTMs,

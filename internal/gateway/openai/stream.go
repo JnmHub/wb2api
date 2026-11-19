@@ -16,6 +16,7 @@ import (
 	"unicode"
 
 	"wb2api/internal/gateway/leak"
+	"wb2api/internal/gateway/ratelimit"
 	"wb2api/internal/pool"
 	"wb2api/internal/realm"
 	"wb2api/internal/upstream/codearts"
@@ -141,6 +142,27 @@ func (m *streamMeta) chunk(delta any, finish *string) []byte {
 	return b
 }
 
+func (m *streamMeta) codeArtsUsage(usage json.RawMessage) []byte {
+	b, _ := marshalNoEscape(map[string]any{
+		"id": m.id, "object": "chat.completion.chunk", "created": m.created,
+		"model": m.model, "choices": []any{}, "usage": usage,
+	})
+	return b
+}
+
+func (m *streamMeta) codeArtsEnvelope(top rawObj, start time.Time) {
+	if m.id == "" {
+		m.id = "chatcmpl-wb"
+	}
+	if m.created == 0 {
+		m.created = start.Unix()
+	}
+	top["id"], _ = json.Marshal(m.id)
+	top["created"], _ = json.Marshal(m.created)
+	top["model"], _ = json.Marshal(m.model)
+	top["object"] = json.RawMessage(`"chat.completion.chunk"`)
+}
+
 type toolCallDelta struct {
 	Index    int    `json:"index"`
 	ID       string `json:"id"`
@@ -164,7 +186,9 @@ func usageTotal(u json.RawMessage) int64 {
 
 // pipeStream relays an upstream SSE stream to the client.
 func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp func(), idleD time.Duration, body io.Reader,
-	acc *pool.Account, model, keyID, effort string, start time.Time, maxTPS float64, names *codearts.ToolNameMap, shape *RequestShape) {
+	acc *pool.Account, model, keyID, effort string, start time.Time, maxTPS float64, names *codearts.ToolNameMap, shape *RequestShape, usageOpt ...bool) {
+	isCodeArts := realm.IsCodeArts(acc.Realm)
+	includeUsage := isCodeArts && len(usageOpt) > 0 && usageOpt[0]
 
 	hdr := w.Header()
 	hdr.Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -196,6 +220,15 @@ func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp fu
 		}
 		return bw.firstOutput(b)
 	}
+	writeChunk := func(b []byte) error {
+		if !includeUsage {
+			return writeData(b)
+		}
+		// The usage option requests one final usage-only chunk. Every ordinary
+		// chunk has a null usage field under the Chat Completions contract.
+		b = append(b[:len(b)-1], `,"usage":null}`...)
+		return writeData(b)
+	}
 
 	if idleD <= 0 {
 		idleD = 5 * time.Minute
@@ -216,6 +249,7 @@ func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp fu
 		synthesized   bool
 		emitted       bool
 		sawContent    bool
+		sawTools      bool
 		sawReasoning  bool
 		reasoningOnly bool
 		nChunks       int
@@ -244,7 +278,7 @@ func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp fu
 					continue
 				}
 				emitted = true
-				if err := writeData(meta.chunk(map[string]string{"content": a.Text}, nil)); err != nil {
+				if err := writeChunk(meta.chunk(map[string]string{"content": a.Text}, nil)); err != nil {
 					return err
 				}
 			case leak.Calls:
@@ -253,7 +287,7 @@ func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp fu
 					d := toolCallDelta{Index: i, ID: c.ID, Type: "function"}
 					d.Function.Name, d.Function.Arguments = c.Name, c.Arguments
 					emitted = true
-					if err := writeData(meta.chunk(map[string]any{"tool_calls": []toolCallDelta{d}}, nil)); err != nil {
+					if err := writeChunk(meta.chunk(map[string]any{"tool_calls": []toolCallDelta{d}}, nil)); err != nil {
 						return err
 					}
 				}
@@ -284,7 +318,7 @@ loop:
 					streamErr = upstreamErr
 					break loop
 				}
-				if names != nil {
+				if names != nil && !isCodeArts {
 					// The client only knows the original tool names.
 					if restored, changed := names.RestoreJSON(data); changed {
 						data = restored
@@ -311,12 +345,18 @@ loop:
 					}
 					emitted = true
 				} else {
-					meta.update(c.top)
+					if !isCodeArts || !emitted {
+						meta.update(c.top)
+					}
 					if meta.pin != "" && c.top != nil {
 						c.top["model"] = json.RawMessage(strconv.Quote(meta.pin))
 					}
 					if u := c.usage(); u != nil && (lastUsage == nil || usageTotal(u) >= usageTotal(lastUsage)) {
 						lastUsage = append(json.RawMessage(nil), u...)
+					}
+					if isCodeArts {
+						delete(c.top, "usage")
+						meta.codeArtsEnvelope(c.top, start)
 					}
 					for i := range c.deltas {
 						if rs := c.reasoning(i); rs != "" {
@@ -325,6 +365,7 @@ loop:
 						}
 						if c.toolCalls(i) {
 							sawContent = true
+							sawTools = true
 						}
 						piece := c.content(i)
 						if piece != "" {
@@ -347,10 +388,10 @@ loop:
 							pendingFin = fr
 						}
 					}
-					if c.clean() {
+					if (!isCodeArts || len(c.choices) > 0) && c.clean() {
 						enc, eerr := c.encode()
 						if eerr == nil {
-							if werr := writeData(enc); werr != nil {
+							if werr := writeChunk(enc); werr != nil {
 								clientClosed = true
 								break loop
 							}
@@ -381,23 +422,34 @@ loop:
 			clientClosed = true
 		}
 		noteHeld(now)
-		if !clientClosed && streamErr == nil && (synthesized || pendingFin != "") {
+		if isCodeArts && streamErr == nil {
+			switch {
+			case pendingFin == "", sawTools && pendingFin == "stop":
+				pendingFin = "stop"
+				if sawTools {
+					pendingFin = "tool_calls"
+				}
+			}
+		}
+		reasoningOnly = streamErr == nil && !sawContent && sawReasoning && (!isCodeArts || pendingFin != "content_filter")
+		if !clientClosed && streamErr == nil && (!isCodeArts || !reasoningOnly) && (synthesized || pendingFin != "") {
 			reason := pendingFin
 			if synthesized {
 				reason = "tool_calls"
 			}
-			if werr := writeData(meta.chunk(map[string]string{}, &reason)); werr != nil {
+			if werr := writeChunk(meta.chunk(map[string]string{}, &reason)); werr != nil {
 				clientClosed = true
+			} else if isCodeArts && reason == "content_filter" {
+				emitted = true
 			}
 		}
 		if !clientClosed && streamErr == nil && !emitted {
 			errObj, _ := json.Marshal(map[string]apiError{"error": {Message: "empty upstream stream", Type: "server_error"}})
 			_ = writeData(errObj)
 		}
-		if !clientClosed && streamErr == nil && !sawContent && sawReasoning {
+		if !clientClosed && reasoningOnly {
 			// A reply that is nothing but thinking is not an answer: end the
 			// stream as an error instead of a fake success with empty content.
-			reasoningOnly = true
 			errObj, _ := json.Marshal(map[string]apiError{"error": {Message: reasoningOnlyMessage(pendingFin), Type: "server_error"}})
 			if writeData(errObj) != nil {
 				clientClosed = true
@@ -407,16 +459,22 @@ loop:
 			if streamErr != nil {
 				// Preserve buffered output, but never expose arbitrary upstream
 				// error details (which may contain credentials or request data).
-				h.noteStreamModelError(acc, model, streamErr)
+				h.noteStreamAccountFault(acc, streamRouteModel(r, model), streamErr)
 				errObj, _ := json.Marshal(map[string]apiError{"error": {
 					Message: h.streamErrorMessage(streamErr), Type: "server_error",
-					RequestID: requestIDOf(r), UpstreamCode: upstreamCodeOf([]byte(errText(streamErr))),
+					RequestID: requestIDOf(r), UpstreamCode: streamFaultCode(streamErr),
 				}})
 				if writeData(errObj) != nil {
 					clientClosed = true
 				}
 			} else if !reasoningOnly {
-				_, _ = bw.WriteString("data: [DONE]\n\n")
+				if includeUsage && lastUsage != nil {
+					clientClosed = writeData(meta.codeArtsUsage(lastUsage)) != nil
+				}
+				if !clientClosed {
+					_, err := bw.WriteString("data: [DONE]\n\n")
+					clientClosed = err != nil
+				}
 			}
 			if !clientClosed && flush() != nil {
 				clientClosed = true
@@ -440,7 +498,7 @@ loop:
 
 	ev := UsageEvent{At: start, Model: model, Account: acc.UID, KeyID: keyID, Stream: true,
 		Outcome: outcome, Status: status, Elapsed: time.Since(start), HeldFor: heldTotal, Usage: lastUsage, Chunks: nChunks, Effort: effort,
-		UpstreamCode: upstreamCodeOf([]byte(errText(streamErr))), RequestID: requestIDOf(r), Shape: shape}
+		UpstreamCode: streamFaultCode(streamErr), RequestID: requestIDOf(r), Shape: shape}
 	if !firstAt.IsZero() {
 		ev.TTFT = firstAt.Sub(start)
 		ev.Gen = lastAt.Sub(firstAt)
@@ -645,7 +703,7 @@ func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp fun
 	acc *pool.Account, model, keyID, effort string, start time.Time, names *codearts.ToolNameMap) {
 
 	res := h.collect(r, cancelUp, idleD, body, model, true)
-	if names != nil {
+	if names != nil && !realm.IsCodeArts(acc.Realm) {
 		for _, call := range res.calls {
 			fn, ok := call["function"].(map[string]any)
 			if !ok {
@@ -659,10 +717,11 @@ func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp fun
 	ev := res.usageEvent(acc, model, keyID, effort, start)
 	if res.err != nil {
 		markCollectedError(&ev, r)
+		ev.UpstreamCode, ev.RequestID, ev.Shape = streamFaultCode(res.err), requestIDOf(r), requestShapeFrom(r.Context())
 		h.emitWithLatency(r.Context(), ev)
-		h.noteStreamModelError(acc, model, res.err)
+		h.noteStreamAccountFault(acc, streamRouteModel(r, model), res.err)
 		if r.Context().Err() == nil {
-			writeError(w, http.StatusBadGateway, h.streamErrorMessage(res.err), "server_error")
+			writeErrorFields(w, http.StatusBadGateway, h.streamErrorMessage(res.err), "server_error", ev.RequestID, ev.UpstreamCode)
 		}
 		return
 	}
@@ -680,6 +739,9 @@ func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp fun
 	}
 	if len(res.calls) > 0 {
 		msg["tool_calls"] = res.calls
+		if realm.IsCodeArts(acc.Realm) && res.content == "" {
+			msg["content"] = nil
+		}
 	}
 	id := res.meta.id
 	if id == "" {
@@ -732,16 +794,58 @@ func (h *Handler) streamErrorMessage(err error) string {
 	return "upstream stream aborted"
 }
 
-// noteStreamModelError parks the model on the account when the upstream says
-// the account may not call it: otherwise every retry re-earns the same refusal.
-func (h *Handler) noteStreamModelError(acc *pool.Account, model string, err error) {
-	if acc == nil || err == nil {
+func streamFaultCode(err error) string {
+	var fault *codearts.ChatError
+	if errors.As(err, &fault) {
+		return fault.Code
+	}
+	return upstreamCodeOf([]byte(errText(err)))
+}
+
+func streamRouteModel(r *http.Request, fallback string) string {
+	if meta := metaFrom(r.Context()); meta != nil && meta.codeArtsModel != "" {
+		return meta.codeArtsModel
+	}
+	return fallback
+}
+
+// noteStreamAccountFault updates eligibility after a committed CodeArts reply.
+// This path only affects future requests. The current turn is never replayed.
+func (h *Handler) noteStreamAccountFault(acc *pool.Account, model string, err error) {
+	if acc == nil || err == nil || !realm.IsCodeArts(acc.Realm) {
 		return
 	}
-	if !realm.IsCodeArts(acc.Realm) || !codearts.IsModelAccessError([]byte(err.Error())) {
+	var fault *codearts.ChatError
+	if !errors.As(err, &fault) {
 		return
 	}
-	if rec, isNew := acc.NoteModelError(model, time.Time{}, 30*time.Minute, "codearts model access", truncate(err.Error(), 200), time.Now()); isNew && rec != nil {
+	now := time.Now()
+	acc.NoteResult(false)
+	code := fault.Code
+	var wait time.Duration
+	var until time.Time
+	var reason string
+	switch {
+	case fault.Status == http.StatusPaymentRequired:
+		acc.NoteBalanceCooled(fault.Error(), now)
+		return
+	case codearts.IsModelAccessError(fault.Body):
+		wait, reason = 30*time.Minute, "codearts model access"
+	case fault.Status == http.StatusTooManyRequests:
+		reset, hasReset := ratelimit.ParseReset(string(fault.Body))
+		if ratelimit.IsAccountLevel(string(fault.Body), hasReset) {
+			acc.NoteSoftRate(fault.Error(), now)
+			return
+		}
+		wait, reason = time.Minute, "codearts model throttled"
+		if hasReset {
+			until = reset
+			wait = max(time.Second, reset.Sub(now))
+		}
+	default:
+		return
+	}
+	if rec, isNew := acc.NoteModelError(model, until, wait, reason, code, now); isNew && rec != nil {
 		h.persistRecord(rec)
 	}
 }

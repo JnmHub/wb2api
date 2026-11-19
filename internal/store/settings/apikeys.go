@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"wb2api/internal/realm"
 )
 
 // APIKey is one client API key entry.
@@ -12,7 +14,7 @@ type APIKey struct {
 	ID               string
 	Name             string
 	Key              string
-	Realm            string // "", "intl" or "cn"
+	Realm            string // empty means any configured realm
 	Models           []string
 	Accounts         []string // account UID patterns; empty = every account
 	ConcurrencyLimit int
@@ -96,9 +98,9 @@ func (s *Store) APIKeys(includeDeleted bool) []APIKey {
 			if key == "" && deleted == "" {
 				continue
 			}
-			realm := strings.ToLower(strings.TrimSpace(truthyStr(m["realm"])))
-			if realm != "" && realm != "intl" && realm != "cn" {
-				realm = ""
+			realmName := strings.ToLower(strings.TrimSpace(truthyStr(m["realm"])))
+			if !realm.Valid(realmName) {
+				realmName = ""
 			}
 			conc := intOf(m["concurrency_limit"])
 			if conc == 0 {
@@ -118,7 +120,7 @@ func (s *Store) APIKeys(includeDeleted bool) []APIKey {
 				enabled = false
 			}
 			e := APIKey{
-				ID: truthyStr(m["id"]), Name: name, Key: key, Realm: realm,
+				ID: truthyStr(m["id"]), Name: name, Key: key, Realm: realmName,
 				Models: cleanModelPatterns(m["models"]), Accounts: cleanAccountPatterns(m["accounts"]),
 				ConcurrencyLimit: conc,
 				TPSLimit:         keyTPSLimit(m), Enabled: enabled,

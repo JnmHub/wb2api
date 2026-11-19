@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"wb2api/internal/jsonx"
 )
 
 // A shortened declaration must be referenced by the same name everywhere else:
@@ -32,14 +34,24 @@ func TestShortenedToolNamesStayConsistent(t *testing.T) {
 	t.Run("object choice", func(t *testing.T) {
 		shaped := newObj(t, fmt.Sprintf(`{
 			"messages":[{"role":"user","content":"hi"}],
-			"tools":[{"type":"function","function":{"name":%q,"parameters":{"type":"object"}}}],
+			"tools":[{"type":"function","function":{"name":"other"}},{"type":"function","function":{"name":%q,"parameters":{"type":"object"}}}],
 			"tool_choice":{"type":"function","function":{"name":%q}}
 		}`, long, long))
-		body, _, err := PrepareBody(shaped, "deepseek-v4.1-flash", "")
+		before, _ := jsonx.Marshal(shaped)
+		body, names, err := PrepareBody(shaped, "deepseek-v4.1-flash", "")
 		if err != nil {
 			t.Fatal(err)
 		}
 		assertChoiceMatchesDeclaration(t, body)
+		wire := parseObj(t, body)
+		tools, _ := wire.Arr("tools")
+		if name := toolFunctionName(tools[0]); names.RestoreName(name) != long {
+			t.Fatalf("selected tool = %q", name)
+		}
+		after, _ := jsonx.Marshal(shaped)
+		if string(before) != string(after) {
+			t.Fatalf("preparation changed the original request: %s", after)
+		}
 	})
 
 	t.Run("history tool_calls", func(t *testing.T) {
@@ -51,6 +63,7 @@ func TestShortenedToolNamesStayConsistent(t *testing.T) {
 			],
 			"tools":[{"type":"function","function":{"name":%q,"parameters":{"type":"object"}}}]
 		}`, long, long))
+		before, _ := jsonx.Marshal(shaped)
 		body, _, err := PrepareBody(shaped, "deepseek-v4.1-flash", "")
 		if err != nil {
 			t.Fatal(err)
@@ -73,6 +86,10 @@ func TestShortenedToolNamesStayConsistent(t *testing.T) {
 		if got := wire.Messages[0].ToolCalls[0].Function.Name; got != declared {
 			t.Fatalf("history name %q does not match the declaration %q", got, declared)
 		}
+		after, _ := jsonx.Marshal(shaped)
+		if string(before) != string(after) {
+			t.Fatalf("preparation changed the original history: %s", after)
+		}
 	})
 }
 
@@ -92,17 +109,8 @@ func assertChoiceMatchesDeclaration(t *testing.T, body []byte) {
 	if len([]rune(declared)) > MaxToolNameChars {
 		t.Fatalf("declaration is still %d chars", len([]rune(declared)))
 	}
-	var chosen string
-	switch c := wire.Choice.(type) {
-	case string:
-		chosen = c
-	case map[string]any:
-		if fn, ok := c["function"].(map[string]any); ok {
-			chosen, _ = fn["name"].(string)
-		}
-	}
-	if chosen != declared {
-		t.Fatalf("tool_choice %q does not match the declared %q", chosen, declared)
+	if wire.Choice != "required" {
+		t.Fatalf("tool_choice %v must require the selected declaration %q", wire.Choice, declared)
 	}
 }
 
@@ -110,7 +118,7 @@ func assertChoiceMatchesDeclaration(t *testing.T, body []byte) {
 // the request goes out; everything else is forwarded as the client sent it.
 func TestPrepareBodyDropsRejectedParamCombos(t *testing.T) {
 	shaped := newObj(t, `{"messages":[{"role":"user","content":"hi"}],
-		"max_tokens":256,"max_completion_tokens":512,"n":3,"stream_options":{"include_usage":true},
+		"max_tokens":256,"max_completion_tokens":512,"n":1,"stream_options":{"include_usage":false},
 		"temperature":0.7,"top_p":0.9,"response_format":{"type":"json_object"}}`)
 	body, _, err := PrepareBody(shaped, "deepseek-v4.1-flash", "")
 	if err != nil {
@@ -120,8 +128,8 @@ func TestPrepareBodyDropsRejectedParamCombos(t *testing.T) {
 	if got.Has("max_completion_tokens") {
 		t.Fatal("two output budgets must not both be sent")
 	}
-	if got.Has("n") || got.Has("stream_options") {
-		t.Fatal("unsupported fields must be dropped")
+	if got.Has("n") || !IncludeUsage(got) {
+		t.Fatal("wire must omit n and collect usage for accounting")
 	}
 	if raw := got.Get("max_tokens"); raw == nil || fmt.Sprint(raw) != "256" {
 		t.Fatalf("max_tokens = %v", raw)
@@ -129,5 +137,18 @@ func TestPrepareBodyDropsRejectedParamCombos(t *testing.T) {
 	// Supported fields survive untouched.
 	if !got.Has("temperature") || !got.Has("response_format") {
 		t.Fatal("supported fields were removed")
+	}
+}
+
+func TestPrepareBodyRejectsUnsupportedChoices(t *testing.T) {
+	for _, input := range []string{
+		`{"messages":[],"n":2}`,
+		`{"messages":[],"n":"1"}`,
+		`{"messages":[],"tool_choice":"required"}`,
+		`{"messages":[],"tool_choice":{"type":"function","function":{"name":"absent"}}}`,
+	} {
+		if _, _, err := PrepareBody(newObj(t, input), "deepseek-v4.1-flash", ""); err == nil {
+			t.Fatalf("accepted %s", input)
+		}
 	}
 }

@@ -137,6 +137,8 @@ func (h *Handler) messagesWhole(q *request, acc *pool.Account, cancel context.Ca
 	ev := res.usageEvent(acc, model, q.keyID, q.effort(h), q.start)
 	if res.err != nil {
 		markCollectedError(&ev, q.r)
+		ev.UpstreamCode, ev.RequestID, ev.Shape = streamFaultCode(res.err), q.requestID, q.shape
+		h.noteStreamAccountFault(acc, q.model, res.err)
 		h.emitWithLatency(q.r.Context(), ev)
 		if q.r.Context().Err() == nil {
 			writeAnthropicError(q.w, http.StatusBadGateway, "upstream stream aborted")
@@ -281,6 +283,7 @@ func (h *Handler) messagesStream(q *request, acc *pool.Account, cancelUp context
 	switch {
 	case clientClosed:
 	case streamErr != nil:
+		h.noteStreamAccountFault(acc, q.model, streamErr)
 		_, _ = bw.Write(anthropic.ErrorFrame("api_error", "upstream stream aborted"))
 	case !sawContent && sawReasoning:
 		// Thinking without an answer is a failure, not a blank success.
@@ -307,7 +310,7 @@ func (h *Handler) messagesStream(q *request, acc *pool.Account, cancelUp context
 	}
 	ev := UsageEvent{At: q.start, Model: model, Account: acc.UID, KeyID: q.keyID, Stream: true, Outcome: outcome,
 		Status: status, Elapsed: time.Since(q.start), Usage: usageJSON(s.Usage()), Chunks: nChunks, Effort: q.effort(h),
-		UpstreamCode: upstreamCodeOf([]byte(errText(streamErr))), RequestID: q.requestID, Shape: q.shape}
+		UpstreamCode: streamFaultCode(streamErr), RequestID: q.requestID, Shape: q.shape}
 	if !firstAt.IsZero() {
 		ev.TTFT, ev.Gen = firstAt.Sub(q.start), lastAt.Sub(firstAt)
 	}

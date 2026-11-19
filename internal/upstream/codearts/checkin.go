@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,36 +27,84 @@ const (
 // upstream payload is deliberately not kept: only the identity and the state
 // machine matter here.
 type Campaign struct {
-	ID                 int     `json:"campaignId"`
-	Title              string  `json:"title"`
-	Status             string  `json:"status"`
-	Claimable          bool    `json:"claimable"`
-	BenefitUnit        string  `json:"benefitUnit"`
-	BenefitAmount      float64 `json:"benefitAmount"`
-	PendingTotalAmount float64 `json:"pendingTotalAmount"`
+	ID                 json.RawMessage `json:"campaignId"`
+	Type               string          `json:"type"`
+	Title              string          `json:"title"`
+	Status             string          `json:"status"`
+	Claimable          bool            `json:"claimable"`
+	BenefitUnit        string          `json:"benefitUnit"`
+	BenefitAmount      float64         `json:"benefitAmount"`
+	PendingTotalAmount float64         `json:"pendingTotalAmount"`
 	Extra              struct {
 		StartTime string `json:"startTime"`
 		EndTime   string `json:"endTime"`
 	} `json:"extra"`
 }
 
-// ClaimResult is the outcome of one campaign.
-type ClaimResult struct {
-	CampaignID int     `json:"campaign_id"`
-	Title      string  `json:"title"`
-	OK         bool    `json:"ok"`
-	Status     string  `json:"status"`
-	Credits    float64 `json:"credits,omitempty"`
-	Message    string  `json:"message"`
+// Key normalizes numeric and string IDs for local bookkeeping. The signed
+// write still carries the value with the JSON type returned by the vendor.
+func (c Campaign) Key() string {
+	var id string
+	if json.Unmarshal(c.ID, &id) == nil {
+		return id
+	}
+	var n json.Number
+	if json.Unmarshal(c.ID, &n) == nil {
+		return n.String()
+	}
+	return ""
 }
 
-// CheckinResult reports one account's check-in. Credits is what this call
-// claimed, not a balance.
-type CheckinResult struct {
-	OK        bool          `json:"ok"`
-	Credits   float64       `json:"credits,omitempty"`
-	Message   string        `json:"message"`
-	Campaigns []ClaimResult `json:"campaigns"`
+func (c Campaign) IsDailyCredit() bool {
+	return strings.EqualFold(strings.TrimSpace(c.Type), "USER_LOGIN") &&
+		strings.EqualFold(strings.TrimSpace(c.BenefitUnit), "CREDIT")
+}
+
+func (c Campaign) State() string { return strings.ToUpper(strings.TrimSpace(c.Status)) }
+
+func (c Campaign) Confirmed() bool {
+	return !c.Claimable && (c.State() == "CONFIRMED" || c.State() == "CONSUMED")
+}
+
+func (c Campaign) WithinPeriod(now time.Time) bool {
+	if start, err := time.Parse(time.RFC3339Nano, c.Extra.StartTime); err == nil && now.Before(start) {
+		return false
+	}
+	if end, err := time.Parse(time.RFC3339Nano, c.Extra.EndTime); err == nil && !now.Before(end) {
+		return false
+	}
+	return true
+}
+
+type CreditHTTPError struct {
+	Path, Body string
+	Status     int
+	RetryAfter string
+}
+
+func (e *CreditHTTPError) Error() string {
+	return fmt.Sprintf("codearts %s HTTP %d: %s", e.Path, e.Status, e.Body)
+}
+
+type CreditBusinessError struct {
+	Path, Message string
+	Code          int
+}
+
+func (e *CreditBusinessError) Error() string {
+	return fmt.Sprintf("codearts %s: code=%d message=%s", e.Path, e.Code, e.Message)
+}
+
+func CreditRetryTime(err error, now time.Time) time.Time {
+	var httpErr *CreditHTTPError
+	if !errors.As(err, &httpErr) || (httpErr.Status != http.StatusTooManyRequests && httpErr.Status != http.StatusServiceUnavailable) {
+		return time.Time{}
+	}
+	if seconds, convErr := strconv.ParseInt(httpErr.RetryAfter, 10, 32); convErr == nil && seconds > 0 {
+		return now.Add(time.Duration(seconds) * time.Second)
+	}
+	t, _ := http.ParseTime(httpErr.RetryAfter)
+	return t
 }
 
 // creditRequest signs and sends one credit operation and unwraps the
@@ -99,7 +149,7 @@ func creditRequest(ctx context.Context, hc *http.Client, base, method, path stri
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("codearts %s HTTP %d: %s", path, resp.StatusCode, truncate(string(response), 300))
+		return nil, &CreditHTTPError{Path: path, Status: resp.StatusCode, Body: truncate(string(response), 300), RetryAfter: resp.Header.Get("Retry-After")}
 	}
 	var envelope struct {
 		Code    *int            `json:"code"`
@@ -113,9 +163,30 @@ func creditRequest(ctx context.Context, hc *http.Client, base, method, path stri
 		return nil, fmt.Errorf("codearts %s: response has no business code", path)
 	}
 	if *envelope.Code != 0 {
-		return nil, fmt.Errorf("codearts %s: code=%d message=%s", path, *envelope.Code, truncate(envelope.Message, 200))
+		return nil, &CreditBusinessError{Path: path, Code: *envelope.Code, Message: truncate(envelope.Message, 200)}
 	}
 	return envelope.Data, nil
+}
+
+// ClaimCredit and ConfirmCredit are separate protocol steps. The account
+// service assigns and persists the claim's stable key before either write.
+func ClaimCredit(ctx context.Context, hc *http.Client, base string, cred Credential, c Campaign, key string) error {
+	raw, err := creditRequest(ctx, hc, base, http.MethodPost, ClaimPath, map[string]any{
+		"campaignId": c.ID, "channel": CreditChannel, "idempotentKey": key,
+	}, cred)
+	if err != nil {
+		return err
+	}
+	var receipt Campaign
+	if err := json.Unmarshal(raw, &receipt); err != nil || receipt.Key() == "" || receipt.Key() != c.Key() {
+		return errors.New("codearts: claim receipt campaign ID does not match")
+	}
+	return nil
+}
+
+func ConfirmCredit(ctx context.Context, hc *http.Client, base string, cred Credential, c Campaign) error {
+	_, err := creditRequest(ctx, hc, base, http.MethodPost, ConfirmPath, map[string]any{"campaignId": c.ID}, cred)
+	return err
 }
 
 // FetchCampaigns lists the credit activities of one account.
@@ -134,135 +205,4 @@ func FetchCampaigns(ctx context.Context, hc *http.Client, base string, cred Cred
 		return nil, fmt.Errorf("codearts: campaign list has no items")
 	}
 	return *data.Items, nil
-}
-
-// Checkin claims the daily sign-in (campaign 1) and the new-user reward
-// (campaign 4). Eligibility and the daily refresh are decided by the upstream:
-// a CLAIMED campaign is only confirmed, never claimed twice, which is why the
-// caller must serialise calls per account.
-func Checkin(ctx context.Context, hc *http.Client, base string, cred Credential, now time.Time) (CheckinResult, error) {
-	campaigns, err := FetchCampaigns(ctx, hc, base, cred)
-	if err != nil {
-		return CheckinResult{Message: err.Error()}, err
-	}
-	out := CheckinResult{OK: true, Campaigns: make([]ClaimResult, 0, len(campaigns))}
-	worked := map[int]bool{}
-	for _, c := range campaigns {
-		if c.ID != 1 && c.ID != 4 {
-			continue
-		}
-		if c.BenefitUnit != "" && c.BenefitUnit != "CREDIT" {
-			continue
-		}
-		res, wrote := claimCampaign(ctx, hc, base, cred, c, now)
-		if wrote {
-			worked[c.ID] = true
-		}
-		out.Campaigns = append(out.Campaigns, res)
-		out.OK = out.OK && res.OK
-		out.Credits += res.Credits
-	}
-	// Re-read the official list: claim/confirm answering code:0 only means the
-	// request was accepted, not that the credit landed. Reporting success
-	// before the list says CONFIRMED is how a panel shows "+4000" that was
-	// never granted.
-	if len(worked) > 0 {
-		if verified, verr := FetchCampaigns(ctx, hc, base, cred); verr == nil {
-			for i := range out.Campaigns {
-				if !worked[out.Campaigns[i].CampaignID] {
-					continue
-				}
-				if !campaignConfirmed(verified, out.Campaigns[i].CampaignID) {
-					out.Campaigns[i].OK = false
-					out.Campaigns[i].Message = "已提交，官方活动列表尚未确认到账"
-					out.OK = false
-				}
-			}
-		} else {
-			out.OK = false
-			out.Message = "领取已提交，但回读活动列表失败：" + verr.Error()
-		}
-	}
-
-	parts := make([]string, 0, len(out.Campaigns))
-	for _, res := range out.Campaigns {
-		parts = append(parts, res.Title+": "+res.Message)
-	}
-	out.Message = strings.Join(parts, "; ")
-	if len(parts) == 0 {
-		out.Message = "无可领取的签到或新手活动"
-	}
-	return out, nil
-}
-
-// campaignConfirmed reports whether the re-read list shows the campaign as
-// credited.
-func campaignConfirmed(list []Campaign, id int) bool {
-	for _, c := range list {
-		if c.ID != id {
-			continue
-		}
-		switch strings.ToUpper(strings.TrimSpace(c.Status)) {
-		case "CONFIRMED", "CONSUMED":
-			return true
-		}
-	}
-	return false
-}
-
-func claimCampaign(ctx context.Context, hc *http.Client, base string, cred Credential, c Campaign, now time.Time) (ClaimResult, bool) {
-	res := ClaimResult{CampaignID: c.ID, Title: c.Title, Status: strings.TrimSpace(c.Status), OK: true}
-	if res.Title == "" {
-		res.Title = fmt.Sprintf("积分活动 %d", c.ID)
-	}
-	if end, err := time.Parse(time.RFC3339Nano, c.Extra.EndTime); err == nil && !now.Before(end) {
-		res.Message = "活动已结束"
-		return res, false
-	}
-	if start, err := time.Parse(time.RFC3339Nano, c.Extra.StartTime); err == nil && now.Before(start) {
-		res.Message = "活动尚未开始"
-		return res, false
-	}
-	switch res.Status {
-	case "CONFIRMED", "CONSUMED":
-		res.Message = "已领取"
-		return res, false
-	case "CLAIMED":
-		// Credited but not confirmed: never claim again, only confirm.
-	case "ELIGIBLE":
-		if !c.Claimable {
-			res.OK, res.Message = false, "暂不可领取，稍后重试"
-			return res, false
-		}
-		_, err := creditRequest(ctx, hc, base, http.MethodPost, ClaimPath, map[string]any{
-			"campaignId":    c.ID,
-			"channel":       CreditChannel,
-			"idempotentKey": fmt.Sprintf("claim_%d_%d", c.ID, now.UnixMilli()),
-		}, cred)
-		if err != nil {
-			res.OK, res.Message = false, err.Error()
-			return res, false
-		}
-		res.Status = "CLAIMED"
-		res.Credits = c.PendingTotalAmount
-		if res.Credits <= 0 {
-			res.Credits = c.BenefitAmount
-		}
-	case "":
-		res.Message = "未获得活动资格"
-		return res, false
-	default:
-		res.OK, res.Message = false, "未知活动状态: "+res.Status
-		return res, false
-	}
-	if _, err := creditRequest(ctx, hc, base, http.MethodPost, ConfirmPath, map[string]any{"campaignId": c.ID}, cred); err != nil {
-		res.OK, res.Message = false, "已领取，确认失败，稍后重试: "+err.Error()
-		return res, true
-	}
-	res.Status = "CONFIRMED"
-	res.Message = "已补确认"
-	if res.Credits > 0 {
-		res.Message = fmt.Sprintf("领取成功（%g 积分）", res.Credits)
-	}
-	return res, true
 }

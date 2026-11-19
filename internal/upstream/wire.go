@@ -31,6 +31,8 @@ type Request struct {
 	Body    []byte
 	// HeaderTimeout overrides the wire's response-header timeout (0 = default).
 	HeaderTimeout time.Duration
+	// OnPhase observes the duration of an outbound phase, including failed I/O.
+	OnPhase func(phase string, elapsed time.Duration)
 }
 
 // Wire is a minimal HTTP/1.1 client that owns the exact bytes put on the
@@ -44,8 +46,10 @@ type Wire struct {
 	// Roots overrides the trust store (tests); nil uses the system pool.
 	Roots *x509.CertPool
 
-	mu   sync.Mutex
-	idle map[string][]*wireConn
+	mu            sync.Mutex
+	idle          map[string][]*wireConn
+	leaseHTTPOnce sync.Once
+	leaseHTTP     *http.Client
 }
 
 type wireConn struct {
@@ -159,6 +163,18 @@ func (w *Wire) CloseIdle() {
 	}
 }
 
+func (w *Wire) leaseHTTPClient() *http.Client {
+	w.leaseHTTPOnce.Do(func() {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = http.ProxyURL(w.Proxy)
+		transport.MaxIdleConnsPerHost = 4
+		w.leaseHTTP = &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}}
+	})
+	return w.leaseHTTP
+}
+
 func (w *Wire) dial(ctx context.Context, scheme, host, port string) (net.Conn, error) {
 	d := net.Dialer{Timeout: w.T.Dial, KeepAlive: 30 * time.Second}
 	target := net.JoinHostPort(host, port)
@@ -186,6 +202,8 @@ func (w *Wire) dial(ctx context.Context, scheme, host, port string) (net.Conn, e
 		return raw, nil // plain HTTP through a proxy uses absolute-form requests
 	}
 	// CONNECT tunnel for https targets.
+	stop := context.AfterFunc(ctx, func() { raw.Close() })
+	defer stop()
 	_ = raw.SetDeadline(time.Now().Add(w.T.Dial + w.T.TLS))
 	var req strings.Builder
 	fmt.Fprintf(&req, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n", target, target)
@@ -306,7 +324,11 @@ func (w *Wire) Do(ctx context.Context, r Request) (*http.Response, error) {
 		c := w.takeIdle(key)
 		reused := c != nil
 		if c == nil {
+			start := time.Now()
 			raw, derr := w.dial(ctx, scheme, host, port)
+			if r.OnPhase != nil {
+				r.OnPhase("connect_tls", time.Since(start))
+			}
 			if derr != nil {
 				return nil, derr
 			}
@@ -374,7 +396,11 @@ func (w *Wire) exchange(ctx context.Context, c *wireConn, r Request, hostHeader,
 		_ = c.SetDeadline(time.Now().Add(hdrTimeout))
 	}
 	request := w.buildRequest(r, hostHeader, selector)
+	start := time.Now()
 	n, err := c.Write(request)
+	if r.OnPhase != nil {
+		r.OnPhase("upload", time.Since(start))
+	}
 	if err == nil && n != len(request) {
 		err = io.ErrShortWrite
 	}
@@ -394,7 +420,11 @@ func (w *Wire) exchange(ctx context.Context, c *wireConn, r Request, hostHeader,
 	if method == "" {
 		method = http.MethodPost
 	}
+	start = time.Now()
 	resp, err := http.ReadResponse(c.br, &http.Request{Method: method})
+	if r.OnPhase != nil {
+		r.OnPhase("headers", time.Since(start))
+	}
 	if err != nil {
 		stop()
 		if ctx.Err() != nil {

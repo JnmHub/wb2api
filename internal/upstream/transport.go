@@ -5,11 +5,17 @@
 package upstream
 
 import (
+	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 )
+
+// LeaseHTTPClient gives heartbeat calls the same account-specific route as chat.
+func (m *Manager) LeaseHTTPClient(uid, proxy string) *http.Client {
+	return m.Wire(uid, proxy).leaseHTTPClient()
+}
 
 // Timeouts are the layered limits applied to every upstream call. There is no
 // total-duration cap: a healthy stream may run for minutes.

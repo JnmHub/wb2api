@@ -103,6 +103,10 @@ create table if not exists wb_state (
 	data jsonb not null,
 	updated_at timestamptz not null default now()
 );
+create table if not exists wb_codearts_sts_egress (
+	egress text primary key,
+	next_at timestamptz not null
+);
 create table if not exists wb_jobs (
 	id text primary key,
 	data jsonb not null,

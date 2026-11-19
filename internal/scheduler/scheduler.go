@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"wb2api/internal/codeartsync"
 	"wb2api/internal/ops"
 	"wb2api/internal/pool"
 	"wb2api/internal/quota"
@@ -29,22 +30,10 @@ type Tokens interface {
 	Refresh(ctx context.Context, a *pool.Account) error
 }
 
-// Channel runs the chores of an upstream channel that has its own API
-// (currently Huawei Cloud CodeArts: a daily credit check-in). A nil Channel
-// skips that channel entirely.
+// Channel runs the independent CodeArts daily credit task.
 type Channel interface {
-	// CanCheckin reports whether the account still needs today's check-in.
 	CanCheckin(acc *pool.Account) bool
-	// Checkin runs it; ok is the upstream verdict, msg explains it. manual
-	// requests bypass the channel's unattended write budget.
-	Checkin(ctx context.Context, acc *pool.Account, manual bool) (ok bool, msg string, err error)
-}
-
-func errText(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
+	RunDaily(ctx context.Context, acc *pool.Account, trigger string) (codeartsync.DailyResult, error)
 }
 
 // Scheduler is the background job runner.
@@ -78,6 +67,7 @@ type Scheduler struct {
 	logs     []string
 	parked   map[string]time.Time // accounts whose balance refresh failed, until when
 	credits  CreditsRefreshState
+	daily    codeArtsRun
 	probing  atomic.Bool
 	scanning atomic.Bool
 }
@@ -234,12 +224,17 @@ func (s *Scheduler) cycle(ctx context.Context, reason string, force bool) {
 	chatDue := force || dueInGrid(sched["daily_chat"], hour)
 	travelHours := force || hoursInclude(sched["travel"], hour)
 	nightHours := force || hoursInclude(sched["cat"], hour)
-	accs := append([]*pool.Account(nil), s.Pool.All()...)
+	var accs []*pool.Account
+	for _, acc := range s.Pool.All() {
+		if !realm.IsCodeArts(acc.Realm) {
+			accs = append(accs, acc)
+		}
+	}
 	if len(accs) == 0 {
 		s.note("暂无可用的活跃账号，跳过本次巡检")
 		return
 	}
-	var kept, checkin, report, chat, travel, hwCheckin int
+	var kept, checkin, report, chat, travel int
 	for i, acc := range accs {
 		if ctx.Err() != nil {
 			return
@@ -331,19 +326,6 @@ func (s *Scheduler) cycle(ctx context.Context, reason string, force bool) {
 					s.note("! 账号 [%s] 夜猫子失败: %s", uid8, firstNonEmpty(res.Error, res.Msg))
 				}
 			}
-		case realm.CodeArts:
-			// The Huawei channel has exactly one chore: claiming the daily
-			// points. It has no activity report, growth tasks or daily chat.
-			if checkinDue && s.Channel != nil && s.Channel.CanCheckin(acc) {
-				ok, msg, err := s.Channel.Checkin(ctx, acc, false)
-				if ok && err == nil {
-					hwCheckin++
-					s.note("✓ 账号 [%s] 华为 CodeArts 签到: %s", uid8, msg)
-				} else {
-					s.note("! 账号 [%s] 华为 CodeArts 签到未成功: %s", uid8, firstNonEmpty(msg, errText(err)))
-				}
-				s.pause(time.Second)
-			}
 		case realm.Intl:
 			if chatDue && s.Ops.CanDailyChat(acc) {
 				res := s.Ops.DailyChat(ctx, acc, "scheduler")
@@ -357,9 +339,10 @@ func (s *Scheduler) cycle(ctx context.Context, reason string, force bool) {
 		}
 	}
 	s.mu.Lock()
-	s.lastNote = fmt.Sprintf("Token保活 %d，国内签到 %d，活跃上报 %d，猫猫日常 %d，国际活跃 %d，华为签到 %d", kept, checkin, report, travel, chat, hwCheckin)
+	lastNote := fmt.Sprintf("Token保活 %d，国内签到 %d，活跃上报 %d，猫猫日常 %d，国际活跃 %d", kept, checkin, report, travel, chat)
+	s.lastNote = lastNote
 	s.mu.Unlock()
-	s.note("巡检完成：%s", s.lastNote)
+	s.note("巡检完成：%s", lastNote)
 }
 
 func firstNonEmpty(a, b string) string {
@@ -419,10 +402,11 @@ func (s *Scheduler) Run(ctx context.Context) {
 	if s.isLeader() {
 		s.runWindows(ctx)
 		s.runScans(ctx)
+		s.runCodeArts(ctx, false)
 		if s.Settings.SchedulerEnabled() {
 			// The start-up pass is a catch-up: a replica that comes back after
 			// the configured hour still checks in and chats once for the day.
-			s.cycle(ctx, "启动初次初始化巡检", true)
+			go s.cycle(ctx, "启动初次初始化巡检", true)
 		}
 	}
 	lastFired := time.Time{}
@@ -439,6 +423,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		}
 		s.runWindows(ctx)
 		s.runScans(ctx)
+		s.runCodeArts(ctx, false)
 		now := s.now()
 		if !s.Settings.SchedulerEnabled() || now.Minute() != 0 || now.Sub(lastFired) < 2*time.Minute {
 			continue
@@ -446,7 +431,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		for _, h := range s.hours() {
 			if h == now.Hour() {
 				lastFired = now
-				s.Cycle(ctx, fmt.Sprintf("整点排程命中 (%d:00)", h))
+				go s.Cycle(ctx, fmt.Sprintf("整点排程命中 (%d:00)", h))
 				break
 			}
 		}
@@ -463,6 +448,7 @@ type Status struct {
 	Schedule map[string][]int    `json:"schedule"`
 	Logs     []string            `json:"logs"`
 	Credits  CreditsRefreshState `json:"credits"`
+	CodeArts CodeArtsDailyState  `json:"codearts_daily"`
 }
 
 // CreditsRefreshState is the background balance refresher's progress.
@@ -476,10 +462,11 @@ type CreditsRefreshState struct {
 // Status returns the current state.
 func (s *Scheduler) Status() Status {
 	next := s.NextFire()
+	codeArts := s.codeArtsStatus()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := Status{Enabled: s.Settings.SchedulerEnabled(), Running: s.running, LastNote: s.lastNote,
-		Schedule: s.Settings.ScheduleHours(), Logs: append([]string(nil), s.logs...)}
+		Schedule: s.Settings.ScheduleHours(), Logs: append([]string{}, s.logs...), CodeArts: codeArts}
 	st.LastRun, st.NextRun = "尚未运行", "待调度"
 	if !s.lastRun.IsZero() {
 		st.LastRun = s.lastRun.Format("2006-01-02 15:04:05")

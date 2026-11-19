@@ -35,6 +35,9 @@ func (h *Handler) startAdmission(q *request) {
 		q.at.capacity = &admissionState{started: time.Now()}
 		if h.AccountWait > 0 {
 			q.at.admissionDeadline = time.Now().Add(h.AccountWait)
+			if !q.codeArtsDeadline.IsZero() && q.codeArtsDeadline.Before(q.at.admissionDeadline) {
+				q.at.admissionDeadline = q.codeArtsDeadline
+			}
 		}
 	}
 }
@@ -58,6 +61,9 @@ func (h *Handler) admissionBudget(q *request) time.Duration {
 	budget := time.Second
 	if !q.at.admissionDeadline.IsZero() {
 		budget = minDur(budget, time.Until(q.at.admissionDeadline))
+	}
+	if !q.codeArtsDeadline.IsZero() {
+		budget = minDur(budget, time.Until(q.codeArtsDeadline))
 	}
 	return budget
 }

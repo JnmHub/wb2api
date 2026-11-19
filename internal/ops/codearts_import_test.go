@@ -105,6 +105,46 @@ func TestImportCodeArtsRejectsIncompleteRow(t *testing.T) {
 	}
 }
 
+func TestImportAgent2APICodeArtsExport(t *testing.T) {
+	key, err := codearts.NewDPoPKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiry := time.Now().Add(time.Hour).Truncate(time.Second)
+	row := Row{
+		"provider": "codearts", "id": "agent-local-id", "user_id": "hw-agent",
+		"domain_id": "hw-domain", "accessToken": "AK1", "access_key_id": "AK1",
+		"secret_access_key": "SK1", "security_token": "STS1", "expiresAt": expiry.UnixMilli(),
+		"refresh_token": "rt", "name": "供迁移的账号",
+		"oauth_context": Row{
+			"pkce_pair":     Row{"code_verifier": "verifier"},
+			"dpop_key_pair": Row{"private_key_jwk": key},
+		},
+	}
+	raw, _ := json.Marshal(map[string]any{"version": 1, "accounts": []Row{row}})
+	rows, err := ParseDocument(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, p, saved := newImportClient(t)
+	if rep := c.Import(rows, realm.CodeArts, false, true); len(rep.Added) != 1 || len(*saved) != 0 {
+		t.Fatalf("dry-run: %+v", rep)
+	}
+	if rep := c.Import(rows, realm.CodeArts, false, false); len(rep.Added) != 1 {
+		t.Fatalf("import: %+v", rep)
+	}
+	rec := p.Get("hw-agent").Record()
+	if rec.AccessToken != "STS1" || rec.ExpiresAt != expiry.Unix() ||
+		codearts.ClientIDOf(rec) != "vscode-codebot" || codearts.CodeVerifierOf(rec) != "verifier" ||
+		codearts.DPoPKeyOf(rec)["d"] == "" || rec.CodeArtsFields()["domain_id"] != "hw-domain" {
+		t.Fatalf("incorrect credential projection for %s", rec.UID)
+	}
+	delete(rows[0], "security_token")
+	if rep := c.Import(rows, realm.CodeArts, true, true); len(rep.Invalid) != 1 {
+		t.Fatalf("generic accessToken carries the AK and cannot replace STS: %+v", rep)
+	}
+}
+
 // A secret-free export must not leak the AK/SK chain.
 func TestExportWithoutSecretsDropsCodeArtsCredential(t *testing.T) {
 	p := pool.New([]*accounts.Record{{

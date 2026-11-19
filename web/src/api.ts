@@ -371,6 +371,10 @@ export interface ActivityRow {
   trigger: string
   ok: boolean
   message: string
+  state?: string
+  day?: string
+  credits?: number
+  next_retry_at?: number
 }
 
 export interface ActivityList {
@@ -389,6 +393,19 @@ export interface SchedulerStatus {
   schedule: Record<string, number[]>
   logs: string[]
   credits: { ttl_hours: number; last_run: string; last_uid: string; last_error: string }
+  codearts_daily: CodeArtsDailyStatus
+}
+
+export interface CodeArtsDailyStatus {
+  available: boolean
+  enabled: boolean
+  time: string
+  uids: string[]
+  running: boolean
+  last_run_at?: string
+  next_run_at?: string
+  account_count: number
+  states: Record<string, number>
 }
 
 export interface ActionResult {

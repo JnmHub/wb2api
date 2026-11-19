@@ -24,6 +24,16 @@ const HeartbeatPath = "/snap-manager/v1/chat-session/heartbeat"
 // HeartbeatInterval is the renewal period of a busy lease.
 const HeartbeatInterval = 30 * time.Second
 
+// HeartbeatError is a response rejecting the proposed lease change.
+type HeartbeatError struct {
+	Status int
+	Body   []byte
+}
+
+func (e *HeartbeatError) Error() string {
+	return fmt.Sprintf("codearts heartbeat rejected (HTTP %d)", e.Status)
+}
+
 // SessionStatus values accepted by the heartbeat endpoint.
 const (
 	SessionBusy = "busy"
@@ -81,12 +91,19 @@ func Heartbeat(ctx context.Context, hc *http.Client, base string, cred Credentia
 		return fmt.Errorf("codearts heartbeat: %w", err)
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("codearts heartbeat: %w", err)
+	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("codearts heartbeat HTTP %d: %s", resp.StatusCode, truncate(string(raw), 200))
+		return &HeartbeatError{Status: resp.StatusCode, Body: raw}
 	}
 	if !heartbeatAccepted(raw) {
-		return fmt.Errorf("codearts heartbeat not confirmed for %s: %s", status, truncate(string(raw), 200))
+		status := http.StatusBadGateway
+		if fault := ParseChatError(raw); fault != nil {
+			status = fault.Status
+		}
+		return &HeartbeatError{Status: status, Body: raw}
 	}
 	return nil
 }

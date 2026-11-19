@@ -37,7 +37,16 @@ type UsageEvent struct {
 	RequestID string
 	// Shape describes the outbound body structurally (no content) so a rejected
 	// request can be rebuilt without the original text.
-	Shape *RequestShape
+	Shape            *RequestShape
+	CodeArtsAttempts []CodeArtsAttempt
+}
+
+// CodeArtsAttempt records the actual account and outbound phases without
+// recording any request, response, or credential contents.
+type CodeArtsAttempt struct {
+	Account string             `json:"account"`
+	Result  string             `json:"result,omitempty"`
+	Phases  map[string]float64 `json:"phases_ms,omitempty"`
 }
 
 // RequestShape is a structural summary of what was actually sent upstream.

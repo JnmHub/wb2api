@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -14,8 +15,10 @@ import (
 	"wb2api/internal/jsonx"
 	"wb2api/internal/pool"
 	"wb2api/internal/quota"
+	"wb2api/internal/realm"
 	"wb2api/internal/risk"
 	"wb2api/internal/upstream"
+	"wb2api/internal/upstream/codearts"
 	"wb2api/internal/upstream/identity"
 )
 
@@ -29,7 +32,7 @@ const TestModelDefault = "deepseek-v4.1-flash"
 // cooldown; a failing one is handled by the caller's retry ladder.
 func (h *Handler) ProbeModel(ctx context.Context, acc *pool.Account, model string) (bool, time.Time, string) {
 	rec := acc.Record()
-	if exp := acc.ExpiresAt(); exp != 0 && time.Until(time.Unix(exp, 0)) < 120*time.Second && h.Refresher != nil {
+	if exp := acc.ExpiresAt(); !realm.IsCodeArts(rec.Realm) && exp != 0 && time.Until(time.Unix(exp, 0)) < 120*time.Second && h.Refresher != nil {
 		rctx, cancel := context.WithTimeout(ctx, 35*time.Second)
 		_ = h.Refresher.Refresh(rctx, acc)
 		cancel()
@@ -50,12 +53,27 @@ func (h *Handler) ProbeModel(ctx context.Context, acc *pool.Account, model strin
 		refreshed: map[string]bool{}, turnID: identity.NewTurnRequestID(), vscodeConv: identity.NewMessageID()}
 	q.shaped = shape.Build(payload, shape.Options{Catalog: h.Catalog})
 	q.enc = map[string]*encoded{}
+	cctx, cancel := context.WithTimeout(ctx, quota.ProbeTimeout)
+	defer cancel()
+	if realm.IsCodeArts(rec.Realm) {
+		body, closeProbe, err := h.openCodeArtsProbe(cctx, q, acc)
+		if err != nil {
+			var fault *codearts.ChatError
+			if errors.As(err, &fault) {
+				detail := string(redactBody(fault.Body, acc.Record()))
+				if reset, ok := ratelimit.ParseReset(detail); ok {
+					return false, reset, detail
+				}
+			}
+			return false, time.Time{}, truncate(err.Error(), 200)
+		}
+		defer closeProbe()
+		_, _ = io.Copy(io.Discard, io.LimitReader(body, 1<<20))
+		return true, time.Time{}, ""
+	}
 	product := identity.NormalizeProduct(rec.Product)
 	out := h.buildOutbound(q, rec, product)
 	hdrs := h.chatHeaders(q, rec, product, out, "")
-
-	cctx, cancel := context.WithTimeout(ctx, quota.ProbeTimeout)
-	defer cancel()
 	target := h.chatURL(acc, product)
 	resp, err := h.Up.Wire(acc.UID, acc.Proxy()).Do(cctx, upstream.Request{
 		Method: http.MethodPost, URL: target, Headers: hdrs, Body: out.body})
@@ -121,12 +139,34 @@ func (h *Handler) Probe(ctx context.Context, acc *pool.Account, model string) Pr
 		refreshed: map[string]bool{}, turnID: identity.NewTurnRequestID(), vscodeConv: identity.NewMessageID()}
 	q.shaped = shape.Build(payload, shape.Options{Catalog: h.Catalog})
 	q.enc = map[string]*encoded{}
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if realm.IsCodeArts(rec.Realm) {
+		body, closeProbe, err := h.openCodeArtsProbe(cctx, q, acc)
+		if err == nil {
+			defer closeProbe()
+			col := h.collect(q.r, cancel, 30*time.Second, body, model, false)
+			err = col.err
+			res.Reply = truncateProbeReply(col.content, col.reasoning)
+		}
+		res.ElapsedMs = time.Since(start).Milliseconds()
+		if err != nil {
+			res.Error = truncate(err.Error(), 200)
+			var fault *codearts.ChatError
+			if errors.As(err, &fault) {
+				res.Status = fault.Status
+			}
+			return res
+		}
+		if lifted := acc.NoteSuccess(model); lifted != nil {
+			h.persistRecord(lifted)
+		}
+		res.OK, res.Status = true, http.StatusOK
+		return res
+	}
 	product := identity.NormalizeProduct(rec.Product)
 	out := h.buildOutbound(q, rec, product)
 	hdrs := h.chatHeaders(q, rec, product, out, "")
-
-	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	target := h.chatURL(acc, product)
 	resp, err := h.Up.Wire(acc.UID, acc.Proxy()).Do(cctx, upstream.Request{
 		Method: http.MethodPost, URL: target, Headers: hdrs, Body: out.body})
@@ -174,9 +214,18 @@ func (h *Handler) Probe(ctx context.Context, acc *pool.Account, model string) Pr
 		res.Error = "stream error: " + truncate(col.err.Error(), 150)
 		return res
 	}
-	reply := strings.TrimSpace(col.content)
+	res.Reply = truncateProbeReply(col.content, col.reasoning)
+	if lifted := acc.NoteSuccess(model); lifted != nil {
+		h.persistRecord(lifted)
+	}
+	res.OK = true
+	return res
+}
+
+func truncateProbeReply(content, reasoning string) string {
+	reply := strings.TrimSpace(content)
 	if reply == "" {
-		reply = strings.TrimSpace(col.reasoning)
+		reply = strings.TrimSpace(reasoning)
 	}
 	if reply == "" {
 		reply = "OK"
@@ -184,12 +233,75 @@ func (h *Handler) Probe(ctx context.Context, acc *pool.Account, model string) Pr
 	if r := []rune(reply); len(r) > 80 {
 		reply = string(r[:77]) + "..."
 	}
-	res.Reply = reply
-	if lifted := acc.NoteSuccess(model); lifted != nil {
-		h.persistRecord(lifted)
+	return reply
+}
+
+func (h *Handler) openCodeArtsProbe(ctx context.Context, q *request, acc *pool.Account) (io.Reader, func(), error) {
+	rec := acc.Record()
+	if rec.CodeArtsNeedsLogin() {
+		return nil, nil, errors.New("CodeArts 账号需重新登录")
 	}
-	res.OK = true
-	return res
+	if !rec.CodeArtsAccessUsable(time.Now()) && h.Refresher != nil {
+		if err := h.Refresher.Refresh(ctx, acc); err != nil {
+			return nil, nil, err
+		}
+		rec = acc.Record()
+	}
+	if !rec.CodeArtsAccessUsable(time.Now()) {
+		return nil, nil, errors.New("CodeArts 签名凭据不可用")
+	}
+	product := identity.NormalizeProduct(rec.Product)
+	out := h.buildOutbound(q, rec, product)
+	if out.err != nil {
+		return nil, nil, out.err
+	}
+	sessionID := ""
+	closeLease := func() {}
+	if h.Sessions != nil {
+		lease, err := h.Sessions.Begin(ctx, acc)
+		if err != nil {
+			var fault *codearts.HeartbeatError
+			if errors.As(err, &fault) {
+				if fault.Status == http.StatusUnauthorized || codearts.IsExpiredAccessToken(fault.Body) {
+					h.refreshCodeArtsAfterRejection(q, acc, rec)
+				}
+			}
+			return nil, nil, err
+		}
+		sessionID, closeLease = lease.ID(), lease.Close
+	}
+	probeCtx, cancel := context.WithCancel(ctx)
+	resp, err := h.Up.Wire(acc.UID, acc.Proxy()).Do(probeCtx, upstream.Request{
+		Method: http.MethodPost, URL: h.chatURL(acc, product),
+		Headers: h.chatHeaders(q, rec, product, out, sessionID), Body: out.body,
+	})
+	if err != nil {
+		cancel()
+		closeLease()
+		return nil, nil, err
+	}
+	closeProbe := func() {
+		cancel()
+		_ = resp.Body.Close()
+		closeLease()
+	}
+	q.toolNames = out.names
+	reader := codeArtsReplyBody(resp.Body, resp.Header.Get("Content-Encoding"))
+	if resp.StatusCode != http.StatusOK {
+		body := readUpstreamErrorBody(reader, cancel, 2*time.Second)
+		err = &codearts.ChatError{Status: resp.StatusCode, Body: body, Code: upstreamCodeOf(body)}
+	} else {
+		reader, err = h.stageCodeArtsOutput(q, reader)
+	}
+	if err != nil {
+		closeProbe()
+		var fault *codearts.ChatError
+		if errors.As(err, &fault) && (fault.Status == http.StatusUnauthorized || codearts.IsExpiredAccessToken(fault.Body)) {
+			h.refreshCodeArtsAfterRejection(q, acc, rec)
+		}
+		return nil, nil, err
+	}
+	return reader, closeProbe, nil
 }
 
 func itoa(n int) string {

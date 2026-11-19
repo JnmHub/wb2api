@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,75 @@ type requestLatency struct {
 	admissionWait time.Duration
 	keyWait       time.Duration
 	emitted       bool
+	codeArts      []CodeArtsAttempt
+}
+
+func startCodeArtsAttempt(ctx context.Context, uid string) {
+	if l := latencyFrom(ctx); l != nil {
+		l.mu.Lock()
+		l.codeArts = append(l.codeArts, CodeArtsAttempt{Account: uid, Phases: map[string]float64{}})
+		l.mu.Unlock()
+	}
+}
+
+func noteCodeArtsPhase(ctx context.Context, name string, elapsed time.Duration) {
+	if l := latencyFrom(ctx); l != nil {
+		l.mu.Lock()
+		if n := len(l.codeArts); n > 0 && elapsed > 0 {
+			l.codeArts[n-1].Phases[name] += float64(elapsed) / float64(time.Millisecond)
+		}
+		l.mu.Unlock()
+	}
+}
+
+func noteCodeArtsOutcome(ctx context.Context, result string) {
+	if l := latencyFrom(ctx); l != nil {
+		l.mu.Lock()
+		if n := len(l.codeArts); n > 0 {
+			l.codeArts[n-1].Result = result
+		}
+		l.mu.Unlock()
+	}
+}
+
+func observeCodeArtsFrame(ctx context.Context, data []byte) {
+	l := latencyFrom(ctx)
+	if l == nil {
+		return
+	}
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.codeArts) == 0 || l.dispatched.IsZero() {
+		return
+	}
+	phases := l.codeArts[len(l.codeArts)-1].Phases
+	if phases["first_reasoning"] > 0 && phases["first_text"] > 0 {
+		return
+	}
+	type delta struct {
+		Content   string `json:"content"`
+		Reasoning string `json:"reasoning"`
+		Thinking  string `json:"reasoning_content"`
+	}
+	var frame struct {
+		Choices []struct {
+			Delta   delta `json:"delta"`
+			Message delta `json:"message"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal(data, &frame) != nil {
+		return
+	}
+	elapsed := float64(now.Sub(l.dispatched)) / float64(time.Millisecond)
+	for _, choice := range frame.Choices {
+		if phases["first_text"] == 0 && (choice.Delta.Content != "" || choice.Message.Content != "") {
+			phases["first_text"] = elapsed
+		}
+		if phases["first_reasoning"] == 0 && (choice.Delta.Thinking != "" || choice.Message.Thinking != "" || choice.Delta.Reasoning != "" || choice.Message.Reasoning != "") {
+			phases["first_reasoning"] = elapsed
+		}
+	}
 }
 
 type latencyContextKey struct{}
@@ -160,6 +230,14 @@ func applyLatency(ctx context.Context, ev *UsageEvent) {
 		ev.QueueWait = l.admissionWait + l.keyWait
 		ev.ClientTTFT = positiveElapsed(l.start, l.clientFlush)
 		ev.CancelLatency = positiveElapsed(l.cancelled, time.Now())
+		for _, attempt := range l.codeArts {
+			phases := make(map[string]float64, len(attempt.Phases))
+			for key, value := range attempt.Phases {
+				phases[key] = value
+			}
+			attempt.Phases = phases
+			ev.CodeArtsAttempts = append(ev.CodeArtsAttempts, attempt)
+		}
 	}
 }
 

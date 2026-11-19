@@ -35,6 +35,11 @@ func TestPrepareBodyWithBudget(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			shaped := newObj(t, tc.input)
+			shaped.Set("messages", []any{})
+			before, err := jsonx.Marshal(shaped)
+			if err != nil {
+				t.Fatal(err)
+			}
 			body, _, budget, err := PrepareBodyWithBudget(shaped, "GLM-5.2", "")
 			if err != nil {
 				t.Fatal(err)
@@ -56,8 +61,8 @@ func TestPrepareBodyWithBudget(t *testing.T) {
 				}
 			}
 			original, err := jsonx.Marshal(shaped)
-			if err != nil || string(original) != tc.input {
-				t.Errorf("shaped request after prepare = %s, want %s (err %v)", original, tc.input, err)
+			if err != nil || string(original) != string(before) {
+				t.Errorf("shaped request after prepare = %s, want %s (err %v)", original, before, err)
 			}
 		})
 	}

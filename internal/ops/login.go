@@ -168,11 +168,48 @@ func (c *Client) AddAccount(m map[string]any, replace bool) (*pool.Account, erro
 	if rec.AccessToken == "" {
 		return nil, fmt.Errorf("no accessToken")
 	}
+	var previous *accounts.Record
 	if old := c.Pool.Get(rec.UID); old != nil {
 		if !replace {
 			return nil, fmt.Errorf("account %s already exists", rec.UID)
 		}
 		prev := old.Record()
+		previous = prev
+		if realm.IsCodeArts(rec.Realm) {
+			if prev.Realm != rec.Realm {
+				return nil, fmt.Errorf("account %s belongs to another realm", rec.UID)
+			}
+			oldDomain, _ := prev.CodeArtsFields()["domain_id"].(string)
+			newDomain, _ := rec.CodeArtsFields()["domain_id"].(string)
+			if oldDomain != "" && newDomain != "" && oldDomain != newDomain {
+				return nil, fmt.Errorf("account %s belongs to another CodeArts domain", rec.UID)
+			}
+			if rec.RefreshToken == "" && prev.RefreshToken != "" {
+				return nil, fmt.Errorf("replacement CodeArts account lacks a refresh token")
+			}
+			if _, exists := m["enabled"]; !exists {
+				rec.Enabled = prev.Enabled
+			}
+			if _, exists := m["tasksEnabled"]; !exists {
+				rec.TasksEnabled = prev.TasksEnabled
+			}
+			if _, exists := m["weight"]; !exists {
+				rec.Weight = prev.Weight
+			}
+			if _, exists := m["note"]; !exists {
+				rec.Note = prev.Note
+			}
+			if _, exists := m["disabledModels"]; !exists {
+				rec.DisabledModels = prev.DisabledModels
+			}
+			if rec.Nickname == "" {
+				rec.Nickname = prev.Nickname
+			}
+			if rec.CodeArtsCredentialVersion() == prev.CodeArtsCredentialVersion() && prev.CodeArtsAuthState().Reason != "" {
+				rec = rec.WithCodeArtsAuth(prev.CodeArtsAuthState())
+			}
+			rec.SharedBaseline = prev.SharedBaseline
+		}
 		rec.AddedAt, rec.Path = prev.AddedAt, prev.Path
 		if rec.Credits == nil {
 			rec.Credits = prev.Credits
@@ -193,6 +230,14 @@ func (c *Client) AddAccount(m map[string]any, replace bool) (*pool.Account, erro
 	if c.Persist != nil {
 		if err := c.Persist(rec); err != nil {
 			return nil, err
+		}
+	}
+	if realm.IsCodeArts(rec.Realm) {
+		if live := c.Pool.Get(rec.UID); live != nil {
+			if committed := live.Record(); committed != previous && committed.SharedBaseline != nil && committed.AccessToken == rec.AccessToken &&
+				committed.CodeArtsCredentialVersion() == rec.CodeArtsCredentialVersion() {
+				return live, nil
+			}
 		}
 	}
 	acc := c.Pool.Add(rec)

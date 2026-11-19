@@ -385,29 +385,28 @@ func TestCodeArtsLongToolNamesAreRestored(t *testing.T) {
 	}
 }
 
-// If the heartbeat endpoint is unavailable the channel must still serve: no
-// lease, local concurrency cap, warning in the log.
-func TestCodeArtsServesWithoutLeaseWhenHeartbeatFails(t *testing.T) {
-	var sawSession string
+func TestCodeArtsHeartbeatRejectionDoesNotDispatchChat(t *testing.T) {
+	var chatHits atomic.Int32
 	var env *codeartsEnv
 	env = newCodeartsEnv(t, func(w http.ResponseWriter, r *http.Request) {
-		sawSession = r.Header.Get("user-session-id")
+		if r.Method == http.MethodPut {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"error_code":"APIG.0301","error_msg":"invalid signature"}`)
+			return
+		}
+		chatHits.Add(1)
 		codeartsSSE(w, r)
 	})
-	// The harness upstream has no heartbeat route: 404 on every PUT.
 	env.h.Sessions = &codeartsync.Sessions{Pool: env.h.Pool, Base: env.h.UpstreamOverride}
 
 	resp := env.post(t, `{"model":"GLM-5.2","messages":[{"role":"user","content":"hi"}],"stream":true}`)
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode == http.StatusOK {
 		t.Fatalf("status = %d body = %s", resp.StatusCode, raw)
 	}
-	if sawSession != "" {
-		t.Fatalf("a session id was sent without a lease: %q", sawSession)
-	}
-	if !strings.Contains(string(raw), "你好") {
-		t.Fatalf("stream lost: %s", raw)
+	if chatHits.Load() != 0 || env.h.Sessions.Active("hw-1") != 0 {
+		t.Fatalf("rejected lease dispatched chat or leaked a slot")
 	}
 }
 

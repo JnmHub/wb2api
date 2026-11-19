@@ -127,8 +127,12 @@ func (a *Accounts) view(acc *pool.Account, now time.Time, detail bool) map[strin
 		v["credits"] = summarizeCredits(rec.Credits)
 	}
 	if a.Refresher != nil {
-		if st := a.Refresher.StatusOf(rec.UID); st.Failures > 0 {
-			v["refresh"] = map[string]any{"failures": st.Failures, "next_try": st.NextTry.Unix(), "last_error": st.LastErr}
+		if st := a.Refresher.StatusOf(rec.UID); st.LastErr != "" {
+			var next int64
+			if st.NextTry.After(now) {
+				next = st.NextTry.Unix()
+			}
+			v["refresh"] = map[string]any{"failures": st.Failures, "next_try": next, "last_error": st.LastErr}
 		}
 	}
 	if detail {

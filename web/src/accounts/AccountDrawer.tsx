@@ -29,6 +29,22 @@ const REASON_LABEL: Record<string, string> = {
   manual: '手动',
 }
 
+const REFRESH_LABEL: Record<string, string> = {
+  access_token_rejected: '上游拒绝当前 STS 凭据',
+  refresh_in_progress: '正在刷新 STS 凭据',
+  sts_rate_limited: 'STS 刷新限流',
+  refresh_token_used: '刷新令牌已被使用',
+  refresh_token_expired: '刷新令牌已过期',
+  refresh_token_rejected: '刷新令牌被拒绝',
+  refresh_binding_rejected: 'OAuth 绑定不匹配',
+  refresh_outcome_unknown: '刷新结果未能确认，请重新登录',
+  refresh_token_not_rotated: 'STS 未返回新的刷新令牌',
+  invalid_refreshed_credentials: 'STS 返回的签名凭据不完整或已过期',
+  missing_refresh_token: '缺少刷新令牌',
+  missing_pkce_verifier: '缺少 PKCE verifier',
+  invalid_dpop_key: 'DPoP 私钥缺失或无效',
+}
+
 const actionLabel: Record<string, string> = {  credits: '刷新积分',
   checkin: '签到',
   'report-activity': '活跃上报',
@@ -239,7 +255,15 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
                 ...(a.cooldown_for ? [{ key: 'cool', label: '冷却', children: `剩余 ${span(a.cooldown_for)}` }] : []),
                 ...(a.unavailable_reason ? [{ key: 'reason', label: '当前不可用', children: <Typography.Text type="warning">{a.unavailable_reason}</Typography.Text> }] : []),
                 ...(a.restricted_for ? [{ key: 'restricted', label: '风控限制', children: `剩余 ${span(a.restricted_for)}` }] : []),
-                ...(a.refresh ? [{ key: 'refresh', label: '刷新失败', children: `${a.refresh.failures} 次：${a.refresh.last_error}` }] : []),
+                ...(a.refresh ? [{
+                  key: 'refresh',
+                  label: '凭据刷新',
+                  children: [
+                    REFRESH_LABEL[a.refresh.last_error] || a.refresh.last_error,
+                    a.refresh.failures > 0 ? `连续失败 ${a.refresh.failures} 次` : '',
+                    a.refresh.next_try ? `下次可重试 ${checkinAt(a.refresh.next_try)}` : '',
+                  ].filter(Boolean).join(' · '),
+                }] : []),
                 { key: 'machine', label: '机器码', children: <span className="mono">{a.machine_id}</span> },
                 { key: 'session', label: '会话 ID', children: <span className="mono">{a.session_id}</span> },
                 { key: 'source', label: '来源', children: `${a.source}${a.enterprise_id ? ` · 企业 ${a.enterprise_id}` : ''}` },

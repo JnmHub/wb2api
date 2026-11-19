@@ -10,6 +10,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"wb2api/internal/realm"
 )
 
 var (
@@ -30,6 +32,21 @@ func (h *Handler) stageFirstOutput(q *request, body io.Reader, cancel context.Ca
 	if h.FirstOutputTimeout <= 0 {
 		return body, nil
 	}
+	return stageOutput(q, body, cancel, h.FirstOutputTimeout)
+}
+
+func (h *Handler) stageCodeArtsOutput(q *request, body io.Reader) (io.Reader, error) {
+	return readUntilSemantic(q, codeArtsOutput(q, body))
+}
+
+func codeArtsOutput(q *request, body io.Reader) io.Reader {
+	stream := newCodeArtsStream(body)
+	stream.names = q.toolNames
+	stream.observe = func(data []byte) { observeCodeArtsFrame(q.r.Context(), data) }
+	return stream
+}
+
+func stageOutput(q *request, body io.Reader, cancel context.CancelFunc, timeout time.Duration) (io.Reader, error) {
 	type staged struct {
 		r   io.Reader
 		err error
@@ -41,7 +58,7 @@ func (h *Handler) stageFirstOutput(q *request, body io.Reader, cancel context.Ca
 		ch <- staged{r: r, err: err}
 	}()
 
-	timer := time.NewTimer(h.FirstOutputTimeout)
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case <-timer.C:
@@ -133,6 +150,9 @@ func classifyFirstOutputLine(q *request, line []byte) (bool, error) {
 	if choices, ok := obj["choices"].([]any); ok {
 		for _, raw := range choices {
 			choice, _ := raw.(map[string]any)
+			if str(choice["finish_reason"]) == "content_filter" && realm.IsCodeArts(q.realm) {
+				return true, nil
+			}
 			if d, ok := choice["delta"].(map[string]any); ok && semanticDelta(d) {
 				return true, nil
 			}

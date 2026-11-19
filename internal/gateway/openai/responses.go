@@ -19,7 +19,9 @@ import (
 	"wb2api/internal/gateway/responses"
 	"wb2api/internal/jsonx"
 	"wb2api/internal/pool"
+	"wb2api/internal/realm"
 	"wb2api/internal/upstream"
+	"wb2api/internal/upstream/codearts"
 	"wb2api/internal/upstream/identity"
 	"wb2api/internal/webtools"
 )
@@ -315,7 +317,11 @@ func (h *Handler) openFollowUp(q *request, acc *pool.Account, chat *jsonx.Obj) (
 	rec := acc.Record()
 	product := identity.NormalizeProduct(rec.Product)
 	out := h.buildOutbound(&q2, rec, product)
-	hdrs := h.chatHeaders(&q2, rec, product, out, "")
+	if out.err != nil {
+		return nil, out.err
+	}
+	q2.toolNames = out.names
+	hdrs := h.chatHeaders(&q2, rec, product, out, q.codeArtsSessionID)
 	cfg := h.Settings.UpstreamConfig()
 	ctx, cancel := context.WithCancel(q.r.Context())
 	beginAttempt(ctx)
@@ -327,13 +333,34 @@ func (h *Handler) openFollowUp(q *request, acc *pool.Account, chat *jsonx.Obj) (
 		cancel()
 		return nil, err
 	}
+	body := io.Reader(resp.Body)
+	isCodeArts := realm.IsCodeArts(acc.Realm)
+	if isCodeArts {
+		body = codeArtsReplyBody(body, resp.Header.Get("Content-Encoding"))
+	}
 	if resp.StatusCode != http.StatusOK {
-		b := readUpstreamErrorBody(resp.Body, cancel, 2*time.Second)
+		b := readUpstreamErrorBody(body, cancel, 2*time.Second)
 		resp.Body.Close()
 		cancel()
+		if isCodeArts {
+			fault := codearts.ParseChatError(b)
+			if fault == nil {
+				fault = &codearts.ChatError{Status: resp.StatusCode, Body: b}
+			} else if fault.Status == http.StatusBadGateway {
+				fault.Status = resp.StatusCode
+			}
+			h.noteStreamAccountFault(acc, q.model, fault)
+			return nil, fault
+		}
 		return nil, fmt.Errorf("upstream %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	}
-	return &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}, nil
+	if isCodeArts {
+		body = codeArtsOutput(&q2, body)
+	}
+	return &cancelOnCloseBody{ReadCloser: struct {
+		io.Reader
+		io.Closer
+	}{body, resp.Body}, cancel: cancel}, nil
 }
 
 func (h *Handler) runWebCalls(ctx context.Context, calls []webCall) []string {
@@ -427,6 +454,8 @@ func (h *Handler) responsesWhole(q *request, acc *pool.Account, cancel context.C
 		if res.err != nil {
 			ev := res.usageEvent(acc, model, q.keyID, q.effort(h), q.start)
 			markCollectedError(&ev, q.r)
+			ev.UpstreamCode, ev.RequestID, ev.Shape = streamFaultCode(res.err), q.requestID, q.shape
+			h.noteStreamAccountFault(acc, q.model, res.err)
 			h.emitWithLatency(q.r.Context(), ev)
 			if q.r.Context().Err() == nil {
 				writeError(q.w, http.StatusBadGateway, "upstream stream aborted", "server_error")
@@ -692,6 +721,7 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 	} else if !clientClosed && q.r.Context().Err() == nil {
 		// A broken upstream gets an explicit, sanitized error rather than
 		// response.completed or a success terminator.
+		h.noteStreamAccountFault(acc, q.model, streamErr)
 		if write([]responses.Frame{s.Error("upstream stream aborted")}) != nil {
 			clientClosed = true
 		}
@@ -711,7 +741,7 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 	}
 	ev := UsageEvent{At: q.start, Model: model, Account: acc.UID, KeyID: q.keyID, Stream: true, Outcome: outcome,
 		Status: status, Elapsed: time.Since(q.start), Usage: usageJSON(s.Usage()), Estimated: s.Estimated(), Chunks: nChunks, Effort: q.effort(h),
-		UpstreamCode: upstreamCodeOf([]byte(errText(streamErr))), RequestID: q.requestID, Shape: q.shape}
+		UpstreamCode: streamFaultCode(streamErr), RequestID: q.requestID, Shape: q.shape}
 	if !firstAt.IsZero() {
 		ev.TTFT, ev.Gen = firstAt.Sub(q.start), lastAt.Sub(firstAt)
 	}

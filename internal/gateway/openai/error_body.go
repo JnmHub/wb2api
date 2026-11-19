@@ -9,7 +9,7 @@ const maxUpstreamErrorBody = 64 << 10
 
 // readUpstreamErrorBody bounds both the bytes retained and time spent reading
 // an upstream error response. Cancellation interrupts the underlying wire read.
-func readUpstreamErrorBody(body io.ReadCloser, cancel func(), timeout time.Duration) []byte {
+func readUpstreamErrorBody(body io.Reader, cancel func(), timeout time.Duration) []byte {
 	if timeout <= 0 {
 		timeout = 2 * time.Second
 	}

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"wb2api/internal/realm"
 	"wb2api/internal/store/accounts"
 )
 
@@ -83,6 +84,15 @@ func (p *Pool) Remove(uid string) bool {
 // Update applies mutate to a copy of the account's record, installs it and
 // returns the new record for persistence. ok is false for an unknown uid.
 func (p *Pool) Update(uid string, mutate func(*accounts.Record)) (rec *accounts.Record, ok bool) {
+	return p.UpdateIf(uid, func(next *accounts.Record) bool {
+		mutate(next)
+		return true
+	})
+}
+
+// UpdateIf atomically applies a change only if mutate accepts the current
+// account. Its record argument is a shallow copy.
+func (p *Pool) UpdateIf(uid string, mutate func(*accounts.Record) bool) (rec *accounts.Record, ok bool) {
 	a := p.Get(uid)
 	if a == nil {
 		return nil, false
@@ -90,7 +100,9 @@ func (p *Pool) Update(uid string, mutate func(*accounts.Record)) (rec *accounts.
 	a.updMu.Lock()
 	defer a.updMu.Unlock()
 	next := *a.Record()
-	mutate(&next)
+	if !mutate(&next) {
+		return nil, false
+	}
 	a.SetRecord(&next)
 	return &next, true
 }
@@ -99,7 +111,13 @@ func (p *Pool) Update(uid string, mutate func(*accounts.Record)) (rec *accounts.
 func (a *Account) Enabled() bool { return a.enabled.Load() }
 
 // TokenBad reports that the credential needs a re-login.
-func (a *Account) TokenBad() bool { return a.tokenBad.Load() }
+func (a *Account) TokenBad() bool {
+	if realm.IsCodeArts(a.Realm) {
+		rec := a.Record()
+		return rec.CodeArtsNeedsLogin() || (rec.RefreshToken == "" && !rec.CodeArtsAccessUsable(time.Now()))
+	}
+	return a.tokenBad.Load()
+}
 
 // ExpiresAt returns the token expiry (unix seconds, 0 = unknown).
 func (a *Account) ExpiresAt() int64 { return a.expiresAt.Load() }
@@ -207,11 +225,18 @@ const (
 
 // State classifies the account at now (model-independent).
 func (a *Account) State(now time.Time) Status {
+	rec := a.Record()
+	codeArts := realm.IsCodeArts(a.Realm)
 	switch {
 	case !a.enabled.Load():
 		return StatusDisabled
-	case a.tokenBad.Load() || a.Record().AccessToken == "":
+	case codeArts && (rec.CodeArtsNeedsLogin() || (rec.RefreshToken == "" && !rec.CodeArtsAccessUsable(now))):
 		return StatusNeedLogin
+	case !codeArts && (a.tokenBad.Load() || rec.AccessToken == ""):
+		return StatusNeedLogin
+	}
+	if codeArts && (a.CodeArtsAccessRejected() || !rec.CodeArtsAccessUsable(now)) {
+		return StatusExpiring
 	}
 	ns := now.UnixNano()
 	remain, creditKnown := a.CreditRemain()

@@ -174,6 +174,10 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	default:
 		q.realm = h.activeRealm()
 	}
+	if realm.IsCodeArts(q.realm) {
+		budget := codeArtsWaitBudget(payload)
+		q.codeArtsDeadline, q.codeArtsAttempt = time.Now().Add(budget.total), budget.attempt
+	}
 	if key != nil {
 		q.keyID = key.ID
 		if msg := crossRealmMessage(q.model, q.realm, key); msg != "" {
@@ -236,9 +240,18 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	if opts.sessionKey != "" {
 		q.sessionKey = opts.sessionKey
 	}
+	if realm.IsCodeArts(q.realm) {
+		if explicit := codeArtsSessionKey(r, payload); explicit != "" {
+			q.sessionKey = explicit
+		}
+	}
 	q.vscodeConv = identity.NewMessageID()
-	h.reshape(q)
-	h.applyEffortMap(q)
+	if realm.IsCodeArts(q.realm) {
+		q.shaped = q.payload
+	} else {
+		h.reshape(q)
+		h.applyEffortMap(q)
+	}
 	// No client session id: derive one from the conversation's stable head so
 	// every turn lands on the account that already holds its prefix. The head
 	// comes from the client payload, not the reshaped body: gateway prompt
@@ -252,11 +265,13 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 		}
 		q.sessionKey, q.page = h.affinity().route(msgs)
 	}
+	q.unscopedSessionKey = q.sessionKey
+	h.scopeCodeArtsSession(q)
 	var recent []string
 	if q.sessionKey != "" {
 		recent, q.affinityObservation = h.Pool.Affinity().ObserveContext(r.Context(), q.sessionKey)
 	}
-	if h.Sched != nil && q.sessionKey != "" {
+	if h.Sched != nil && q.sessionKey != "" && !realm.IsCodeArts(q.realm) {
 		for _, uid := range recent {
 			if h.Sched.ShouldEscape(uid) {
 				if q.at.avoid == nil {
@@ -308,12 +323,17 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	fallbackTried := false
 	for {
 		aborted := false
+		h.scopeCodeArtsSession(q)
 		// Adopt windows other replicas learned for this model, so a cooldown is
 		// cluster-wide instead of per process. A chain step is forced fresh:
 		// the model just changed.
 		h.refreshSharedWindows(q.r.Context(), q.realm, q.model, h.Pool.All(), q.chainPos > 0)
 		for attempt := 0; attempt < max+2; attempt++ {
 			if r.Context().Err() != nil {
+				return
+			}
+			if !q.codeArtsDeadline.IsZero() && time.Until(q.codeArtsDeadline) <= 0 {
+				h.codeArtsTimeout(q)
 				return
 			}
 			h.startAdmission(q)
@@ -472,7 +492,7 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 				release()
 				return
 			}
-			if !acc.HealthReady(q.model, time.Now()) {
+			if !acc.HealthReady(q.model, time.Now()) || (realm.IsCodeArts(q.realm) && !codeArtsAllowsModel(acc.Record(), q.model)) {
 				// A guard/cooldown may change while shared admission is in I/O.
 				// Never dispatch on the stale selection; neither slot may leak.
 				localRelease()
@@ -585,7 +605,7 @@ func (h *Handler) finishError(q *request, acc *pool.Account, res result) {
 	body := redactBody(res.body, acc.Record())
 	detail := publicUpstreamDetail(res.status, body)
 	typ := "server_error"
-	if res.status == http.StatusForbidden {
+	if res.status == http.StatusBadRequest || res.status == http.StatusForbidden || res.status == http.StatusRequestEntityTooLarge {
 		typ = "invalid_request_error"
 	}
 	code := upstreamCodeOf(body)
@@ -638,31 +658,63 @@ func egressKey(rawURL, proxy string) string {
 // try performs one upstream attempt with acc.
 func (h *Handler) try(q *request, acc *pool.Account) result {
 	rec := acc.Record()
+	isCodeArts := realm.IsCodeArts(rec.Realm)
+	if isCodeArts {
+		startCodeArtsAttempt(q.r.Context(), acc.UID)
+	}
 	product := identity.NormalizeProduct(rec.Product)
 	out := h.buildOutbound(q, rec, product)
+	if out.err != nil {
+		return result{kind: stop, status: http.StatusBadRequest, body: publicRequestError(out.err.Error())}
+	}
 
-	if realm.IsCodeArts(rec.Realm) {
+	if isCodeArts {
 		if blocked, reason := h.sizeGate.blocked(acc.UID, len(out.body), time.Now()); blocked {
 			h.logger().Warn("codearts request exceeds a measured size wall; failing over",
 				"account", short(acc.UID), "bytes", len(out.body), "wall", reason)
 			h.noteAccountFull(q, acc)
+			noteCodeArtsOutcome(q.r.Context(), "request_size")
 			q.at.skipped++
 			return result{kind: retry}
 		}
 	}
 	q.attemptBytes = len(out.body)
 	q.toolNames = out.names
-	if realm.IsCodeArts(rec.Realm) {
-		q.shape = requestShapeOf(q.shaped, out)
+	if isCodeArts {
+		q.shape = requestShapeOf(q.payload, out)
 		setRequestShape(q.r.Context(), q.shape)
+		if meta := metaFrom(q.r.Context()); meta != nil {
+			meta.codeArtsModel = q.model
+		}
 	}
 
+	ctx, cancel := context.WithCancel(q.r.Context())
+	defer cancel()
+	var firstOutput *time.Timer
+	// This timer covers registration, upload, headers and the first event.
+	// Stop it at commitment so it cannot interrupt a healthy long stream.
+	if isCodeArts {
+		if q.codeArtsAttempt == 0 {
+			q.codeArtsAttempt = codeArtsWaitBudget(q.payload).attempt
+		}
+		wait := q.codeArtsAttempt
+		if !q.codeArtsDeadline.IsZero() {
+			wait = minDur(wait, time.Until(q.codeArtsDeadline))
+		}
+		if wait <= 0 {
+			return result{kind: stop, status: http.StatusGatewayTimeout, body: publicRequestError(errFirstOutputTimeout.Error())}
+		}
+		firstOutput = time.AfterFunc(wait, cancel)
+		defer firstOutput.Stop()
+	}
 	// The Huawei channel gates each account to three upstream conversations:
 	// register the lease first so a full account fails over instead of earning
 	// a TM.00001041 from the upstream.
 	sessionID := ""
-	if realm.IsCodeArts(rec.Realm) && h.Sessions != nil {
-		sess, serr := h.Sessions.Begin(q.r.Context(), acc)
+	if isCodeArts && h.Sessions != nil {
+		leaseStart := time.Now()
+		sess, serr := h.Sessions.Begin(ctx, acc)
+		noteCodeArtsPhase(q.r.Context(), "lease", time.Since(leaseStart))
 		switch {
 		case serr == nil:
 			defer sess.Close()
@@ -671,32 +723,45 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 			// The account already holds its three leases: let the picker choose
 			// another one instead of earning a TM.00001041.
 			h.noteAccountFull(q, acc)
+			noteCodeArtsOutcome(q.r.Context(), "session_full")
 			q.at.skipped++
 			return result{kind: retry}
 		default:
-			// Registration failed for another reason (permissions, endpoint
-			// drift). Degrade to no lease: the account still serves requests,
-			// and the local concurrency cap keeps us from overrunning.
-			h.logger().Warn("codearts session registration failed; sending without a lease",
-				"account", short(acc.UID), "err", serr)
+			var upstreamErr *codearts.HeartbeatError
+			if errors.As(serr, &upstreamErr) {
+				return h.classify(q, acc, upstreamErr.Status, upstreamErr.Body, "", rec)
+			}
+			if q.r.Context().Err() != nil {
+				return result{kind: done}
+			}
+			q.at.kind, q.at.lastErr = failTransport, serr
+			noteCodeArtsOutcome(q.r.Context(), "lease_failed")
+			return result{kind: retry}
 		}
 	}
 
 	hdrs := h.chatHeaders(q, rec, product, out, sessionID)
 	cfg := h.Settings.UpstreamConfig()
 
-	ctx, cancel := context.WithCancel(q.r.Context())
-	defer cancel()
 	if q.sessionKey != "" {
 		_, q.affinityObservation = h.Pool.Affinity().ObserveContext(q.r.Context(), q.sessionKey)
 	}
 	tDo := time.Now()
 	beginAttempt(q.r.Context())
 	target := h.chatURL(acc, product)
-	resp, err := h.Up.Wire(acc.UID, acc.Proxy()).Do(ctx, upstream.Request{
+	wireReq := upstream.Request{
 		Method: http.MethodPost, URL: target, Headers: hdrs,
 		Body: out.body, HeaderTimeout: cfg.HeaderTimeout,
-	})
+	}
+	if isCodeArts {
+		// The pre-output timer is the CodeArts header cap as well. Its longer
+		// limits are needed when the upstream sends headers with its first data.
+		wireReq.HeaderTimeout = q.codeArtsAttempt
+		wireReq.OnPhase = func(phase string, elapsed time.Duration) {
+			noteCodeArtsPhase(q.r.Context(), phase, elapsed)
+		}
+	}
+	resp, err := h.Up.Wire(acc.UID, acc.Proxy()).Do(ctx, wireReq)
 	if traceTimings {
 		h.logger().Info("trace", "pre_ms", tDo.Sub(q.start).Milliseconds(), "upstream_headers_ms", time.Since(tDo).Milliseconds())
 	}
@@ -704,13 +769,47 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 		if q.r.Context().Err() != nil {
 			return result{kind: done}
 		}
+		if isCodeArts {
+			if ctx.Err() != nil && upstream.IsAmbiguousRequest(err) {
+				noteCodeArtsOutcome(q.r.Context(), "headers_timeout")
+				return result{kind: stop, status: http.StatusGatewayTimeout, body: publicRequestError(errFirstOutputTimeout.Error())}
+			}
+			noteCodeArtsOutcome(q.r.Context(), "transport")
+		}
 		return h.transportError(q, acc, err, egressKey(target, acc.Proxy()))
 	}
 	defer resp.Body.Close()
+	body := io.Reader(resp.Body)
+	if isCodeArts {
+		body = codeArtsReplyBody(body, resp.Header.Get("Content-Encoding"))
+	}
 
 	if resp.StatusCode != http.StatusOK {
-		eb := readUpstreamErrorBody(resp.Body, cancel, 2*time.Second)
-		return h.classify(q, acc, resp.StatusCode, eb, egressKey(target, acc.Proxy()))
+		eb := readUpstreamErrorBody(body, cancel, 2*time.Second)
+		return h.classify(q, acc, resp.StatusCode, eb, egressKey(target, acc.Proxy()), rec)
+	}
+	idle := cfg.IdleTimeout
+	if isCodeArts {
+		staged, serr := h.stageCodeArtsOutput(q, body)
+		if serr != nil || !firstOutput.Stop() {
+			if q.r.Context().Err() != nil {
+				return result{kind: done}
+			}
+			var fault *codearts.ChatError
+			if errors.As(serr, &fault) {
+				return h.classify(q, acc, fault.Status, fault.Body, egressKey(target, acc.Proxy()), rec)
+			}
+			// The completed upload may have been processed. An empty or timed
+			// out read does not prove that repeating the turn is safe.
+			status := http.StatusBadGateway
+			if ctx.Err() != nil || serr == nil {
+				serr, status = errFirstOutputTimeout, http.StatusGatewayTimeout
+			}
+			noteCodeArtsOutcome(q.r.Context(), "first_output_failed")
+			return result{kind: stop, status: status, body: publicRequestError(serr.Error())}
+		}
+		body = staged
+		noteCodeArtsOutcome(q.r.Context(), "accepted")
 	}
 	acc.NoteResult(true)
 	if lifted := acc.NoteSuccess(q.model); lifted != nil {
@@ -720,9 +819,7 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 		h.egress.success(egressKey(target, acc.Proxy()))
 	}
 	h.resetSwitch(acc.UID, q.model)
-	idle := cfg.IdleTimeout
-	body := io.Reader(resp.Body)
-	if q.stream {
+	if q.stream && !isCodeArts {
 		staged, serr := h.stageFirstOutput(q, resp.Body, cancel)
 		if serr != nil {
 			if q.r.Context().Err() != nil {
@@ -736,9 +833,14 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 		h.Pool.Affinity().BindObserved(q.sessionKey, acc.UID, q.affinityObservation)
 	}
 	if q.sink != nil {
+		q.codeArtsSessionID = sessionID
 		q.sink(q, acc, cancel, idle, body)
 	} else if q.stream {
-		h.pipeStream(q.w, q.r, cancel, idle, body, acc, q.viewModel(), q.keyID, q.effort(h), q.start, q.maxTPS, q.toolNames, q.shape)
+		if isCodeArts {
+			h.pipeStream(q.w, q.r, cancel, idle, body, acc, q.viewModel(), q.keyID, q.effort(h), q.start, q.maxTPS, q.toolNames, q.shape, codearts.IncludeUsage(q.payload))
+		} else {
+			h.pipeStream(q.w, q.r, cancel, idle, body, acc, q.viewModel(), q.keyID, q.effort(h), q.start, q.maxTPS, q.toolNames, q.shape)
+		}
 	} else {
 		h.aggregate(q.w, q.r, cancel, idle, body, acc, q.viewModel(), q.keyID, q.effort(h), q.start, q.toolNames)
 	}
@@ -765,6 +867,7 @@ type outbound struct {
 	// names restores the tool names shortened for the Huawei channel.
 	names     *codearts.ToolNameMap
 	maxTokens int64
+	err       error
 }
 
 // chatPathFor returns the chat endpoint of an upstream channel.
@@ -779,9 +882,20 @@ func chatPathFor(r string) string {
 func (h *Handler) buildOutbound(q *request, rec *accounts.Record, product string) outbound {
 	if realm.IsCodeArts(rec.Realm) {
 		wire := codearts.WireName(rec, q.model)
-		body, names, maxTokens, err := codearts.PrepareBodyWithBudget(q.shaped, wire, identity.ConversationIDFor(rec.UID, q.sessionKey))
+		payload := q.payload
+		if h.Catalog != nil && !payload.Has("max_tokens") && !payload.Has("max_completion_tokens") {
+			n := h.Catalog.MaxOutputTokens(wire)
+			if n == 0 && wire != q.model {
+				n = h.Catalog.MaxOutputTokens(q.model)
+			}
+			if n > 0 {
+				payload = payload.Clone()
+				payload.Set("max_tokens", n)
+			}
+		}
+		body, names, maxTokens, err := codearts.PrepareBodyWithBudget(payload, wire, identity.ConversationIDFor(rec.UID, q.sessionKey))
 		if err != nil {
-			return outbound{body: []byte("{}")}
+			return outbound{err: err}
 		}
 		return outbound{body: body, names: names, maxTokens: maxTokens}
 	}
@@ -898,11 +1012,20 @@ func short(uid string) string {
 }
 
 // classify decides what an upstream HTTP error means for scheduling.
-func (h *Handler) classify(q *request, acc *pool.Account, status int, body []byte, egKey string) result {
+func (h *Handler) classify(q *request, acc *pool.Account, status int, body []byte, egKey string, observed *accounts.Record) result {
 	acc.NoteResult(false)
 	now := time.Now()
 	q.at.kind, q.at.lastStatus, q.at.lastBody, q.at.lastErr = failHTTP, status, body, nil
 	if realm.IsCodeArts(acc.Realm) {
+		if fault := codearts.ParseChatError(body); fault != nil && fault.Status == http.StatusPaymentRequired {
+			status = fault.Status
+			q.at.lastStatus = status
+		}
+		code := upstreamCodeOf(body)
+		if code == "" {
+			code = strconv.Itoa(status)
+		}
+		noteCodeArtsOutcome(q.r.Context(), code)
 		// A too-large body comes back as 413 (API gateway) or 001001005 (the
 		// inference backend); remember the measured wall so the same size does
 		// not burn another round trip.
@@ -911,23 +1034,46 @@ func (h *Handler) classify(q *request, acc *pool.Account, status int, body []byt
 		}
 		// A rejected request body is the client's problem: no account rotation
 		// and no cooldown, or one malformed call would park the whole channel.
-		if codearts.IsFatalRequestError(body) {
-			return result{kind: stop, status: http.StatusBadRequest, body: body}
+		if status == http.StatusRequestEntityTooLarge || codearts.IsFatalRequestError(body) {
+			if status != http.StatusRequestEntityTooLarge {
+				status = http.StatusBadRequest
+			}
+			return result{kind: stop, status: status, body: body}
 		}
-		// A gateway-level refusal (APIG/APIG traffic codes) is not the client's
-		// fault: cool the account briefly and let the picker choose another one.
-		if codearts.IsGatewayRejection(body) && !strings.Contains(string(body), "TM.00001051") {
-			acc.CoolDown(now.Add(gatewayRejectionCooldown))
+		if codearts.IsSessionLimitError(body) {
+			h.noteAccountFull(q, acc)
 			return result{kind: retry, status: status, body: body}
 		}
 		// A model the account is not registered for (or a benefit model that
 		// was never claimed) is an account-capability fact: park the model on
 		// this account, keep rotating instead of cooling the account.
-		if codearts.IsModelAccessError(body) {
+		if codearts.IsModelAccessError(body) || code == "TM.00001051" {
 			if rec, isNew := acc.NoteModelError(q.model, time.Time{}, 30*time.Minute, "codearts model access", truncate(string(body), 200), now); isNew && rec != nil {
 				h.persistRecord(rec)
 			}
+			q.demote(h, acc)
 			return result{kind: retry, status: status, body: body}
+		}
+		if status == http.StatusUnauthorized || codearts.IsExpiredAccessToken(body) {
+			if h.refreshCodeArtsAfterRejection(q, acc, observed) {
+				return result{kind: retrySame, status: status, body: body}
+			}
+			acc.CoolDown(now.Add(gatewayRejectionCooldown))
+			q.demote(h, acc)
+			return result{kind: retry, status: status, body: body}
+		}
+		if codearts.IsGatewayRejection(body) {
+			acc.CoolDown(now.Add(gatewayRejectionCooldown))
+			return result{kind: retry, status: status, body: body}
+		}
+		if status == http.StatusPaymentRequired {
+			acc.NoteBalanceCooled("CodeArts quota exhausted", now)
+			q.demote(h, acc)
+			return result{kind: retry, status: status, body: body}
+		}
+		if status != http.StatusTooManyRequests {
+			// Generic failures cannot prove the uploaded turn was never run.
+			return result{kind: stop, status: status, body: body}
 		}
 	}
 	switch {
@@ -1206,6 +1352,12 @@ func (h *Handler) unavailableDetail(realmName, model string) string {
 func (h *Handler) fail(q *request) {
 	h.recordAdmissionWait(q)
 	a := &q.at
+	if realm.IsCodeArts(q.realm) && a.kind == failHTTP {
+		if acc := h.Pool.Get(a.lastUID); acc != nil {
+			a.lastBody = redactBody(a.lastBody, acc.Record())
+		}
+		q.upstreamCode = upstreamCodeOf(a.lastBody)
+	}
 	emit := func(status int, acc string) {
 		h.emitWithLatency(q.r.Context(), UsageEvent{At: q.start, Model: q.model, Account: acc, KeyID: q.keyID, Stream: q.stream,
 			Outcome: "failed", Status: status, Elapsed: time.Since(q.start),

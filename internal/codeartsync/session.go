@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -32,8 +33,9 @@ type Sessions struct {
 	// Interval is the busy renewal period (0 = codearts.HeartbeatInterval).
 	Interval time.Duration
 	// Limit overrides the per-account slot count (0 = the channel ceiling).
-	Limit func(*accounts.Record) int
-	Log   *slog.Logger
+	Limit  func(*accounts.Record) int
+	Client func(uid, proxy string) *http.Client
+	Log    *slog.Logger
 
 	mu     sync.Mutex
 	active map[string]int
@@ -60,6 +62,15 @@ func (s *Sessions) interval() time.Duration {
 	return codearts.HeartbeatInterval
 }
 
+func (s *Sessions) heartbeat(ctx context.Context, acc *pool.Account, id, status string) error {
+	rec := acc.Record()
+	var client *http.Client
+	if s.Client != nil {
+		client = s.Client(acc.UID, acc.Proxy())
+	}
+	return codearts.Heartbeat(ctx, client, s.base(rec), codearts.CredentialOf(rec), id, status)
+}
+
 func (s *Sessions) limit(rec *accounts.Record) int {
 	if s.Limit != nil {
 		if n := s.Limit(rec); n > 0 {
@@ -77,7 +88,7 @@ type Session struct {
 	manager *Sessions
 	acc     *pool.Account
 	id      string
-	stop    chan struct{}
+	cancel  context.CancelFunc
 	done    chan struct{}
 	once    sync.Once
 }
@@ -120,36 +131,42 @@ func (s *Sessions) Begin(ctx context.Context, acc *pool.Account) (*Session, erro
 		release()
 		return nil, err
 	}
-	cur := acc.Record()
-	if err := codearts.Heartbeat(ctx, nil, s.base(cur), codearts.CredentialOf(cur), id, codearts.SessionBusy); err != nil {
+	busyCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	err = s.heartbeat(busyCtx, acc, id, codearts.SessionBusy)
+	cancel()
+	if err != nil {
 		// The upstream may have taken the slot anyway: release our own id.
-		idleCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = codearts.Heartbeat(idleCtx, nil, s.base(cur), codearts.CredentialOf(cur), id, codearts.SessionIdle)
+		idleCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = s.heartbeat(idleCtx, acc, id, codearts.SessionIdle)
 		cancel()
 		release()
+		var fault *codearts.HeartbeatError
+		if errors.As(err, &fault) && codearts.IsSessionLimitError(fault.Body) {
+			return nil, ErrSessionsFull
+		}
 		return nil, err
 	}
-	sess := &Session{manager: s, acc: acc, id: id, stop: make(chan struct{}), done: make(chan struct{})}
-	go sess.renew()
+	renewCtx, cancel := context.WithCancel(ctx)
+	sess := &Session{manager: s, acc: acc, id: id, cancel: cancel, done: make(chan struct{})}
+	go sess.renew(renewCtx)
 	return sess, nil
 }
 
 // renew keeps the lease busy. A failed renewal must not release the slot: one
 // missed heartbeat is not the end of the conversation.
-func (s *Session) renew() {
+func (s *Session) renew(parent context.Context) {
 	defer close(s.done)
 	t := time.NewTicker(s.manager.interval())
 	defer t.Stop()
 	for {
 		select {
-		case <-s.stop:
+		case <-parent.Done():
 			return
 		case <-t.C:
-			rec := s.acc.Record()
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			err := codearts.Heartbeat(ctx, nil, s.manager.base(rec), codearts.CredentialOf(rec), s.id, codearts.SessionBusy)
+			ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+			err := s.manager.heartbeat(ctx, s.acc, s.id, codearts.SessionBusy)
 			cancel()
-			if err != nil {
+			if err != nil && parent.Err() == nil {
 				s.manager.logger().Warn("codearts busy renewal failed", "account", short(s.acc.UID), "err", err)
 			}
 		}
@@ -159,11 +176,10 @@ func (s *Session) renew() {
 // Close sends idle exactly once and frees the slot.
 func (s *Session) Close() {
 	s.once.Do(func() {
-		close(s.stop)
+		s.cancel()
 		<-s.done
-		rec := s.acc.Record()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err := codearts.Heartbeat(ctx, nil, s.manager.base(rec), codearts.CredentialOf(rec), s.id, codearts.SessionIdle)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err := s.manager.heartbeat(ctx, s.acc, s.id, codearts.SessionIdle)
 		cancel()
 		if err != nil {
 			s.manager.logger().Warn("codearts idle release failed", "account", short(s.acc.UID), "err", err)
