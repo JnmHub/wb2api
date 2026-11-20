@@ -15,6 +15,7 @@ import (
 	"wb2api/internal/ops"
 	"wb2api/internal/pool"
 	"wb2api/internal/realm"
+	"wb2api/internal/refresh"
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/upstream/codearts"
 )
@@ -171,6 +172,53 @@ func TestOperationsActionCheckinCodeArts(t *testing.T) {
 	}
 	if saved == nil {
 		t.Fatal("the account was not updated")
+	}
+}
+
+func TestDisabledCodeArtsAccountManualCheckinAndCredits(t *testing.T) {
+	ctx := context.Background()
+	srv := vendor(t)
+	rec := codeartsAccountRec("hw-disabled")
+	rec.Enabled, rec.TasksEnabled = false, false
+	rec.ExpiresAt = time.Now().Add(-time.Minute).Unix()
+	p := pool.New([]*accounts.Record{rec})
+	acc := p.Get(rec.UID)
+	svc := serviceFor(p, srv, nil, time.Now())
+	var renewals int
+	svc.Refresh = func(ctx context.Context, selected *pool.Account) error {
+		if !refresh.IsManualCodeArts(ctx, rec.UID) || selected != acc || selected.Enabled() {
+			t.Fatal("credential renewal missing explicit disabled-account selection")
+		}
+		renewals++
+		p.Update(rec.UID, func(r *accounts.Record) {
+			r.AccessToken = "STS-NEW"
+			r.ExpiresAt = time.Now().Add(time.Hour).Unix()
+		})
+		return nil
+	}
+	if svc.CanCheckin(acc) {
+		t.Fatal("scheduler selected a disabled account")
+	}
+	if result, err := svc.RunDaily(ctx, acc, "manual"); err != nil || result.State != codeartsync.DailySkipped {
+		t.Fatalf("unscoped manual sweep on disabled account = %+v, %v", result, err)
+	}
+	o := &Operations{Pool: p, CodeArts: svc}
+	mux := http.NewServeMux()
+	o.Register(mux, func(h http.Handler) http.Handler { return h })
+	for _, action := range []string{"checkin", "credits"} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v2/accounts/"+rec.UID+"/actions/"+action, strings.NewReader("{}"))
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		var out map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || w.Code != http.StatusOK || out["ok"] != true {
+			t.Fatalf("%s on disabled account: HTTP %d, %s", action, w.Code, w.Body.String())
+		}
+		if action == "credits" && out["remain"] != float64(1000) {
+			t.Fatalf("credit balance = %#v", out["remain"])
+		}
+	}
+	if renewals != 1 || acc.Enabled() || acc.Record().TasksOn() {
+		t.Fatal("manual operations should renew once and leave both switches off")
 	}
 }
 

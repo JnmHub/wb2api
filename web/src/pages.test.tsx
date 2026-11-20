@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { AccountDrawer } from './accounts/AccountDrawer'
 import { LogsPage } from './logs/LogsPage'
 import { SettingsPage } from './settings/SettingsPage'
 import { TasksPage } from './tasks/TasksPage'
@@ -25,6 +26,40 @@ function renderPage(ui: React.ReactElement) {
 
 afterEach(() => {
   vi.restoreAllMocks()
+})
+
+describe('AccountDrawer', () => {
+  it('refreshes credits for a disabled CodeArts account and displays the result', async () => {
+    const path = '/api/v2/accounts/codearts-test'
+    const message = '剩 12 / 40 积分（基础套餐）'
+    route({
+      [`${path}/actions/credits`]: () => json({ ok: true, msg: message }),
+      [path]: () => json({
+        uid: 'codearts-test',
+        nickname: 'CodeArts 测试账号',
+        realm: 'codearts',
+        enabled: false,
+        tasks_enabled: false,
+        status: 'disabled',
+        weight: 1,
+        note: '',
+        disabled_models: [],
+        proxy_slot: '',
+        product: 'workbuddy',
+        source: 'codearts-import',
+        expires_at: 0,
+        inflight: 0,
+        today: { requests: 0, tokens: 0 },
+      }),
+    })
+
+    renderPage(<AccountDrawer uid="codearts-test" onClose={() => {}} />)
+    const refresh = await screen.findByRole('button', { name: '刷新积分' })
+    expect(refresh).toBeEnabled()
+    fireEvent.click(refresh)
+    expect(await screen.findByText(message)).toBeInTheDocument()
+    expect(globalThis.fetch).toHaveBeenCalledWith(`${path}/actions/credits`, expect.objectContaining({ method: 'POST' }))
+  })
 })
 
 describe('TasksPage', () => {

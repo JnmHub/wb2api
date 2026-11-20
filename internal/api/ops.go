@@ -19,6 +19,7 @@ import (
 	"wb2api/internal/pool"
 	"wb2api/internal/quota"
 	"wb2api/internal/realm"
+	"wb2api/internal/refresh"
 	"wb2api/internal/scheduler"
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/store/settings"
@@ -52,6 +53,9 @@ func (a *Accounts) upstreamAction(b batchReq) (jobs.Func, error) {
 		acc := a.Pool.Get(uid)
 		if acc == nil {
 			return errors.New("account no longer exists")
+		}
+		if len(b.UIDs) == 1 && realm.IsCodeArts(acc.Realm) && (b.Action == "checkin" || b.Action == "refresh_credits") {
+			ctx = refresh.WithManualCodeArts(ctx, uid)
 		}
 		return a.Gate.Do(ctx, func() error {
 			switch b.Action {
@@ -147,7 +151,11 @@ func (o *Operations) action(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), timeout)
 	defer cancel()
 	var res any
-	switch name := r.PathValue("name"); name {
+	name := r.PathValue("name")
+	if realm.IsCodeArts(acc.Realm) && (name == "checkin" || name == "credits") {
+		ctx = refresh.WithManualCodeArts(ctx, acc.UID)
+	}
+	switch name {
 	case "credits":
 		// The Huawei channel reports credits through its subscription
 		// statistics, not through the WorkBuddy billing API.
@@ -169,7 +177,14 @@ func (o *Operations) action(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			out["ok"] = true
-			out["msg"] = fmt.Sprintf("剩 %g / %g 积分（%s，%s 重置）", b.Remaining, b.Total, orDefault(b.PlanName, "套餐"), b.ResetDate)
+			switch {
+			case b.HasRemaining && b.HasTotal:
+				out["msg"] = fmt.Sprintf("剩 %g / %g 积分（%s，%s 重置）", b.Remaining, b.Total, orDefault(b.PlanName, "套餐"), b.ResetDate)
+			case b.HasRemaining:
+				out["msg"] = fmt.Sprintf("剩 %g 积分", b.Remaining)
+			default:
+				out["msg"] = "积分信息已刷新，华为未返回可用余额"
+			}
 			res = out
 			break
 		}

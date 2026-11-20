@@ -21,6 +21,21 @@ const (
 	codeArtsSpacing    = 125 * time.Millisecond
 )
 
+var errCodeArtsDisabled = errors.New("codearts account is disabled")
+
+type manualCodeArtsKey struct{}
+
+// WithManualCodeArts allows an explicit account management action to use the
+// selected account's credentials while it is disabled.
+func WithManualCodeArts(ctx context.Context, uid string) context.Context {
+	return context.WithValue(ctx, manualCodeArtsKey{}, uid)
+}
+
+// IsManualCodeArts reports whether the caller explicitly selected this account.
+func IsManualCodeArts(ctx context.Context, uid string) bool {
+	return uid != "" && ctx.Value(manualCodeArtsKey{}) == uid
+}
+
 // RetryError gives every caller the earliest time that another exchange may
 // be attempted for the observed CodeArts credential.
 type RetryError struct {
@@ -72,6 +87,7 @@ type codeArtsMutation struct {
 func (r *Refresher) refreshCodeArts(ctx context.Context, a *pool.Account, observed *accounts.Record) error {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
+	manual := IsManualCodeArts(ctx, a.UID)
 	rec := a.Record()
 	if !sameCodeArtsGeneration(rec, observed) {
 		return codeArtsCurrentOutcome(rec, r.now())
@@ -129,8 +145,8 @@ func (r *Refresher) refreshCodeArts(ctx context.Context, a *pool.Account, observ
 	if auth.Login || (auth.Reason != codeArtsInProgress && r.now().Before(auth.RetryAt)) {
 		return codeArtsCurrentOutcome(rec, r.now())
 	}
-	if !rec.IsEnabled() {
-		return errors.New("codearts account is disabled")
+	if !manual && (!rec.IsEnabled() || !a.Enabled()) {
+		return errCodeArtsDisabled
 	}
 	if auth.Reason == codeArtsInProgress {
 		// We hold the account's lock. A previous process may have exchanged
@@ -175,8 +191,14 @@ func (r *Refresher) refreshCodeArts(ctx context.Context, a *pool.Account, observ
 	if !sameCodeArtsGeneration(a.Record(), rec) || (r.Pool != nil && r.Pool.Get(a.UID) != a) {
 		return codeArtsCurrentOutcome(a.Record(), r.now())
 	}
-	if !a.Enabled() {
-		return r.recordCodeArtsFailure(a, rec, &codearts.RefreshFailure{Reason: "refresh_account_disabled"})
+	if !manual && !a.Enabled() {
+		// The intent was persisted but the exchange has not started.
+		if err := r.saveCodeArts(a, rec, func(current *accounts.Record) *accounts.Record {
+			return current.WithCodeArtsAuth(auth)
+		}); err != nil {
+			return fmt.Errorf("codearts refresh intent could not be cleared: %w", err)
+		}
+		return errCodeArtsDisabled
 	}
 	// The OAuth endpoint takes the exact original client, PKCE verifier and
 	// DPoP private key. The rotated RT and STS signing tuple are one write.

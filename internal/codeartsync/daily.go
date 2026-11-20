@@ -152,7 +152,8 @@ func (s *Service) RunDaily(ctx context.Context, acc *pool.Account, trigger strin
 		if err != nil {
 			return err
 		}
-		if !realm.IsCodeArts(rec.Realm) || !rec.IsEnabled() || (trigger != "manual" && !rec.TasksOn()) {
+		manualAccount := trigger == "manual" && refresh.IsManualCodeArts(ctx, acc.UID)
+		if !realm.IsCodeArts(rec.Realm) || (!manualAccount && !rec.IsEnabled()) || (trigger != "manual" && !rec.TasksOn()) {
 			out = DailyResult{State: DailySkipped, Message: "账号未启用 CodeArts 签到"}
 			return nil
 		}

@@ -764,6 +764,9 @@ func (a *Accounts) batchFn(b batchReq) (jobs.Func, error) {
 			if acc == nil {
 				return errors.New("account no longer exists")
 			}
+			if len(b.UIDs) == 1 && realm.IsCodeArts(acc.Realm) {
+				ctx = refresh.WithManualCodeArts(ctx, uid)
+			}
 			return a.Refresher.Refresh(ctx, acc)
 		}, nil
 	}

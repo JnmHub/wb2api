@@ -109,6 +109,53 @@ func TestCodeArtsRefreshDispatch(t *testing.T) {
 	}
 }
 
+func TestDisabledCodeArtsRefreshRequiresExplicitAccount(t *testing.T) {
+	ctx := context.Background()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		calls.Add(1)
+		_ = req.ParseForm()
+		if req.URL.Path != codearts.TokenPath || req.Form.Get("refresh_token") != "refresh-1" {
+			t.Errorf("unexpected refresh request at %q", req.URL.Path)
+		}
+		fmt.Fprintf(w, `{"refresh_token":"refresh-2","credentials":{
+			"access_key_id":"AK-NEW","secret_access_key":"SK-NEW","security_token":"STS-NEW","expiration":%q}}`,
+			time.Now().Add(2*time.Hour).UTC().Format(time.RFC3339))
+	}))
+	defer srv.Close()
+
+	jwk, err := codearts.NewDPoPKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := codeartsRecord(t, jwk)
+	rec.Enabled, rec.TasksEnabled = false, false
+	p := pool.New([]*accounts.Record{rec})
+	var saved *accounts.Record
+	r := &Refresher{Pool: p, BaseURL: func(*pool.Account) string { return srv.URL },
+		Persist: func(rec *accounts.Record) error { saved = rec; return nil }}
+	acc := p.Get(rec.UID)
+
+	if n := r.ScanOnce(ctx); n != 0 {
+		t.Fatalf("background scan selected %d disabled accounts", n)
+	}
+	for _, automatic := range []context.Context{ctx, WithManualCodeArts(ctx, "hw-other")} {
+		if err := r.Refresh(automatic, acc); !errors.Is(err, errCodeArtsDisabled) {
+			t.Fatalf("disabled refresh error = %v", err)
+		}
+	}
+	if calls.Load() != 0 || r.StatusOf(rec.UID).LastErr != "" {
+		t.Fatal("a skipped account contacted STS or entered refresh backoff")
+	}
+	if err := r.Refresh(WithManualCodeArts(ctx, rec.UID), acc); err != nil {
+		t.Fatalf("manual refresh: %v", err)
+	}
+	if calls.Load() != 1 || saved == nil || saved.IsEnabled() || saved.TasksOn() ||
+		saved.AccessToken != "STS-NEW" || saved.RefreshToken != "refresh-2" || acc.Enabled() {
+		t.Fatal("manual refresh must persist rotated credentials and preserve both switches")
+	}
+}
+
 // A terminal refresh failure must surface as ErrNeedsLogin (so the scanner stops
 // retrying every minute) and must not touch the stored credential.
 func TestCodeArtsRefreshTerminalFailure(t *testing.T) {

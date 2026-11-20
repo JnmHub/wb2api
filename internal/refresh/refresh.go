@@ -297,6 +297,10 @@ func (r *Refresher) refreshObserved(ctx context.Context, a *pool.Account, observ
 		return err
 	}
 	isCodeArts := realm.IsCodeArts(a.Realm)
+	manualCodeArts := isCodeArts && IsManualCodeArts(ctx, a.UID)
+	if isCodeArts && !manualCodeArts && !a.Enabled() {
+		return errCodeArtsDisabled
+	}
 	if isCodeArts && !sameCodeArtsGeneration(a.Record(), observed) {
 		return codeArtsCurrentOutcome(a.Record(), r.now())
 	}
@@ -311,7 +315,8 @@ func (r *Refresher) refreshObserved(ctx context.Context, a *pool.Account, observ
 		r.mu.Unlock()
 		select {
 		case <-c.done:
-			if isCodeArts && !sameCodeArtsGeneration(c.observed, observed) {
+			if isCodeArts && (!sameCodeArtsGeneration(c.observed, observed) ||
+				(manualCodeArts && errors.Is(c.err, errCodeArtsDisabled))) {
 				return r.refreshObserved(ctx, a, observed, rejected)
 			}
 			return c.err
@@ -353,6 +358,11 @@ func (r *Refresher) complete(a *pool.Account, c *call, err error) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.inflt, a.UID)
+	if isCodeArts && errors.Is(err, errCodeArtsDisabled) {
+		c.err = err
+		close(c.done)
+		return err
+	}
 	st := r.states[a.UID]
 	if st == nil || !matchesState(st, observed) {
 		st = &state{}

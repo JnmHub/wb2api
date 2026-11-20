@@ -21,13 +21,17 @@ import (
 )
 
 type fakeRefresher struct {
-	mu    sync.Mutex
-	calls []string
+	mu          sync.Mutex
+	calls       []string
+	manualCalls []string
 }
 
 func (f *fakeRefresher) Refresh(ctx context.Context, a *pool.Account) error {
 	f.mu.Lock()
 	f.calls = append(f.calls, a.UID)
+	if refresh.IsManualCodeArts(ctx, a.UID) {
+		f.manualCalls = append(f.manualCalls, a.UID)
+	}
 	f.mu.Unlock()
 	if a.UID == "acct-0003" {
 		return fmt.Errorf("upstream said no")
@@ -304,6 +308,28 @@ func TestBatchRefreshTokenReportsFailures(t *testing.T) {
 	j := waitJob(t, f, out["id"].(string))
 	if j.Total != 6 || j.Failed != 1 || len(j.Errors) != 1 || j.Errors[0].Item != "acct-0003" || !strings.Contains(j.Errors[0].Error, "upstream said no") {
 		t.Fatalf("%+v", j)
+	}
+}
+
+func TestRefreshTokenJobAllowsDisabledCodeArtsOnlyForExplicitAccount(t *testing.T) {
+	f := newFixture(t, 0)
+	rec := codeartsAccountRec("hw-disabled")
+	rec.Enabled = false
+	f.acc.Pool.Add(rec)
+	for _, body := range []string{
+		`{"action":"refresh_token","uids":["hw-disabled"]}`,
+		`{"action":"refresh_token","filter":{"realm":"codearts"}}`,
+	} {
+		code, out := f.do(t, "POST", "/api/v2/accounts/batch", body)
+		if code != http.StatusAccepted {
+			t.Fatalf("refresh job: HTTP %d, %+v", code, out)
+		}
+		waitJob(t, f, out["id"].(string))
+	}
+	f.fr.mu.Lock()
+	defer f.fr.mu.Unlock()
+	if len(f.fr.manualCalls) != 1 || f.fr.manualCalls[0] != rec.UID {
+		t.Fatalf("explicit refresh calls = %v", f.fr.manualCalls)
 	}
 }
 

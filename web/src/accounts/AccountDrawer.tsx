@@ -45,7 +45,8 @@ const REFRESH_LABEL: Record<string, string> = {
   invalid_dpop_key: 'DPoP 私钥缺失或无效',
 }
 
-const actionLabel: Record<string, string> = {  credits: '刷新积分',
+const actionLabel: Record<string, string> = {
+  credits: '刷新积分',
   checkin: '签到',
   'report-activity': '活跃上报',
   'daily-chat': '每日活跃',
@@ -288,11 +289,9 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
 
             <Divider style={{ margin: '4px 0' }}>账号操作</Divider>
             <Space wrap size={[6, 6]}>
-              {a.realm !== 'codearts' && (
-                <Button size="small" loading={busy === 'credits'} disabled={!!busy} onClick={() => runAction('credits')}>
-                  刷新积分
-                </Button>
-              )}
+              <Button size="small" loading={busy === 'credits'} disabled={!!busy} onClick={() => runAction('credits')}>
+                刷新积分
+              </Button>
               {(a.realm === 'cn' || a.realm === 'codearts') && (
                 <Button size="small" loading={busy === 'checkin'} disabled={!!busy} onClick={() => runAction('checkin')}>
                   签到
