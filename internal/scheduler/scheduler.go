@@ -21,6 +21,7 @@ import (
 	"wb2api/internal/ops"
 	"wb2api/internal/pool"
 	"wb2api/internal/quota"
+	"wb2api/internal/raccoonsync"
 	"wb2api/internal/realm"
 	"wb2api/internal/store/settings"
 )
@@ -49,6 +50,10 @@ type Scheduler struct {
 	Windows *quota.Windows
 	// Channel runs the chores of non-WorkBuddy channels (nil = skipped).
 	Channel Channel
+	// Raccoon is the 小浣熊 channel's operations service (nil = disabled).
+	Raccoon *raccoonsync.Service
+	// raccoon tracks the channel's daily run.
+	raccoon raccoonRun
 	// Scan is the active quota scan (nil = disabled).
 	Scan *quota.Scanner
 	// Leader reports whether this replica may run unattended background work.
@@ -226,7 +231,12 @@ func (s *Scheduler) cycle(ctx context.Context, reason string, force bool) {
 	nightHours := force || hoursInclude(sched["cat"], hour)
 	var accs []*pool.Account
 	for _, acc := range s.Pool.All() {
-		if !realm.IsCodeArts(acc.Realm) {
+		// Only WorkBuddy accounts take part in the daily chores (check-in,
+		// activity report, daily chat, growth tasks, cat travel). The other
+		// channels have their own schedules and would only answer 401s here.
+		// Family() is used instead of a realm enumeration so a new channel can
+		// never be swept in by accident.
+		if workBuddyScope(acc) {
 			accs = append(accs, acc)
 		}
 	}
@@ -394,6 +404,17 @@ func (s *Scheduler) runScans(ctx context.Context) {
 // pass, then fires the cycle on the configured hours. Window probes run on
 // their own clock every tick, whether or not the unattended cycle is enabled.
 func (s *Scheduler) Run(ctx context.Context) {
+	s.mu.Lock()
+	s.raccoon.ctx = ctx
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		done := s.raccoon.done
+		s.mu.Unlock()
+		if done != nil {
+			<-done
+		}
+	}()
 	select {
 	case <-time.After(10 * time.Second):
 	case <-ctx.Done():
@@ -403,6 +424,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.runWindows(ctx)
 		s.runScans(ctx)
 		s.runCodeArts(ctx, false)
+		s.runRaccoon(ctx, false)
 		if s.Settings.SchedulerEnabled() {
 			// The start-up pass is a catch-up: a replica that comes back after
 			// the configured hour still checks in and chats once for the day.
@@ -424,6 +446,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.runWindows(ctx)
 		s.runScans(ctx)
 		s.runCodeArts(ctx, false)
+		s.runRaccoon(ctx, false)
 		now := s.now()
 		if !s.Settings.SchedulerEnabled() || now.Minute() != 0 || now.Sub(lastFired) < 2*time.Minute {
 			continue
@@ -449,6 +472,7 @@ type Status struct {
 	Logs     []string            `json:"logs"`
 	Credits  CreditsRefreshState `json:"credits"`
 	CodeArts CodeArtsDailyState  `json:"codearts_daily"`
+	Raccoon  RaccoonDailyState   `json:"raccoon_daily"`
 }
 
 // CreditsRefreshState is the background balance refresher's progress.
@@ -463,10 +487,12 @@ type CreditsRefreshState struct {
 func (s *Scheduler) Status() Status {
 	next := s.NextFire()
 	codeArts := s.codeArtsStatus()
+	raccoon := s.raccoonDailyStatus()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := Status{Enabled: s.Settings.SchedulerEnabled(), Running: s.running, LastNote: s.lastNote,
-		Schedule: s.Settings.ScheduleHours(), Logs: append([]string{}, s.logs...), CodeArts: codeArts}
+		Schedule: s.Settings.ScheduleHours(), Logs: append([]string{}, s.logs...),
+		CodeArts: codeArts, Raccoon: raccoon}
 	st.LastRun, st.NextRun = "尚未运行", "待调度"
 	if !s.lastRun.IsZero() {
 		st.LastRun = s.lastRun.Format("2006-01-02 15:04:05")

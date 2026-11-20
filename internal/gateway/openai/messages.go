@@ -17,6 +17,7 @@ import (
 	"wb2api/internal/gateway/anthropic"
 	"wb2api/internal/jsonx"
 	"wb2api/internal/pool"
+	"wb2api/internal/realm"
 )
 
 func writeAnthropicError(w http.ResponseWriter, status int, msg string) {
@@ -134,6 +135,9 @@ func jsonObj(k string, n int) *jsonx.Obj {
 
 func (h *Handler) messagesWhole(q *request, acc *pool.Account, cancel context.CancelFunc, idle time.Duration, body io.Reader, model string) {
 	res := h.collect(q.r, cancel, idle, body, model, true)
+	if realm.IsRaccoon(acc.Realm) {
+		res.meta.model = model
+	}
 	ev := res.usageEvent(acc, model, q.keyID, q.effort(h), q.start)
 	if res.err != nil {
 		markCollectedError(&ev, q.r)

@@ -86,7 +86,7 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
         tasks: a.tasks_enabled,
         weight: a.weight,
         note: a.note,
-        models: a.disabled_models.join(', '),
+        models: (a.disabled_models ?? []).join(', '),
         proxySlot: a.proxy_slot,
         product: a.product,
       })
@@ -206,7 +206,7 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
               <Typography.Text type="secondary">代理槽</Typography.Text>
               <Input value={form.proxySlot} onChange={(e) => set('proxySlot', e.target.value)} />
             </div>
-            {a.realm !== 'codearts' && (
+            {(a.realm !== 'codearts' && a.realm !== 'raccoon') && (
               <div>
                 <Typography.Text type="secondary">出站身份</Typography.Text>
                 <Select style={{ width: '100%' }} value={form.product} onChange={(v) => set('product', v)} options={PRODUCTS} />
@@ -228,9 +228,17 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
                         label: '积分',
                         children: (
                           <span>
-                            {credit(a.credits.remain)} / {credit(a.credits.total)}
+                            {a.credits.total != null
+                              ? `${credit(a.credits.remain)} / ${credit(a.credits.total)}`
+                              : `${credit(a.credits.remain)}${a.credits.unit ? ` ${a.credits.unit}` : ''}`}
                             {a.credits.plan ? ` · ${a.credits.plan}` : ''}
                             {a.credits.reset ? ` · ${a.credits.reset} 重置` : ''}
+                            {a.credits.wallets && a.credits.wallets.length > 0
+                              ? ` · ${a.credits.wallets
+                                  .filter((w) => w.balance)
+                                  .map((w) => `${w.displayName ?? w.type} ${w.balance}`)
+                                  .join(' / ')}`
+                              : ''}
                           </span>
                         ),
                       },
@@ -240,7 +248,7 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
                   ? [
                       {
                         key: 'checkin',
-                        label: a.realm === 'codearts' ? '签到 / 积分' : '签到',
+                        label: a.realm === 'codearts' || a.realm === 'raccoon' ? '签到 / 积分' : '签到',
                         children: (
                           <span title={checkinAt(a.checkin.at)}>
                             {a.checkin.ok === false ? '⏳ ' : '✓ '}
@@ -292,7 +300,7 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
               <Button size="small" loading={busy === 'credits'} disabled={!!busy} onClick={() => runAction('credits')}>
                 刷新积分
               </Button>
-              {(a.realm === 'cn' || a.realm === 'codearts') && (
+              {(a.realm === 'cn' || a.realm === 'codearts' || a.realm === 'raccoon') && (
                 <Button size="small" loading={busy === 'checkin'} disabled={!!busy} onClick={() => runAction('checkin')}>
                   签到
                 </Button>
@@ -312,9 +320,11 @@ export function AccountDrawer({ uid, onClose }: { uid: string; onClose: () => vo
                   网页活跃
                 </Button>
               )}
-              <Button size="small" loading={busy === 'sync-profile'} disabled={!!busy} onClick={() => runAction('sync-profile')}>
-                同步昵称
-              </Button>
+              {a.realm !== 'codearts' && (
+                <Button size="small" loading={busy === 'sync-profile'} disabled={!!busy} onClick={() => runAction('sync-profile')}>
+                  同步昵称
+                </Button>
+              )}
               <Button size="small" disabled={!!busy} onClick={() => act('refresh_token')}>
                 刷新 Token
               </Button>

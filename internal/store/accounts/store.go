@@ -115,9 +115,17 @@ func decodeFileRecord(raw []byte, path string, now time.Time) (*Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	rec := FromMap(m, path, now)
+	rec, err := decodeStoredRecord(m, path, now)
+	if err != nil {
+		return nil, err
+	}
 	if realm.IsCodeArts(rec.Realm) {
 		rec.SharedBaseline = raw
+	} else if realm.IsRaccoon(rec.Realm) {
+		rec.SharedBaseline, err = rec.Marshal()
+		if err != nil {
+			return nil, err
+		}
 	}
 	return rec, nil
 }
@@ -229,7 +237,7 @@ var saveMu sync.Mutex
 // Save writes the record into dir atomically (temp file in the same directory,
 // fsync, rename) and sets r.Path. Concurrent saves are serialised.
 func Save(dir string, r *Record) (string, error) {
-	if realm.IsCodeArts(r.Realm) {
+	if realm.IsCodeArts(r.Realm) || realm.IsRaccoon(r.Realm) {
 		latest, err := SaveReconciled(dir, r, time.Now())
 		if err != nil {
 			return "", err
@@ -241,12 +249,22 @@ func Save(dir string, r *Record) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := r.Marshal()
+	data, err := r.MarshalStored()
 	if err != nil {
 		return "", err
 	}
 	saveMu.Lock()
 	defer saveMu.Unlock()
+	if raw, err := os.ReadFile(path); err == nil {
+		if current, err := decodeObject(raw); err == nil {
+			channel, _ := current["realm"].(string)
+			if _, protected := current[raccoonRecordField]; protected || strings.EqualFold(strings.TrimSpace(channel), realm.Raccoon) {
+				return "", fmt.Errorf("%w: account channel changed", ErrConflict)
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
 	if err := writeFileAtomic(path, data); err != nil {
 		return "", err
 	}
@@ -281,13 +299,13 @@ func recordPath(dir string, r *Record) (string, error) {
 	return filepath.Join(absDir, name), nil
 }
 
-// SaveReconciled saves a CodeArts file and returns its committed record without
+// SaveReconciled saves a CodeArts or Raccoon file and returns its committed record without
 // changing the proposed record. A merge conflict returns the current record
 // so callers can reconcile an optimistic in-memory update. A tracked account
 // whose file was deleted returns ErrDeleted without recreating it.
 func SaveReconciled(dir string, proposed *Record, now time.Time) (*Record, error) {
-	if proposed == nil || proposed.UID == "" || !realm.IsCodeArts(proposed.Realm) {
-		return nil, errors.New("invalid CodeArts account")
+	if proposed == nil || proposed.UID == "" || (!realm.IsCodeArts(proposed.Realm) && !realm.IsRaccoon(proposed.Realm)) {
+		return nil, errors.New("invalid reconciled account")
 	}
 	path, err := recordPath(dir, proposed)
 	if err != nil {
@@ -317,24 +335,31 @@ func SaveReconciled(dir string, proposed *Record, now time.Time) (*Record, error
 	default:
 		return nil, err
 	}
+	if proposed.ObservedRaccoonCredential != nil && !current.MatchesRaccoonCredential(proposed.ObservedRaccoonCredential) {
+		return current, fmt.Errorf("%w: Raccoon credential changed before commit", ErrConflict)
+	}
 	if proposed.SharedBaseline != nil {
-		data, err = MergeJSON(proposed.SharedBaseline, data, raw)
+		data, err = MergeJSON(proposed.SharedBaseline, data, current.SharedBaseline)
 		if err != nil {
 			return current, err
 		}
 	}
-	next, err := decodeFileRecord(data, path, now)
+	m, err := decodeObject(data)
 	if err != nil {
 		return current, err
 	}
-	data, err = next.Marshal()
+	next := FromMap(m, path, now)
+	data, err = next.MarshalStored()
+	if err != nil {
+		return current, err
+	}
+	next.SharedBaseline, err = next.Marshal()
 	if err != nil {
 		return current, err
 	}
 	if err := writeFileAtomic(path, data); err != nil {
 		return current, err
 	}
-	next.SharedBaseline = data
 	return next, nil
 }
 

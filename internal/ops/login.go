@@ -175,6 +175,27 @@ func (c *Client) AddAccount(m map[string]any, replace bool) (*pool.Account, erro
 		}
 		prev := old.Record()
 		previous = prev
+		if prev.Realm != rec.Realm && (realm.IsRaccoon(prev.Realm) || realm.IsRaccoon(rec.Realm)) {
+			return nil, fmt.Errorf("account %s belongs to another realm", rec.UID)
+		}
+		if realm.IsRaccoon(rec.Realm) {
+			if _, exists := m["enabled"]; !exists {
+				rec.Enabled = prev.Enabled
+			}
+			if _, exists := m["tasksEnabled"]; !exists {
+				rec.TasksEnabled = prev.TasksEnabled
+			}
+			if _, exists := m["weight"]; !exists {
+				rec.Weight = prev.Weight
+			}
+			if _, exists := m["note"]; !exists {
+				rec.Note = prev.Note
+			}
+			if _, exists := m["disabledModels"]; !exists {
+				rec.DisabledModels = prev.DisabledModels
+			}
+			rec.SharedBaseline = prev.SharedBaseline
+		}
 		if realm.IsCodeArts(rec.Realm) {
 			if prev.Realm != rec.Realm {
 				return nil, fmt.Errorf("account %s belongs to another realm", rec.UID)
@@ -238,6 +259,28 @@ func (c *Client) AddAccount(m map[string]any, replace bool) (*pool.Account, erro
 				committed.CodeArtsCredentialVersion() == rec.CodeArtsCredentialVersion() {
 				return live, nil
 			}
+		}
+	}
+	if realm.IsRaccoon(rec.Realm) {
+		if live := c.Pool.Get(rec.UID); live != nil {
+			if committed := live.Record(); committed != previous {
+				if committed.RaccoonCredentialVersion() == rec.RaccoonCredentialVersion() {
+					return live, nil
+				}
+				return nil, accounts.ErrConflict
+			}
+			if _, ok := c.Pool.UpdateIf(rec.UID, func(current *accounts.Record) bool {
+				if c.Pool.Get(rec.UID) != live || live.Record() != previous {
+					return false
+				}
+				*current = *rec
+				return true
+			}); !ok {
+				return nil, accounts.ErrConflict
+			}
+			return live, nil
+		} else if previous != nil {
+			return nil, accounts.ErrDeleted
 		}
 	}
 	acc := c.Pool.Add(rec)

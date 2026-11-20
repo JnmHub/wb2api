@@ -499,6 +499,9 @@ func (c *Client) creditsEnterprise(ctx context.Context, acc *pool.Account) (map[
 // shows credits again also lifts an early 402 park.
 func (c *Client) FetchCredits(ctx context.Context, acc *pool.Account) Result {
 	rec := acc.Record()
+	if rec.Realm != realm.CN && rec.Realm != realm.Intl {
+		return failure("此渠道需使用自己的积分接口")
+	}
 	var doc map[string]any
 	var err error
 	if rec.Realm == realm.CN {

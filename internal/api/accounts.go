@@ -18,6 +18,7 @@ import (
 	"wb2api/internal/jobs"
 	"wb2api/internal/ops"
 	"wb2api/internal/pool"
+	"wb2api/internal/raccoonsync"
 	"wb2api/internal/realm"
 	"wb2api/internal/refresh"
 	"wb2api/internal/store/accounts"
@@ -51,6 +52,9 @@ type Accounts struct {
 	// CodeArts is the Huawei Cloud channel's operations service (nil = channel
 	// disabled). Discovery, check-in and the model catalogue live there.
 	CodeArts *codeartsync.Service
+	// Raccoon is the 小浣熊 channel's operations service (nil = channel
+	// disabled): catalogue, daily points link and the sign-up grants.
+	Raccoon *raccoonsync.Service
 
 	changes events.Coalescer
 }
@@ -97,10 +101,17 @@ func (a *Accounts) view(acc *pool.Account, now time.Time, detail bool) map[strin
 	if nick == "" {
 		nick = shortID(rec.UID)
 	}
+	// A record written by a channel that never touched this field has a nil
+	// slice, which marshals to null; the panel expects an array and would crash
+	// on .join(). Always answer with [].
+	disabledModels := rec.DisabledModels
+	if disabledModels == nil {
+		disabledModels = []string{}
+	}
 	v := map[string]any{
 		"uid": rec.UID, "short_id": shortID(rec.UID), "nickname": nick, "realm": rec.Realm, "product": rec.Product,
 		"enterprise_id": rec.EnterpriseID, "enabled": acc.Enabled(), "weight": acc.Weight(), "note": rec.Note,
-		"disabled_models": rec.DisabledModels, "source": rec.Source, "proxy_slot": rec.ProxySlot, "proxy": rec.ProxyLegacy,
+		"disabled_models": disabledModels, "source": rec.Source, "proxy_slot": rec.ProxySlot, "proxy": rec.ProxyLegacy,
 		"expires_at": rec.ExpiresAt, "status": string(status), "need_login": status == pool.StatusNeedLogin,
 		"has_refresh_token": rec.RefreshToken != "", "added_at": rec.AddedAt, "inflight": acc.Inflight(),
 		"today":         map[string]any{"requests": today.Requests, "tokens": today.Tokens, "credit": today.Credit},
@@ -178,7 +189,10 @@ func shortID(uid string) string {
 // the raw billing document.
 func summarizeCredits(c map[string]any) map[string]any {
 	out := map[string]any{}
-	for _, k := range []string{"remain", "total", "used", "updatedAt", "updated_at", "plan", "reset", "source"} {
+	// remain/total/used/… are the WorkBuddy/Huawei shape; available/wallets/
+	// unit/at carry the raccoon credit buckets through to the drawer unchanged.
+	for _, k := range []string{"remain", "total", "used", "updatedAt", "updated_at",
+		"plan", "reset", "source", "available", "unit", "wallets", "subscription", "at"} {
 		if v, ok := c[k]; ok {
 			out[k] = v
 		}
@@ -764,8 +778,13 @@ func (a *Accounts) batchFn(b batchReq) (jobs.Func, error) {
 			if acc == nil {
 				return errors.New("account no longer exists")
 			}
-			if len(b.UIDs) == 1 && realm.IsCodeArts(acc.Realm) {
-				ctx = refresh.WithManualCodeArts(ctx, uid)
+			if len(b.UIDs) == 1 {
+				switch acc.Realm {
+				case realm.CodeArts:
+					ctx = refresh.WithManualCodeArts(ctx, uid)
+				case realm.Raccoon:
+					ctx = refresh.WithManualRaccoon(ctx, uid)
+				}
 			}
 			return a.Refresher.Refresh(ctx, acc)
 		}, nil
@@ -858,12 +877,16 @@ func (a *Accounts) filterBatchRealm(action string, uids []string) ([]string, str
 				// The CodeArts check-in claims credit campaigns; enterprise and
 				// task switches do not apply, the upstream decides eligibility.
 				out = append(out, uid)
+			case realm.IsRaccoon(rec.Realm):
+				// Raccoon's daily points link: the service re-checks the
+				// credential and the per-day state before calling upstream.
+				out = append(out, uid)
 			case rec.Realm == realm.CN && !ops.IsEnterprise(rec):
 				out = append(out, uid)
 			}
 		}
 		if len(out) == 0 {
-			return out, "所选账号里没有可签到的账号（国内版签到或华为 CodeArts 积分）。"
+			return out, "所选账号里没有可签到的账号（国内版签到、华为 CodeArts 或小浣熊每日积分）。"
 		}
 		return out, ""
 	}

@@ -48,9 +48,9 @@ func (in KeyInput) validate() error {
 	}
 	if in.Realm != nil {
 		switch strings.ToLower(strings.TrimSpace(*in.Realm)) {
-		case "", "intl", "cn", "codearts":
+		case "", "intl", "cn", "codearts", "raccoon":
 		default:
-			return errors.New("realm must be intl, cn, codearts or empty")
+			return errors.New("realm must be intl, cn, codearts, raccoon or empty")
 		}
 	}
 	if in.ConcurrencyLimit != nil && *in.ConcurrencyLimit < 0 {
@@ -80,6 +80,7 @@ func findKey(list []any, id string) (map[string]any, int) {
 }
 
 func applyKeyInput(m map[string]any, in KeyInput) {
+	secret := storedKeySecret(m)
 	if in.Name != nil {
 		name := strings.TrimSpace(*in.Name)
 		if name == "" {
@@ -88,7 +89,7 @@ func applyKeyInput(m map[string]any, in KeyInput) {
 		m["name"] = name
 	}
 	if in.Key != nil && strings.TrimSpace(*in.Key) != "" {
-		m["key"] = strings.TrimSpace(*in.Key)
+		secret = strings.TrimSpace(*in.Key)
 	}
 	if in.Realm != nil {
 		m["realm"] = strings.ToLower(strings.TrimSpace(*in.Realm))
@@ -108,6 +109,7 @@ func applyKeyInput(m map[string]any, in KeyInput) {
 	if in.Enabled != nil {
 		m["enabled"] = *in.Enabled
 	}
+	setStoredKeySecret(m, secret)
 }
 
 func stringsToAny(l []string) []any {
@@ -132,7 +134,7 @@ func (s *Store) CreateKey(in KeyInput) (APIKey, error) {
 		}
 		list := rawKeys(d)
 		for _, raw := range list {
-			if m, ok := raw.(map[string]any); ok && fmt.Sprint(m["key"]) == strings.TrimSpace(*in.Key) && fmt.Sprint(m["deleted_at"]) == "" {
+			if m, ok := raw.(map[string]any); ok && storedKeySecret(m) == strings.TrimSpace(*in.Key) && fmt.Sprint(m["deleted_at"]) == "" {
 				return errors.New("that key already exists")
 			}
 		}
@@ -169,6 +171,14 @@ func (s *Store) UpdateKey(id string, in KeyInput) error {
 		if fmt.Sprint(m["deleted_at"]) != "" {
 			return errors.New("a deleted key cannot be changed")
 		}
+		if in.Key != nil && strings.TrimSpace(*in.Key) != "" {
+			for _, raw := range rawKeys(d) {
+				if other, ok := raw.(map[string]any); ok && fmt.Sprint(other["id"]) != id &&
+					storedKeySecret(other) == strings.TrimSpace(*in.Key) && strings.TrimSpace(truthyStr(other["deleted_at"])) == "" {
+					return errors.New("that key already exists")
+				}
+			}
+		}
 		applyKeyInput(m, in)
 		return nil
 	})
@@ -182,7 +192,7 @@ func (s *Store) DeleteKey(id string) error {
 		if m == nil {
 			return fmt.Errorf("unknown key %q", id)
 		}
-		m["key"] = ""
+		setStoredKeySecret(m, "")
 		m["enabled"] = false
 		m["deleted_at"] = stamp()
 		return nil

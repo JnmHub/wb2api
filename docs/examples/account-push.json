@@ -1,0 +1,43 @@
+{
+  "accounts": [
+    {
+      "uid": "REPLACE_WITH_WORKBUDDY_UID",
+      "realm": "cn",
+      "nickname": "WorkBuddy 国内版",
+      "domain": "www.workbuddy.cn",
+      "accessToken": "REPLACE_WITH_WORKBUDDY_ACCESS_JWT",
+      "refreshToken": "REPLACE_WITH_WORKBUDDY_REFRESH_TOKEN",
+      "expiresAt": "REPLACE_WITH_UNIX_SECONDS"
+    },
+    {
+      "uid": "REPLACE_WITH_CODEARTS_USER_ID",
+      "realm": "codearts",
+      "nickname": "华为 CodeArts",
+      "refreshToken": "REPLACE_WITH_CODEARTS_REFRESH_TOKEN",
+      "expiresAt": "REPLACE_WITH_UNIX_SECONDS",
+      "codearts": {
+        "domain_id": "REPLACE_WITH_CODEARTS_DOMAIN_ID",
+        "access_key_id": "REPLACE_WITH_STS_ACCESS_KEY_ID",
+        "secret_access_key": "REPLACE_WITH_STS_SECRET_ACCESS_KEY",
+        "security_token": "REPLACE_WITH_STS_SECURITY_TOKEN",
+        "client_id": "REPLACE_WITH_SOURCE_CLIENT_ID",
+        "code_verifier": "REPLACE_WITH_ORIGINAL_PKCE_VERIFIER",
+        "dpop_private_key": {
+          "kty": "EC",
+          "crv": "P-256",
+          "x": "REPLACE_WITH_ORIGINAL_JWK_X",
+          "y": "REPLACE_WITH_ORIGINAL_JWK_Y",
+          "d": "REPLACE_WITH_ORIGINAL_JWK_D"
+        }
+      }
+    },
+    {
+      "uid": "rc-REPLACE_WITH_RACCOON_USER_ID",
+      "realm": "raccoon",
+      "nickname": "小浣熊 IAM",
+      "raccoon": {
+        "accessToken": "REPLACE_WITH_RACCOON_ACCESS_JWT"
+      }
+    }
+  ]
+}

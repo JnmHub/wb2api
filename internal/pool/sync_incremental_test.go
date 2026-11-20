@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"wb2api/internal/realm"
 	"wb2api/internal/store/accounts"
 )
 
@@ -17,6 +18,29 @@ func incrementalRecord(t *testing.T, uid, realm string, balance, stamp float64, 
 	}
 	r.SharedBaseline = raw
 	return r
+}
+
+func TestRaccoonAliasesAreBlockedAfterSharedRecordUpdates(t *testing.T) {
+	now := time.Now()
+	const wire = "sn-deepseek-v4-1-flash-1017"
+	const alias = "deepseek-v4.1-flash-1017"
+	account := &accounts.Record{UID: "rc-sync", Realm: realm.Raccoon, AccessToken: "fixture-access", ExpiresAt: now.Add(time.Hour).Unix()}
+	p := New([]*accounts.Record{account})
+	if !p.Get(account.UID).HealthReady(wire, now) {
+		t.Fatal("fixture is not ready")
+	}
+	blocked := *account
+	blocked.DisabledModels = []string{alias}
+	p.ApplyChanges([]*accounts.Record{&blocked}, nil)
+	if p.Get(account.UID).HealthReady(wire, now) {
+		t.Fatal("shared disabled alias left the canonical model schedulable")
+	}
+	cooled := *account
+	cooled.ModelCool = map[string]float64{alias: float64(now.Add(time.Hour).Unix())}
+	p.ApplyChanges([]*accounts.Record{&cooled}, nil)
+	if p.Get(account.UID).HealthReady(wire, now) {
+		t.Fatal("shared model cooldown was lost during account reconciliation")
+	}
 }
 
 func TestApplyChangesPreservesPointersRuntimeAndCredits(t *testing.T) {

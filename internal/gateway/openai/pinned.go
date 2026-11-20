@@ -75,7 +75,7 @@ func requestRealm(r *http.Request, key *settings.APIKey) string {
 	for _, c := range cands {
 		c = strings.ToLower(strings.TrimSpace(c))
 		switch c {
-		case realm.Intl, realm.CN, realm.CodeArts:
+		case realm.Intl, realm.CN, realm.CodeArts, realm.Raccoon:
 			return c
 		}
 	}

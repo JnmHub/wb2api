@@ -3,7 +3,9 @@ package openai
 import (
 	"wb2api/internal/pool"
 	"wb2api/internal/realm"
+	"wb2api/internal/store/accounts"
 	"wb2api/internal/upstream/codearts"
+	"wb2api/internal/upstream/raccoon"
 )
 
 // pickAccount applies a single batch of advisory capacity exclusions before the
@@ -32,7 +34,7 @@ func (h *Handler) pickAccount(q *request) *pool.Account {
 			base[uid] = struct{}{}
 		}
 		for _, a := range candidates {
-			if realm.IsCodeArts(q.realm) && !codeArtsAllowsModel(a.Record(), q.model) {
+			if !accountAllowed(q.keyAccounts, a.UID) || !accountAllowsModel(a.Record(), q.model) {
 				base[a.UID] = struct{}{}
 				delete(q.at.full, a.UID)
 				continue
@@ -83,12 +85,35 @@ func (h *Handler) pickAccount(q *request) *pool.Account {
 	return nil
 }
 
-// normaliseModelName rewrites the Huawei channel's display-name aliases
-// ("DeepSeek-V4.1-Flash") to the wire id ("deepseek-v4.1-flash") before the
-// picker consults model cooldowns: the upstream only accepts one spelling, and
-// a cooldown recorded under either would otherwise be silently bypassed.
+func accountAllowsModel(rec *accounts.Record, model string) bool {
+	if rec == nil {
+		return false
+	}
+	switch rec.Realm {
+	case realm.CodeArts:
+		return codeArtsAllowsModel(rec, model)
+	case realm.Raccoon:
+		return raccoon.AllowsModel(rec, model)
+	default:
+		return true
+	}
+}
+
+// normaliseModelName resolves channel aliases before consulting model cooldowns.
 func (h *Handler) normaliseModelName(q *request) {
-	if q == nil || !realm.IsCodeArts(q.realm) || q.model == "" {
+	if q == nil || q.model == "" {
+		return
+	}
+	if realm.IsRaccoon(q.realm) {
+		if canonical := raccoon.WireName(q.model); canonical != q.model {
+			if q.clientModel == "" {
+				q.clientModel = q.model
+			}
+			q.model = canonical
+		}
+		return
+	}
+	if !realm.IsCodeArts(q.realm) {
 		return
 	}
 	for _, a := range h.Pool.All() {

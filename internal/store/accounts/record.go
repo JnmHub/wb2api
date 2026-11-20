@@ -75,6 +75,9 @@ type Record struct {
 	// SharedBaseline is an immutable persisted snapshot used by
 	// optimistic merges. It is runtime metadata and is never marshaled.
 	SharedBaseline []byte
+	// ObservedRaccoonCredential makes a provider write conditional on the
+	// actual credential at commit time. It is never marshaled.
+	ObservedRaccoonCredential *Record
 }
 
 // IsEnabled applies Python truthiness to the stored `enabled` value.
@@ -162,6 +165,10 @@ func toFloat(v any) (float64, bool) {
 		return f, err == nil
 	case float64:
 		return t, true
+	case int:
+		return float64(t), true
+	case int64:
+		return float64(t), true
 	case bool:
 		if t {
 			return 1, true
@@ -215,6 +222,9 @@ func FromMap(data map[string]any, path string, now time.Time) *Record {
 	}
 	r.Domain = pyStrOrEmpty(data["domain"])
 	r.Realm = pyStrOrEmpty(data["realm"])
+	if strings.EqualFold(strings.TrimSpace(r.Realm), realm.Raccoon) {
+		r.Realm = realm.Raccoon
+	}
 	if r.Realm == "" {
 		r.Realm = realm.Detect(token, r.Domain)
 	}
@@ -337,6 +347,18 @@ func FromMap(data map[string]any, path string, now time.Time) *Record {
 	for k, v := range data {
 		if !knownKeys[k] {
 			r.Extra[k] = v
+		}
+	}
+	if realm.IsRaccoon(r.Realm) {
+		fields := r.RaccoonFields()
+		if r.AccessToken == "" {
+			r.AccessToken = RaccoonStringOf(fields, "accessToken", "access_token", "token")
+		}
+		if r.RefreshToken == "" {
+			r.RefreshToken = RaccoonStringOf(fields, "refreshToken", "refresh_token")
+		}
+		if r.ExpiresAt == 0 {
+			r.ExpiresAt = realm.JWTExp(r.AccessToken)
 		}
 	}
 	return r

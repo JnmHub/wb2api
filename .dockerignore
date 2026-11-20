@@ -2,6 +2,7 @@
 .gitignore
 .github
 .scratch
+/cj.txt
 bin
 run
 legacy/python/__pycache__

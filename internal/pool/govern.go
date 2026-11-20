@@ -193,6 +193,7 @@ func (a *Account) UnscopedStreak() int {
 // The cooldown is written to the record so a restart does not forget it: the
 // record to persist is returned when the window was extended.
 func (a *Account) NoteModelError(model string, until time.Time, wait time.Duration, msg, detail string, now time.Time) (*accounts.Record, bool) {
+	model = a.modelKey(model)
 	end := now.Add(wait)
 	if !until.IsZero() {
 		end = until
@@ -224,6 +225,7 @@ func (a *Account) NoteModelError(model string, until time.Time, wait time.Durati
 // touching the account's error counters: 11158 says the model is not part of
 // this account's entitlement, not that the account is failing.
 func (a *Account) BlockModel(model string, until, now time.Time) (*accounts.Record, bool) {
+	model = a.modelKey(model)
 	if model == "" || !until.After(now) {
 		return nil, false
 	}
@@ -361,6 +363,7 @@ func toNumber(v any) (float64, bool) {
 // of evidence that the vendor lifted it. It returns the record to persist when
 // a restriction was lifted.
 func (a *Account) NoteSuccess(model string) *accounts.Record {
+	model = a.modelKey(model)
 	a.mu.Lock()
 	if model != "" {
 		delete(a.modelCool, model)
@@ -397,7 +400,7 @@ func (a *Account) ThrottleWait(model string, now time.Time) time.Duration {
 	}
 	if model != "" {
 		a.mu.Lock()
-		if v := a.modelCool[model]; v-ns > best {
+		if v := a.modelCool[a.modelKey(model)]; v-ns > best {
 			best = v - ns
 		}
 		a.mu.Unlock()
@@ -409,6 +412,7 @@ func (a *Account) ThrottleWait(model string, now time.Time) time.Duration {
 // quota windows (6004), which are facts rather than local guesses; an upstream
 // restriction is never cleared here.
 func (a *Account) ClearError(model string, keepCaps bool, now time.Time) {
+	model = a.modelKey(model)
 	a.mu.Lock()
 	switch {
 	case model != "":
@@ -437,6 +441,7 @@ func (a *Account) ClearError(model string, keepCaps bool, now time.Time) {
 
 // ClearModelCooldown lifts one model's throttle, leaving account state alone.
 func (a *Account) ClearModelCooldown(model string) {
+	model = a.modelKey(model)
 	if model == "" {
 		return
 	}
@@ -540,11 +545,12 @@ func (a *Account) restoreCaps(rec *accounts.Record, now time.Time) {
 		if a.modelCool == nil {
 			a.modelCool = map[string]int64{}
 		}
-		if a.modelCool[m] < end.UnixNano() {
-			a.modelCool[m] = end.UnixNano()
-		}
-		if w := rec.ModelCoolWhy[m]; w != "" {
-			a.setCoolWhyLocked(m, w)
+		key := a.modelKey(m)
+		if a.modelCool[key] <= end.UnixNano() {
+			a.modelCool[key] = end.UnixNano()
+			if w := rec.ModelCoolWhy[m]; w != "" {
+				a.setCoolWhyLocked(key, w)
+			}
 		}
 	}
 	for m, c := range rec.ModelCaps {
@@ -574,7 +580,7 @@ func (a *Account) restoreCaps(rec *accounts.Record, now time.Time) {
 func (a *Account) ModelCooldownStart(model string) time.Time {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.g.coolAt[model]
+	return a.g.coolAt[a.modelKey(model)]
 }
 
 func humanLeft(d time.Duration) string {
@@ -604,11 +610,21 @@ func humanLeft(d time.Duration) string {
 // UnavailableReason says why the account cannot serve model right now ("" when
 // it can). The order matches Ready, so the reason is the one that refused it.
 func (a *Account) UnavailableReason(model string, now time.Time) string {
+	model = a.modelKey(model)
 	if !a.enabled.Load() {
 		return "已停用"
 	}
 	if a.Record().AccessToken == "" {
 		return "无凭证"
+	}
+	if realm.IsRaccoon(a.Realm) {
+		rec := a.Record()
+		if rec.RaccoonNeedsLogin() || (rec.RefreshToken == "" && !rec.RaccoonAccessUsable(now)) {
+			return "登录态已失效，需要重新登录"
+		}
+		if !rec.RaccoonAccessUsable(now) {
+			return "凭证不可用，等待刷新"
+		}
 	}
 	if realm.IsCodeArts(a.Realm) {
 		if a.Record().CodeArtsNeedsLogin() {
@@ -670,7 +686,7 @@ func (a *Account) UnavailableReason(model string, now time.Time) string {
 	if remain, ok := a.CreditRemain(); ok && remain <= 0 {
 		return "积分已用尽"
 	}
-	if exp := a.expiresAt.Load(); exp != 0 && exp-now.Unix() <= 120 {
+	if exp := a.expiresAt.Load(); !realm.IsRaccoon(a.Realm) && exp != 0 && exp-now.Unix() <= 120 {
 		return "凭证已过期"
 	}
 	return ""

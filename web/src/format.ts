@@ -25,9 +25,15 @@ export function ms(n: number | undefined | null): string {
   return n >= 1000 ? (n / 1000).toFixed(2) + ' s' : Math.round(n) + ' ms'
 }
 
-export function credit(n: number | undefined | null): string {
-  if (n == null || Number.isNaN(n)) return '—'
-  return n >= 100 ? n.toFixed(0) : n.toFixed(2)
+/**
+ * Formats a credit amount. Older account files (and some channels) store the
+ * amount as a display string such as "300 积分"; coerce it instead of throwing
+ * on toFixed, which would take the whole drawer down.
+ */
+export function credit(n: number | string | undefined | null): string {
+  const v = typeof n === 'string' ? Number.parseFloat(n.replace(/[^\d.+-]/g, '')) : n
+  if (v == null || Number.isNaN(v)) return typeof n === 'string' && n ? n : '—'
+  return v >= 100 ? v.toFixed(0) : v.toFixed(2)
 }
 
 /** "3h 12m" / "5d" until a unix-seconds deadline, or "expired". */
@@ -61,7 +67,7 @@ export const statusLabel: Record<string, string> = {
   model_cooling: '模型冷却',
 }
 
-export const realmLabel: Record<string, string> = { intl: '国际版', cn: '国内版', codearts: '华为 CodeArts' }
+export const realmLabel: Record<string, string> = { intl: '国际版', cn: '国内版', codearts: '华为 CodeArts', raccoon: '小浣熊' }
 
 export function debounce<A extends unknown[]>(fn: (...a: A) => void, wait: number) {
   let t: ReturnType<typeof setTimeout> | undefined

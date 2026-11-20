@@ -63,7 +63,7 @@ export function SettingsPage() {
 
       <Card title="出口">
         <Typography.Paragraph type="secondary">
-          未绑定渠道的 Key、也没有 X-Realm / ?realm= 的请求，走这里选的渠道。模型名只在各自厂商内比较：WorkBuddy 的 gpt-* / gemini-* 选国际版，deepseek-v4-pro 选国内版，华为云 CodeArts 的模型选 CodeArts。
+          未绑定渠道的 Key、也没有 X-Realm / ?realm= 的请求，走这里选的渠道。模型名只在各自厂商内比较：WorkBuddy 的 gpt-* / gemini-* 选国际版，deepseek-v4-pro 选国内版，华为云 CodeArts 的模型选 CodeArts，小浣熊的 sn-* / raccoon-* 选小浣熊。
         </Typography.Paragraph>
         <Segmented
           value={s.realm.current}
@@ -72,6 +72,7 @@ export function SettingsPage() {
             { value: 'intl', label: '国际版 (Global)' },
             { value: 'cn', label: '国内版 (China)' },
             { value: 'codearts', label: '华为 CodeArts' },
+            { value: 'raccoon', label: '小浣熊' },
           ]}
         />
       </Card>

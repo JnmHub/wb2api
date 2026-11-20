@@ -42,6 +42,9 @@ func (h *Handler) stageCodeArtsOutput(q *request, body io.Reader) (io.Reader, er
 func codeArtsOutput(q *request, body io.Reader) io.Reader {
 	stream := newCodeArtsStream(body)
 	stream.names = q.toolNames
+	if strings.HasPrefix(strings.ToLower(q.model), "deepseek-") {
+		stream.inlineReasoning = &codeArtsInlineReasoning{}
+	}
 	stream.observe = func(data []byte) { observeCodeArtsFrame(q.r.Context(), data) }
 	return stream
 }

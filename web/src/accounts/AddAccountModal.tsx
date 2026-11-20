@@ -14,13 +14,26 @@ export function AddAccountModal({ onClose }: { onClose: () => void }) {
   const [realm, setRealm] = useState<Realm>('intl')
   const [platform, setPlatform] = useState('CLI')
   const start = useMutation({
-    mutationFn: () => post<LoginStart>('/api/v2/accounts/login/start', { realm, platform }),
+    mutationFn: async () => {
+      if (realm === 'raccoon') {
+        // The raccoon sign-in has its own endpoint pair: the authorize page is
+        // not the WorkBuddy one and the callback is a custom scheme.
+        const res = await post<LoginStart>('/api/v2/raccoon/login/start', {})
+        return { ...res, realm, platform }
+      }
+      return post<LoginStart>('/api/v2/accounts/login/start', { realm, platform })
+    },
   })
   const state = start.data?.state ?? ''
+  const attemptRealm = start.data?.realm ?? realm
   const poll = useQuery({
     queryKey: ['login-poll', state],
     enabled: !!state,
-    queryFn: () => get<LoginPoll>('/api/v2/accounts/login/poll?state=' + encodeURIComponent(state)),
+    queryFn: () =>
+      get<LoginPoll>(
+        (attemptRealm === 'raccoon' ? '/api/v2/raccoon/login/poll?state=' : '/api/v2/accounts/login/poll?state=') +
+          encodeURIComponent(state),
+      ),
     refetchInterval: (q) => (q.state.data && q.state.data.status !== 'pending' ? false : 2000),
     gcTime: 0,
   })
@@ -28,14 +41,31 @@ export function AddAccountModal({ onClose }: { onClose: () => void }) {
   const [callbackURL, setCallbackURL] = useState('')
   const complete = useMutation({
     mutationFn: () =>
-      post<{ ok: boolean; uid: string; nickname?: string }>('/api/v2/codearts/login/complete', {
-        attempt: state,
-        url: callbackURL,
-      }),
+      post<{ ok: boolean; uid: string; nickname?: string }>(
+        attemptRealm === 'raccoon' ? '/api/v2/raccoon/login/complete' : '/api/v2/codearts/login/complete',
+        attemptRealm === 'raccoon'
+          ? { state, url: callbackURL }
+          : { attempt: state, url: callbackURL },
+      ),
     onSuccess: () => {
       setCallbackURL('')
       void qc.invalidateQueries({ queryKey: ['login-poll', state] })
       void qc.invalidateQueries({ queryKey: ['accounts'] })
+    },
+  })
+  // Pasting the official client's auth.json (or a bare token) works from any
+  // deployment, including one behind a domain name.
+  const [tokenText, setTokenText] = useState('')
+  const importToken = useMutation({
+    mutationFn: () =>
+      post<{ ok: boolean; uid: string; nickname?: string; iam?: boolean }>(
+        '/api/v2/raccoon/accounts/import',
+        { token: tokenText.trim() },
+      ),
+    onSuccess: () => {
+      setTokenText('')
+      void qc.invalidateQueries({ queryKey: ['accounts'] })
+      void qc.invalidateQueries({ queryKey: ['accounts-summary'] })
     },
   })
 
@@ -46,7 +76,10 @@ export function AddAccountModal({ onClose }: { onClose: () => void }) {
     }
   }, [status, qc])
 
-  const cancel = useMutation({ mutationFn: () => post('/api/v2/accounts/login/cancel', { state }) })
+  const cancel = useMutation({
+    mutationFn: () =>
+      post(attemptRealm === 'raccoon' ? '/api/v2/raccoon/login/cancel' : '/api/v2/accounts/login/cancel', { state }),
+  })
   const close = () => {
     if (state && status !== 'ok') cancel.mutate()
     onClose()
@@ -60,7 +93,9 @@ export function AddAccountModal({ onClose }: { onClose: () => void }) {
             <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
               {realm === 'codearts'
                 ? '用华为云账号完成登录后，网关会自动领取 STS 凭据、写入账号，并拉取一次模型目录。'
-                : '用浏览器完成 WorkBuddy 登录后，账号会自动写进网关。国内版首次登录会顺带签到一次。'}
+                : realm === 'raccoon'
+                  ? '小浣熊走网页授权或粘贴登录态。登录成功后网关会拉一次模型目录，并顺带领取新手奖励。'
+                  : '用浏览器完成 WorkBuddy 登录后，账号会自动写进网关。国内版首次登录会顺带签到一次。'}
             </Typography.Paragraph>
             <div>
               <Typography.Text type="secondary">渠道</Typography.Text>
@@ -72,11 +107,42 @@ export function AddAccountModal({ onClose }: { onClose: () => void }) {
                     { value: 'intl', label: '国际版' },
                     { value: 'cn', label: '国内版' },
                     { value: 'codearts', label: '华为 CodeArts' },
+                    { value: 'raccoon', label: '小浣熊' },
                   ]}
                 />
               </div>
             </div>
-            {realm !== 'codearts' && (
+            {realm === 'raccoon' && (
+              <div>
+                <Typography.Text type="secondary">
+                  粘贴小浣熊客户端登录态（<span className="mono">auth.json</span> 内容或裸 accessToken）
+                </Typography.Text>
+                <Input.TextArea
+                  className="mono"
+                  autoSize={{ minRows: 3, maxRows: 8 }}
+                  placeholder='{"access_token":"eyJ…","refresh_token":"…"} 或直接粘 eyJ…'
+                  value={tokenText}
+                  onChange={(e) => setTokenText(e.target.value)}
+                />
+                <Space style={{ marginTop: 8 }}>
+                  <Button
+                    size="small"
+                    disabled={!tokenText.trim()}
+                    loading={importToken.isPending}
+                    onClick={() => importToken.mutate()}
+                  >
+                    用这个登录态添加
+                  </Button>
+                  {importToken.data && (
+                    <Typography.Text type="success">已添加：{importToken.data.uid}</Typography.Text>
+                  )}
+                  {importToken.error && (
+                    <Typography.Text type="danger">{(importToken.error as Error).message}</Typography.Text>
+                  )}
+                </Space>
+              </div>
+            )}
+            {realm !== 'codearts' && realm !== 'raccoon' && (
               <div>
                 <Typography.Text type="secondary">登录身份</Typography.Text>
                 <Select
@@ -154,6 +220,41 @@ export function AddAccountModal({ onClose }: { onClose: () => void }) {
                         用这个地址完成登录
                       </Button>
                       {complete.data && <Typography.Text type="success">已登录：{complete.data.uid}</Typography.Text>}
+                      {complete.error && (
+                        <Typography.Text type="danger">{(complete.error as Error).message}</Typography.Text>
+                      )}
+                    </Space>
+                  </div>
+                )}
+                {realm === 'raccoon' && (
+                  <div>
+                    <Typography.Text type="secondary">
+                      {start.data?.mode === 'web'
+                        ? `在打开的页面里完成登录，浏览器会带着授权码回到 ${start.data.callback ?? '面板'}。`
+                        : '登录成功后浏览器会跳到 office-raccoon://… 地址（服务器部署时这一跳打不开属正常）。'}{' '}
+                      回不到面板也没关系：把地址栏整条链接（或只粘授权码）放进下面这一栏，一样能完成登录。
+                    </Typography.Text>
+                    <Input.TextArea
+                      className="mono"
+                      autoSize={{ minRows: 2, maxRows: 4 }}
+                      placeholder="office-raccoon://auth/callback?code=…&state=…　或　http://127.0.0.1:8788/api/v2/raccoon/login/callback?code=…&state=…　或直接粘授权码"
+                      value={callbackURL}
+                      onChange={(e) => setCallbackURL(e.target.value)}
+                    />
+                    <Space style={{ marginTop: 8 }} wrap>
+                      <Button
+                        size="small"
+                        type="primary"
+                        disabled={!callbackURL.trim()}
+                        loading={complete.isPending}
+                        onClick={() => complete.mutate()}
+                      >
+                        用这个回调完成登录
+                      </Button>
+                      {start.data?.callback && <CopyButton text={start.data.callback} label="复制回调地址" />}
+                      {complete.data && (
+                        <Typography.Text type="success">已登录：{complete.data.uid}</Typography.Text>
+                      )}
                       {complete.error && (
                         <Typography.Text type="danger">{(complete.error as Error).message}</Typography.Text>
                       )}

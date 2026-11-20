@@ -7,7 +7,7 @@ export function ExportModal({ onClose, uids = [] }: { onClose: () => void; uids?
   const [realm, setRealm] = useState('')
   const [secrets, setSecrets] = useState(true)
   const p = new URLSearchParams()
-  if (realm) p.set('realm', realm)
+  if (realm && !uids.length) p.set('realm', realm)
   if (!secrets) p.set('secrets', '0')
   if (uids.length) p.set('uids', uids.join(','))
   const url = '/api/v2/accounts/export?' + p
@@ -17,7 +17,7 @@ export function ExportModal({ onClose, uids = [] }: { onClose: () => void; uids?
         <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
           {uids.length
             ? `导出选中的 ${uids.length} 个账号。区域筛选只对“全部账号”生效。`
-            : '导出成 JSON 文件，可以再导入到本网关，也兼容旧版 Python 网关的导入格式。'}
+            : '导出成 JSON 文件，可以再导入到本网关。旧版 Python 网关仅支持 WorkBuddy 账号。'}
         </Typography.Paragraph>
         <div>
           <Typography.Text type="secondary">区域</Typography.Text>
@@ -25,10 +25,13 @@ export function ExportModal({ onClose, uids = [] }: { onClose: () => void; uids?
             <Segmented
               value={realm}
               onChange={(v) => setRealm(String(v))}
+              disabled={uids.length > 0}
               options={[
                 { value: '', label: '全部' },
                 { value: 'intl', label: '国际版' },
                 { value: 'cn', label: '国内版' },
+                { value: 'codearts', label: '华为 CodeArts' },
+                { value: 'raccoon', label: '小浣熊' },
               ]}
             />
           </div>

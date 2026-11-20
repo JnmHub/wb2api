@@ -50,7 +50,7 @@ func (i *Info) requestRealm(r *http.Request, key *settings.APIKey) string {
 	}
 	for _, c := range []string{bound, r.Header.Get("X-Realm"), r.URL.Query().Get("realm")} {
 		switch strings.ToLower(strings.TrimSpace(c)) {
-		case realm.Intl, realm.CN, realm.CodeArts, "all":
+		case realm.Intl, realm.CN, realm.CodeArts, realm.Raccoon, "all":
 			return strings.ToLower(strings.TrimSpace(c))
 		}
 	}
@@ -114,6 +114,10 @@ func (i *Info) models(w http.ResponseWriter, r *http.Request) {
 		// The WorkBuddy catalogue describes another vendor's models; a
 		// CodeArts channel advertises what its accounts declare they can serve.
 		data, meta = i.codeartsModels(rl), catalog.Meta{Source: "codearts"}
+	} else if realm.IsRaccoon(rl) {
+		// Same rule for raccoon: the channel's own discovered catalogue (or
+		// its shipped snapshot), never the WorkBuddy model list.
+		data, meta = i.raccoonModels(rl)
 	} else {
 		data, meta = i.Catalog.Entries(r.Context(), rl)
 	}

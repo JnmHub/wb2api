@@ -28,7 +28,7 @@ func (h *Handler) waitForFullAccount(q *request) (*pool.Account, func(), bool) {
 	}
 	candidates := make([]candidate, 0, len(q.at.full))
 	for _, a := range q.at.full {
-		if a == nil || (pinned != nil && a.UID != pinned.UID) {
+		if a == nil || (pinned != nil && a.UID != pinned.UID) || !accountAllowed(q.keyAccounts, a.UID) {
 			continue
 		}
 		candidates = append(candidates, candidate{a, h.AccountScore(a, "")})
@@ -60,7 +60,7 @@ func (h *Handler) waitForFullAccount(q *request) (*pool.Account, func(), bool) {
 			if ctx.Err() != nil || time.Until(deadline) <= 0 {
 				return nil, nil, false
 			}
-			if failed[a.UID] || !a.HealthReady(q.model, time.Now()) {
+			if failed[a.UID] || !a.HealthReady(q.model, time.Now()) || !accountAllowsModel(a.Record(), q.model) {
 				continue
 			}
 			eligible = true
@@ -146,7 +146,7 @@ func (h *Handler) waitForFullAccount(q *request) (*pool.Account, func(), bool) {
 				release()
 				return nil, nil, false
 			}
-			if !a.HealthReady(q.model, time.Now()) {
+			if !a.HealthReady(q.model, time.Now()) || !accountAllowsModel(a.Record(), q.model) {
 				release()
 				continue
 			}

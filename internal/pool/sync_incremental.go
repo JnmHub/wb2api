@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"time"
 
+	"wb2api/internal/realm"
 	"wb2api/internal/store/accounts"
 )
 
@@ -127,13 +128,14 @@ func (a *Account) applySharedRecord(rec *accounts.Record) {
 	if !reflect.DeepEqual(prev.DisabledModels, rec.DisabledModels) {
 		dm := make(map[string]bool, len(rec.DisabledModels))
 		for _, model := range rec.DisabledModels {
-			dm[model] = true
+			dm[a.modelKey(model)] = true
 		}
 		a.mu.Lock()
 		a.disabledMd = dm
 		a.mu.Unlock()
 	}
-	if !reflect.DeepEqual(prev.ModelCaps, rec.ModelCaps) {
+	if !reflect.DeepEqual(prev.ModelCaps, rec.ModelCaps) ||
+		(realm.IsRaccoon(a.Realm) && !reflect.DeepEqual(prev.ModelCool, rec.ModelCool)) {
 		a.restoreCaps(rec, time.Now())
 	}
 	if p := a.owner.Load(); p != nil {

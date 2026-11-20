@@ -18,6 +18,7 @@ import (
 	"wb2api/internal/ops"
 	"wb2api/internal/pool"
 	"wb2api/internal/quota"
+	"wb2api/internal/raccoonsync"
 	"wb2api/internal/realm"
 	"wb2api/internal/refresh"
 	"wb2api/internal/scheduler"
@@ -54,20 +55,46 @@ func (a *Accounts) upstreamAction(b batchReq) (jobs.Func, error) {
 		if acc == nil {
 			return errors.New("account no longer exists")
 		}
-		if len(b.UIDs) == 1 && realm.IsCodeArts(acc.Realm) && (b.Action == "checkin" || b.Action == "refresh_credits") {
-			ctx = refresh.WithManualCodeArts(ctx, uid)
+		if len(b.UIDs) == 1 {
+			switch {
+			case realm.IsCodeArts(acc.Realm) && (b.Action == "checkin" || b.Action == "refresh_credits"):
+				ctx = refresh.WithManualCodeArts(ctx, uid)
+			case realm.IsRaccoon(acc.Realm) && (b.Action == "checkin" || b.Action == "refresh_credits" || b.Action == "sync_profile"):
+				ctx = refresh.WithManualRaccoon(ctx, uid)
+			}
 		}
 		return a.Gate.Do(ctx, func() error {
 			switch b.Action {
 			case "refresh_credits":
+				if realm.IsRaccoon(acc.Record().Realm) {
+					if a.Raccoon == nil {
+						return errors.New("raccoon channel is not enabled")
+					}
+					_, err := a.Raccoon.Credits(ctx, acc)
+					return err
+				}
 				if realm.IsCodeArts(acc.Record().Realm) && a.CodeArts != nil {
 					_, err := a.CodeArts.Balance(ctx, acc)
 					return err
 				}
 				return resultErr(a.Ops.FetchCredits(ctx, acc))
 			case "checkin":
-				// The two channels have unrelated check-in APIs: the Huawei
-				// channel claims credit campaigns, WorkBuddy claims its own.
+				// The three channels have unrelated check-in APIs: Huawei
+				// claims credit campaigns, raccoon triggers the desktop grant
+				// and verifies the ledger, WorkBuddy claims its own.
+				if realm.IsRaccoon(acc.Record().Realm) {
+					if a.Raccoon == nil {
+						return errors.New("raccoon channel is not enabled")
+					}
+					result, err := a.Raccoon.Checkin(ctx, acc)
+					if err != nil {
+						return err
+					}
+					if !result.Success {
+						return errors.New(orDefault(result.Message, "尚未确认小浣熊签到入账"))
+					}
+					return nil
+				}
 				if realm.IsCodeArts(acc.Record().Realm) {
 					return a.checkinCodeArts(ctx, acc)
 				}
@@ -79,7 +106,7 @@ func (a *Accounts) upstreamAction(b batchReq) (jobs.Func, error) {
 			case "report_activity":
 				return resultErr(a.Ops.ReportActivity(ctx, acc, "manual"))
 			case "sync_profile":
-				return resultErr(a.Ops.SyncProfile(ctx, acc))
+				return resultErr(syncAccountProfile(ctx, acc, a.Ops, a.Raccoon))
 			case "test":
 				if a.Prober == nil {
 					return errors.New("the account test is not available")
@@ -92,6 +119,20 @@ func (a *Accounts) upstreamAction(b batchReq) (jobs.Func, error) {
 			return nil
 		})
 	}, nil
+}
+
+func syncAccountProfile(ctx context.Context, acc *pool.Account, wb *ops.Client, rc *raccoonsync.Service) ops.Result {
+	if !realm.IsRaccoon(acc.Realm) {
+		return wb.SyncProfile(ctx, acc)
+	}
+	if rc == nil {
+		return ops.Result{Error: "小浣熊渠道未启用"}
+	}
+	nickname, err := rc.SyncNickname(ctx, acc)
+	if err != nil {
+		return ops.Result{Error: err.Error()}
+	}
+	return ops.Result{OK: true, Msg: nickname, Extra: map[string]any{"nickname": nickname}}
 }
 
 // Operations serves the single-account actions, login, import / export, the
@@ -111,6 +152,8 @@ type Operations struct {
 	Persist func(*accounts.Record) error
 	// CodeArts is the Huawei Cloud channel's operations service (nil = off).
 	CodeArts *codeartsync.Service
+	// Raccoon is the SenseTime channel's operations service (nil = off).
+	Raccoon *raccoonsync.Service
 	// CodeArtsLoginBase overrides the snap-access root used by the ticket poll
 	// (tests, mock).
 	CodeArtsLoginBase string
@@ -123,6 +166,8 @@ type Operations struct {
 
 	// codeartsLogins holds in-flight CodeArts browser logins.
 	codeartsLogins codeartsLogins
+	// raccoonLogins holds in-flight raccoon sign-ins (state -> attempt).
+	raccoonLogins raccoonLogins
 }
 
 func (o *Operations) account(w http.ResponseWriter, r *http.Request) *pool.Account {
@@ -152,11 +197,36 @@ func (o *Operations) action(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	var res any
 	name := r.PathValue("name")
+	if realm.IsRaccoon(acc.Realm) && (name == "checkin" || name == "credits" || name == "sync-profile") {
+		ctx = refresh.WithManualRaccoon(ctx, acc.UID)
+	}
 	if realm.IsCodeArts(acc.Realm) && (name == "checkin" || name == "credits") {
 		ctx = refresh.WithManualCodeArts(ctx, acc.UID)
 	}
 	switch name {
 	case "credits":
+		// The three channels report credits through unrelated endpoints.
+		if realm.IsRaccoon(acc.Record().Realm) {
+			out := map[string]any{"ok": false, "msg": "", "error": ""}
+			if o.Raccoon == nil {
+				out["error"] = "小浣熊渠道未启用"
+				out["msg"] = out["error"]
+				res = out
+				break
+			}
+			usage, err := o.Raccoon.Credits(ctx, acc)
+			if err != nil {
+				out["error"], out["msg"] = err.Error(), err.Error()
+				res = out
+				break
+			}
+			out["ok"] = true
+			out["remain"] = usage.Available
+			out["wallets"] = usage.Wallets
+			out["msg"] = fmt.Sprintf("剩 %d 积分", usage.Available)
+			res = out
+			break
+		}
 		// The Huawei channel reports credits through its subscription
 		// statistics, not through the WorkBuddy billing API.
 		if realm.IsCodeArts(acc.Record().Realm) {
@@ -190,8 +260,31 @@ func (o *Operations) action(w http.ResponseWriter, r *http.Request) {
 		}
 		res = o.Ops.FetchCredits(ctx, acc)
 	case "checkin":
-		// The two channels have unrelated check-in APIs: the Huawei channel
-		// claims credit campaigns, WorkBuddy claims its own.
+		// The three channels have unrelated check-in APIs: Huawei claims credit
+		// campaigns, raccoon triggers the desktop "home" endpoint and verifies
+		// it against the bill ledger, WorkBuddy claims its own.
+		if realm.IsRaccoon(acc.Record().Realm) {
+			out := map[string]any{"ok": false, "msg": "", "error": ""}
+			if o.Raccoon == nil {
+				out["error"] = "小浣熊渠道未启用"
+				out["msg"] = out["error"]
+				res = out
+				break
+			}
+			result, err := o.Raccoon.Checkin(ctx, acc)
+			out["ok"] = result.Success && err == nil
+			out["msg"] = result.Message
+			out["credits"] = result.Credit()
+			out["already_completed"] = result.AlreadyCompleted
+			if err != nil {
+				out["error"] = err.Error()
+				if msg, _ := out["msg"].(string); msg == "" {
+					out["msg"] = err.Error()
+				}
+			}
+			res = out
+			break
+		}
 		if realm.IsCodeArts(acc.Record().Realm) {
 			out := map[string]any{"ok": false, "msg": "", "error": ""}
 			if o.CodeArts == nil {
@@ -213,6 +306,32 @@ func (o *Operations) action(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		res = o.Ops.Checkin(ctx, acc, "manual")
+	case "claim":
+		// One-off sign-up grants. Only the raccoon channel has them (WorkBuddy
+		// has no claim surface, CodeArts claims during discovery).
+		if !realm.IsRaccoon(acc.Record().Realm) {
+			writeErr(w, http.StatusNotFound, "unknown action claim")
+			return
+		}
+		out := map[string]any{"ok": false, "msg": "", "error": ""}
+		if o.Raccoon == nil {
+			out["error"] = "小浣熊渠道未启用"
+			out["msg"] = out["error"]
+			res = out
+			break
+		}
+		result, err := o.Raccoon.Claim(ctx, acc)
+		out["ok"] = err == nil
+		out["earned"] = result.Earned
+		out["tasks"] = result.Outcomes
+		out["msg"] = fmt.Sprintf("领取 %d 积分", result.Earned)
+		if len(result.Outcomes) == 0 {
+			out["msg"] = "新手任务已全部领取，无需重复请求"
+		}
+		if err != nil {
+			out["error"], out["msg"] = err.Error(), err.Error()
+		}
+		res = out
 	case "daily-chat":
 		res = o.Ops.DailyChat(ctx, acc, "manual")
 	case "daily-chat-web":
@@ -220,7 +339,7 @@ func (o *Operations) action(w http.ResponseWriter, r *http.Request) {
 	case "report-activity":
 		res = o.Ops.ReportActivity(ctx, acc, "manual")
 	case "sync-profile":
-		res = o.Ops.SyncProfile(ctx, acc)
+		res = syncAccountProfile(ctx, acc, o.Ops, o.Raccoon)
 	case "test":
 		if o.Prober == nil {
 			writeErr(w, http.StatusNotImplemented, "the account test is not available")
@@ -300,8 +419,9 @@ func (o *Operations) importAccounts(w http.ResponseWriter, r *http.Request) {
 		b, _ := jsonMarshal(d)
 		raw = b
 	}
-	if in.Realm != "" && in.Realm != "intl" && in.Realm != "cn" && in.Realm != realm.CodeArts {
-		writeErr(w, http.StatusBadRequest, "realm must be intl, cn or codearts")
+	in.Realm = strings.ToLower(strings.TrimSpace(in.Realm))
+	if in.Realm != "" && !realm.Valid(in.Realm) {
+		writeErr(w, http.StatusBadRequest, "realm must be intl, cn, codearts or raccoon")
 		return
 	}
 	rows, err := ops.ParseDocument(raw)
@@ -358,9 +478,20 @@ func (o *Operations) schedulerPatch(w http.ResponseWriter, r *http.Request) {
 		Enabled  *bool                        `json:"enabled"`
 		Schedule map[string]any               `json:"schedule"`
 		CodeArts *settings.CodeArtsDailyPatch `json:"codearts_daily"`
+		Raccoon  *settings.RaccoonDailyPatch  `json:"raccoon_daily"`
 	}
 	if !decode(w, r, &in) {
 		return
+	}
+	if in.Raccoon != nil {
+		if err := in.Raccoon.Validate(); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := o.Scheduler.Settings.SetRaccoonDaily(*in.Raccoon); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	if in.CodeArts != nil {
 		if err := in.CodeArts.Validate(); err != nil {
@@ -407,6 +538,19 @@ func (o *Operations) schedulerTriggerCodeArts(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "msg": "已触发 CodeArts 签到"})
 }
 
+// schedulerTriggerRaccoon runs the raccoon daily task now.
+func (o *Operations) schedulerTriggerRaccoon(w http.ResponseWriter, r *http.Request) {
+	if o.Scheduler == nil || o.Scheduler.Raccoon == nil {
+		writeErr(w, http.StatusServiceUnavailable, "小浣熊签到未启用")
+		return
+	}
+	if !o.Scheduler.TriggerRaccoon() {
+		writeErr(w, http.StatusConflict, "已有小浣熊签到任务正在执行，或没有可签到的账号")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "msg": "已触发小浣熊签到"})
+}
+
 // Register mounts the endpoints; wrap is the panel authentication.
 func (o *Operations) Register(mux *http.ServeMux, wrap func(http.Handler) http.Handler) {
 	h := func(f http.HandlerFunc) http.Handler { return wrap(f) }
@@ -415,6 +559,18 @@ func (o *Operations) Register(mux *http.ServeMux, wrap func(http.Handler) http.H
 	mux.Handle("GET /api/v2/accounts/login/poll", h(o.loginPoll))
 	mux.Handle("POST /api/v2/accounts/login/cancel", h(o.loginCancel))
 	mux.Handle("POST /api/v2/codearts/models/refresh", h(o.codeartsModelsRefresh))
+	// Raccoon (小浣熊): sign-in, callback landing and catalogue refresh.
+	mux.Handle("POST /api/v2/raccoon/login/start", h(o.raccoonLoginStart))
+	mux.Handle("GET /api/v2/raccoon/login/poll", h(o.raccoonLoginPoll))
+	mux.Handle("POST /api/v2/raccoon/login/complete", h(o.raccoonLoginComplete))
+	mux.Handle("POST /api/v2/raccoon/login/cancel", h(o.raccoonLoginCancel))
+	// The authorize page navigates the browser here; no panel session is
+	// available on that request, so the state parameter is the only credential.
+	mux.HandleFunc("GET /api/v2/raccoon/login/callback", o.raccoonLoginCallback)
+	mux.Handle("POST /api/v2/raccoon/models/refresh", h(o.raccoonModelsRefresh))
+	// Pasting the official client's auth.json (or a bare token) is the fallback
+	// that works from any deployment.
+	mux.Handle("POST /api/v2/raccoon/accounts/import", h(o.raccoonImportAccount))
 	// Remote deployments cannot reach the loopback callback; the operator pastes
 	// the address bar back into the panel instead.
 	mux.Handle("POST /api/v2/codearts/login/complete", h(o.codeartsLoginComplete))
@@ -432,6 +588,7 @@ func (o *Operations) Register(mux *http.ServeMux, wrap func(http.Handler) http.H
 	mux.Handle("PATCH /api/v2/scheduler", h(o.schedulerPatch))
 	mux.Handle("POST /api/v2/scheduler/trigger", h(o.schedulerTrigger))
 	mux.Handle("POST /api/v2/scheduler/trigger-codearts", h(o.schedulerTriggerCodeArts))
+	mux.Handle("POST /api/v2/scheduler/trigger-raccoon", h(o.schedulerTriggerRaccoon))
 	mux.Handle("GET /api/v2/tasks", h(o.tasksGet))
 	mux.Handle("POST /api/v2/tasks/run", h(o.tasksRun))
 	mux.Handle("POST /api/v2/tasks/travel", h(o.tasksTravel))

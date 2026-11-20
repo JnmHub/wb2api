@@ -131,7 +131,7 @@ export function AccountsPage() {
       width: 260,
       render: (_, a) => (
         <div className="acct-cell">
-          <span className="acct-avatar">{a.realm === 'cn' ? 'CN' : a.realm === 'codearts' ? 'HW' : 'GL'}</span>
+          <span className="acct-avatar">{a.realm === 'cn' ? 'CN' : a.realm === 'codearts' ? 'HW' : a.realm === 'raccoon' ? 'RC' : 'GL'}</span>
           <div>
             <div className="acct-name">
               <a onClick={() => setOpen(a.uid)}>{a.nickname || a.short_id}</a>
@@ -147,7 +147,7 @@ export function AccountsPage() {
       dataIndex: 'realm',
       width: 96,
       render: (r: Account['realm']) => (
-        <Tag color={r === 'cn' ? 'volcano' : r === 'codearts' ? 'gold' : 'geekblue'}>{realmLabel[r] ?? r}</Tag>
+        <Tag color={r === 'cn' ? 'volcano' : r === 'codearts' ? 'gold' : r === 'raccoon' ? 'purple' : 'geekblue'}>{realmLabel[r] ?? r}</Tag>
       ),
     },
     {
@@ -169,8 +169,8 @@ export function AccountsPage() {
       dataIndex: 'product',
       width: 96,
       // The outbound identity (desktop/vscode/cli) only exists for WorkBuddy;
-      // a Huawei account has no such knob.
-      render: (_: unknown, r: Account) => (r.realm === 'codearts' ? '—' : r.product),
+      // a Huawei or raccoon account has no such knob.
+      render: (_: unknown, r: Account) => (r.realm === 'codearts' || r.realm === 'raccoon' ? '—' : r.product),
     },
     { title: '权重', dataIndex: 'weight', width: 70, align: 'right' },
     {
@@ -361,6 +361,7 @@ export function AccountsPage() {
               { value: 'intl', label: '国际版' },
               { value: 'cn', label: '国内版' },
               { value: 'codearts', label: '华为 CodeArts' },
+              { value: 'raccoon', label: '小浣熊' },
             ]}
           />
           <Select

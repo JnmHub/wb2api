@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,8 +14,11 @@ import (
 	"wb2api/internal/guards"
 	"wb2api/internal/jsonx"
 	"wb2api/internal/pool"
+	"wb2api/internal/realm"
 	"wb2api/internal/realmswitch"
 	"wb2api/internal/store/settings"
+	"wb2api/internal/upstream/codearts"
+	"wb2api/internal/upstream/raccoon"
 )
 
 // Settings serves the settings page: realm switch, API keys, limits, switches,
@@ -132,13 +137,32 @@ func (s *Settings) get(w http.ResponseWriter, r *http.Request) {
 // models serves the panel's model catalogue without requiring an API key: the
 // console is already behind panel auth, and /v1/models itself stays key-gated.
 func (s *Settings) models(w http.ResponseWriter, r *http.Request) {
+	realmName := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("realm")))
+	if !realm.Valid(realmName) {
+		realmName = s.Realm.Get()
+	}
+	// Huawei and SenseTime describe their own models; the WorkBuddy catalogue
+	// must never answer for them (it used to, because this handler only knew
+	// intl/cn and silently fell back to the panel's current exit).
+	switch {
+	case realm.IsCodeArts(realmName):
+		models, fetched := s.channelCatalogue(realmName)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"realm": realmName, "source": "codearts", "fetched_at": fetched, "models": models,
+			"accounts": s.channelAccounts(realmName),
+		})
+		return
+	case realm.IsRaccoon(realmName):
+		models, fetched := s.channelCatalogue(realmName)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"realm": realmName, "source": "raccoon", "fetched_at": fetched, "models": models,
+			"accounts": s.channelAccounts(realmName),
+		})
+		return
+	}
 	if s.Catalog == nil {
 		writeErr(w, http.StatusServiceUnavailable, "模型目录不可用")
 		return
-	}
-	realmName := r.URL.Query().Get("realm")
-	if realmName != "intl" && realmName != "cn" {
-		realmName = s.Realm.Get()
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
@@ -157,6 +181,151 @@ func (s *Settings) models(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"realm": realmName, "source": meta.Source, "fetched_at": meta.FetchedAt, "models": models,
 	})
+}
+
+// channelAccounts lets the panel distinguish missing accounts from an empty
+// or unavailable catalogue.
+func (s *Settings) channelAccounts(rl string) int {
+	if s.Pool == nil {
+		return 0
+	}
+	n := 0
+	for _, acc := range s.Pool.All() {
+		if acc != nil && acc.Realm == rl {
+			n++
+		}
+	}
+	return n
+}
+
+// channelCatalogue renders the panel's model table for a non-WorkBuddy channel
+// from what its accounts declare. The raccoon channel stores per-model metadata
+// (context window, capabilities, multiplier) at discovery time; CodeArts only
+// stores ids, so its rows carry the id and a capability default.
+func (s *Settings) channelCatalogue(rl string) ([]any, int64) {
+	seen := map[string]bool{}
+	out := make([]any, 0, 16)
+	var fetched int64
+	add := func(entry map[string]any) {
+		id, _ := entry["id"].(string)
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		out = append(out, entry)
+	}
+	addRaccoonModel := func(m raccoon.Model) {
+		if m.Kind == "image" || raccoon.IsImageModel(m.ID) || !m.Visible {
+			return
+		}
+		entry := map[string]any{
+			"id": m.ID, "name": m.Name, "description": m.Description,
+			"context_length":      m.ContextWindow,
+			"max_output_tokens":   m.MaxTokens,
+			"supports_vision":     m.SupportsImage,
+			"supports_tool_calls": true,
+			"supports_reasoning":  m.SupportsThinking,
+			"reasoning_efforts":   effortLevels(m),
+		}
+		if m.Multiplier > 0 {
+			entry["multiplier"] = m.Multiplier
+		}
+		add(entry)
+	}
+	snapshot := map[string]raccoon.Model{}
+	if realm.IsRaccoon(rl) {
+		for _, m := range raccoon.FallbackModels() {
+			snapshot[strings.ToLower(m.ID)] = m
+		}
+	}
+	var raccoonFresh, raccoonDiscovered bool
+	now := time.Now()
+	if s.Pool != nil {
+		for _, acc := range s.Pool.All() {
+			if acc == nil || acc.Realm != rl {
+				continue
+			}
+			rec := acc.Record()
+			if realm.IsRaccoon(rl) {
+				if at := raccoon.ModelsDiscoveredAt(rec); at > fetched {
+					fetched = at
+				}
+				if raccoon.CatalogueDiscovered(rec) {
+					raccoonDiscovered = true
+				} else if acc.Enabled() && raccoon.AccessUsable(rec, now) {
+					raccoonFresh = true
+				}
+				metadata := make(map[string]raccoon.Model)
+				for _, m := range raccoon.MetaOfRecord(rec) {
+					metadata[strings.ToLower(m.ID)] = m
+				}
+				for _, id := range raccoon.PublicModelsOfRecord(rec) {
+					if m, ok := metadata[strings.ToLower(id)]; ok {
+						addRaccoonModel(m)
+						continue
+					}
+					if m, ok := snapshot[strings.ToLower(id)]; ok {
+						addRaccoonModel(m)
+						continue
+					}
+					addRaccoonModel(raccoon.Model{ID: id, Name: id, Visible: true, Kind: "chat",
+						SupportsThinking: raccoon.SupportsThinking(id)})
+				}
+				continue
+			}
+			// CodeArts stores display metadata alongside the ids; use it when the
+			// record has it (older records only carry ids).
+			metaByID := map[string]map[string]any{}
+			if raw, ok := codearts.Extra(rec)["models_meta"].([]any); ok {
+				for _, item := range raw {
+					m, ok := item.(map[string]any)
+					if !ok {
+						continue
+					}
+					if id, _ := m["id"].(string); id != "" {
+						metaByID[id] = m
+					}
+				}
+			}
+			for _, id := range codearts.ModelsOf(rec) {
+				entry := map[string]any{"id": id, "name": id, "supports_tool_calls": true}
+				if names, ok := codearts.Extra(rec)["model_names"].(map[string]any); ok {
+					if name, _ := names[id].(string); name != "" {
+						entry["name"] = name
+					}
+				}
+				if m := metaByID[id]; m != nil {
+					if name, _ := m["name"].(string); name != "" {
+						entry["name"] = name
+					}
+					if desc, _ := m["description"].(string); desc != "" {
+						entry["description"] = desc
+					}
+					if n, ok := asInt64(m["context_window"]); ok && n > 0 {
+						entry["context_length"] = n
+					}
+					if n, ok := asInt64(m["max_tokens"]); ok && n > 0 {
+						entry["max_output_tokens"] = n
+					}
+					if b, _ := m["benefit"].(bool); b {
+						entry["benefit"] = true
+					}
+				}
+				add(entry)
+			}
+		}
+	}
+	if len(out) == 0 && raccoonFresh && !raccoonDiscovered {
+		for _, m := range raccoon.FallbackModels() {
+			addRaccoonModel(m)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, _ := out[i].(map[string]any)["id"].(string)
+		b, _ := out[j].(map[string]any)["id"].(string)
+		return a < b
+	})
+	return out, fetched
 }
 
 // applyRuntime pushes settings that the pool or guards cache into them.
@@ -477,4 +646,34 @@ func (s *Settings) Register(mux *http.ServeMux, wrap func(http.Handler) http.Han
 	if s.Catalog != nil {
 		mux.Handle("POST /api/v2/catalog/refresh", h(s.refreshCatalog))
 	}
+}
+
+// effortLevels prefers what the upstream advertises for the model and falls
+// back to the per-family mapping the gateway applies when it rewrites the field.
+func effortLevels(m raccoon.Model) []string {
+	if len(m.Levels) > 0 {
+		return m.Levels
+	}
+	return raccoon.ReasoningLevels(m.ID)
+}
+
+// asInt64 reads a JSON number of any shape. The account store decodes with
+// UseNumber (to keep Python-compatible big integers), so values coming off disk
+// are json.Number while freshly written ones are int64.
+func asInt64(v any) (int64, bool) {
+	switch t := v.(type) {
+	case json.Number:
+		n, err := t.Int64()
+		return n, err == nil
+	case float64:
+		return int64(t), true
+	case int64:
+		return t, true
+	case int:
+		return int64(t), true
+	case string:
+		n, err := strconv.ParseInt(strings.TrimSpace(t), 10, 64)
+		return n, err == nil
+	}
+	return 0, false
 }

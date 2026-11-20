@@ -43,6 +43,23 @@ func (r *Refresher) SetCodeArtsPostgres(db *pgxpool.Pool) {
 	r.LoadLatest = func(ctx context.Context, uid string) (*accounts.Record, error) {
 		return pgaccounts.LoadOne(ctx, db, uid)
 	}
+	raccoonSlots := make(chan struct{}, max(1, capacity))
+	r.LockRaccoon = func(ctx context.Context, uid string) (func(), error) {
+		select {
+		case raccoonSlots <- struct{}{}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		release, err := pgaccounts.LockRaccoonAccount(ctx, db, "refresh", uid)
+		if err != nil {
+			<-raccoonSlots
+			return nil, err
+		}
+		return func() {
+			release()
+			<-raccoonSlots
+		}, nil
+	}
 	r.WaitCodeArtsSTS = func(ctx context.Context, egress string) error {
 		for {
 			var micros int64

@@ -32,6 +32,7 @@ import (
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/upstream"
 	"wb2api/internal/upstream/identity"
+	"wb2api/internal/upstream/raccoon"
 )
 
 // RefreshPath is the token refresh endpoint.
@@ -39,6 +40,9 @@ const RefreshPath = "/v2/plugin/auth/token/refresh"
 
 // ErrNeedsLogin means the credential is no longer refreshable.
 var ErrNeedsLogin = errors.New("token expired: sign in again")
+
+// ErrStopping means the refresher has closed admission during shutdown.
+var ErrStopping = errors.New("token refresher is stopping")
 
 // Refresher renews tokens.
 type Refresher struct {
@@ -52,6 +56,7 @@ type Refresher struct {
 
 	// Optional shared credential coordination for PostgreSQL deployments.
 	LockCodeArts    func(context.Context, string) (func(), error)
+	LockRaccoon     func(context.Context, string) (func(), error)
 	LoadLatest      func(context.Context, string) (*accounts.Record, error)
 	WaitCodeArtsSTS func(context.Context, string) error
 
@@ -66,17 +71,20 @@ type Refresher struct {
 	// Now is the clock (tests).
 	Now func() time.Time
 
-	mu      sync.Mutex
-	inflt   map[string]*call
-	states  map[string]*state
-	pending map[string]codeArtsMutation
-	egress  map[string]time.Time
+	mu             sync.Mutex
+	stopped        bool
+	inflt          map[string]*call
+	states         map[string]*state
+	pending        map[string]codeArtsMutation
+	raccoonPending map[string]raccoonMutation
+	egress         map[string]time.Time
 }
 
 type call struct {
-	done     chan struct{}
-	observed *accounts.Record
-	err      error
+	done            chan struct{}
+	observed        *accounts.Record
+	err             error
+	raccoonRejected bool
 }
 
 type state struct {
@@ -133,6 +141,11 @@ func (r *Refresher) StatusOf(uid string) Status {
 	if durable := record.CodeArtsAuthState(); durable.Reason != "" {
 		return Status{Failures: durable.Failures, NextTry: durable.RetryAt, LastErr: durable.Reason}
 	}
+	if record != nil && realm.IsRaccoon(record.Realm) {
+		if auth := record.RaccoonAuthState(); auth.Reason != "" {
+			return Status{Failures: auth.Failures, NextTry: auth.RetryAt, LastErr: auth.Reason}
+		}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if s := r.states[uid]; s != nil && matchesState(s, record) {
@@ -174,7 +187,29 @@ func (r *Refresher) due(a *pool.Account, now time.Time) bool {
 	if rec == nil || !rec.IsEnabled() {
 		return false
 	}
-	if realm.IsCodeArts(rec.Realm) {
+	if realm.IsRaccoon(rec.Realm) {
+		r.mu.Lock()
+		pending, hasPending := r.raccoonPending[a.UID]
+		r.mu.Unlock()
+		if hasPending && pool.SameRaccoonCredential(rec, pending.observed) {
+			return true
+		}
+		auth := rec.RaccoonAuthState()
+		if auth.Login || now.Before(auth.RetryAt) {
+			return false
+		}
+		if auth.Reason == raccoonRefreshInProgress || auth.AccessRejected {
+			return true
+		}
+		cred := raccoon.CredentialOf(rec)
+		if cred.RefreshToken == "" {
+			return cred.Token == "" || (!cred.ExpiresAt.IsZero() && !cred.ExpiresAt.After(now))
+		}
+		if cred.ExpiresAt.IsZero() {
+			return false
+		}
+		return cred.ExpiresAt.Sub(now) <= max(accounts.RaccoonSafetyWindow, r.lead()+r.jitter(a.UID))
+	} else if realm.IsCodeArts(rec.Realm) {
 		auth := rec.CodeArtsAuthState()
 		if auth.Login || (auth.Reason != codeArtsInProgress && now.Before(auth.RetryAt)) {
 			return false
@@ -270,6 +305,22 @@ func (r *Refresher) Run(ctx context.Context) {
 	}
 }
 
+// StopAndWait closes admission and joins every accepted refresh. In particular,
+// a canceled request can leave a detached rotating exchange that still needs
+// the account store to commit the new refresh token.
+func (r *Refresher) StopAndWait() {
+	r.mu.Lock()
+	r.stopped = true
+	calls := make([]*call, 0, len(r.inflt))
+	for _, c := range r.inflt {
+		calls = append(calls, c)
+	}
+	r.mu.Unlock()
+	for _, c := range calls {
+		<-c.done
+	}
+}
+
 func short(uid string) string {
 	if len(uid) > 8 {
 		return uid[:8]
@@ -296,6 +347,9 @@ func (r *Refresher) refreshObserved(ctx context.Context, a *pool.Account, observ
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if realm.IsRaccoon(a.Realm) {
+		return r.refreshRaccoon(ctx, a, observed, rejected)
+	}
 	isCodeArts := realm.IsCodeArts(a.Realm)
 	manualCodeArts := isCodeArts && IsManualCodeArts(ctx, a.UID)
 	if isCodeArts && !manualCodeArts && !a.Enabled() {
@@ -305,6 +359,10 @@ func (r *Refresher) refreshObserved(ctx context.Context, a *pool.Account, observ
 		return codeArtsCurrentOutcome(a.Record(), r.now())
 	}
 	r.mu.Lock()
+	if r.stopped {
+		r.mu.Unlock()
+		return ErrStopping
+	}
 	if r.inflt == nil {
 		r.inflt = map[string]*call{}
 	}

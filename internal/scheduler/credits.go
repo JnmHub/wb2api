@@ -5,13 +5,20 @@ import (
 	"math"
 	"time"
 
+	"wb2api/internal/ops"
 	"wb2api/internal/pool"
+	"wb2api/internal/realm"
+	"wb2api/internal/upstream/codearts"
 )
 
 const (
 	creditsTick        = 30 * time.Minute
 	creditsFailedParks = 6 * time.Hour
 )
+
+type codeArtsBalance interface {
+	Balance(context.Context, *pool.Account) (codearts.Balance, error)
+}
 
 // stalest returns the enabled, credentialed account whose balance is oldest and
 // past the TTL (a never-fetched balance counts as infinitely old, so a fresh
@@ -23,6 +30,16 @@ func (s *Scheduler) stalest(ttl time.Duration, now time.Time) *pool.Account {
 		rec := a.Record()
 		if !a.Enabled() || rec.AccessToken == "" {
 			continue
+		}
+		switch a.Realm {
+		case realm.Raccoon:
+			if s.Raccoon == nil || rec.RaccoonNeedsLogin() {
+				continue
+			}
+		case realm.CodeArts:
+			if _, ok := s.Channel.(codeArtsBalance); !ok || rec.CodeArtsNeedsLogin() {
+				continue
+			}
 		}
 		s.mu.Lock()
 		parked := s.parked[a.UID].After(now)
@@ -50,6 +67,10 @@ func num(v any) (float64, bool) {
 	switch t := v.(type) {
 	case float64:
 		return t, true
+	case int64:
+		return float64(t), true
+	case int:
+		return float64(t), true
 	case interface{ Float64() (float64, error) }:
 		f, err := t.Float64()
 		return f, err == nil
@@ -72,7 +93,7 @@ func (s *Scheduler) RefreshCreditsOnce(ctx context.Context) string {
 	if acc == nil {
 		return ""
 	}
-	res := s.Ops.FetchCredits(ctx, acc)
+	res := s.fetchCredits(ctx, acc)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.parked == nil {
@@ -86,6 +107,22 @@ func (s *Scheduler) RefreshCreditsOnce(ctx context.Context) string {
 	}
 	s.credits.LastRun, s.credits.LastUID, s.credits.LastErr = now.Format("2006-01-02 15:04:05"), acc.UID, ""
 	return acc.UID
+}
+
+func (s *Scheduler) fetchCredits(ctx context.Context, acc *pool.Account) ops.Result {
+	var err error
+	switch acc.Realm {
+	case realm.Raccoon:
+		_, err = s.Raccoon.Credits(ctx, acc)
+	case realm.CodeArts:
+		_, err = s.Channel.(codeArtsBalance).Balance(ctx, acc)
+	default:
+		return s.Ops.FetchCredits(ctx, acc)
+	}
+	if err != nil {
+		return ops.Result{Error: err.Error()}
+	}
+	return ops.Result{OK: true}
 }
 
 func (s *Scheduler) logsAppendLocked(msg string) {

@@ -19,6 +19,7 @@ import (
 
 	"wb2api/internal/realm"
 	"wb2api/internal/store/accounts"
+	"wb2api/internal/upstream/raccoon"
 )
 
 // Account is the live view of one credential: the persisted record plus
@@ -79,7 +80,7 @@ func (a *Account) SetRecord(rec *accounts.Record) {
 	a.restrictedTo.Store(int64(rec.RestrictedUntil * 1e9))
 	dm := make(map[string]bool, len(rec.DisabledModels))
 	for _, m := range rec.DisabledModels {
-		dm[m] = true
+		dm[a.modelKey(m)] = true
 	}
 	a.mu.Lock()
 	a.disabledMd = dm
@@ -93,6 +94,14 @@ func (a *Account) SetRecord(rec *accounts.Record) {
 
 // Record returns the current persisted record (treat as read-only).
 func (a *Account) Record() *accounts.Record { return a.rec.Load() }
+
+// modelKey puts equivalent Raccoon names in the same cooldown and deny-list slot.
+func (a *Account) modelKey(model string) string {
+	if realm.IsRaccoon(a.Realm) {
+		return raccoon.WireName(model)
+	}
+	return model
+}
 
 // Weight returns the manual scheduling weight (>=1).
 func (a *Account) Weight() int { return int(a.weight.Load()) }
@@ -138,6 +147,9 @@ func (a *Account) ready(model string, now time.Time, checkCapacity bool) bool {
 	if realm.IsCodeArts(a.Realm) && (a.CodeArtsAccessRejected() || !a.Record().CodeArtsAccessUsable(now)) {
 		return false
 	}
+	if realm.IsRaccoon(a.Realm) && !a.Record().RaccoonAccessUsable(now) {
+		return false
+	}
 	ns := now.UnixNano()
 	if a.cooldownTo.Load() > ns || a.restrictedTo.Load() > ns || a.breakerTo.Load() > ns ||
 		a.degradeTo.Load() > ns || a.balanceTo.Load() > ns {
@@ -156,6 +168,7 @@ func (a *Account) ready(model string, now time.Time, checkCapacity bool) bool {
 		return false
 	}
 	if model != "" {
+		model = a.modelKey(model)
 		a.mu.Lock()
 		blocked := a.disabledMd[model]
 		until := a.modelCool[model]
@@ -166,7 +179,7 @@ func (a *Account) ready(model string, now time.Time, checkCapacity bool) bool {
 	}
 	// A token inside its last 120 seconds is treated as unusable until the
 	// background refresher replaces it; the request path never refreshes.
-	if exp := a.expiresAt.Load(); exp != 0 && exp-now.Unix() <= 120 {
+	if exp := a.expiresAt.Load(); !realm.IsRaccoon(a.Realm) && exp != 0 && exp-now.Unix() <= 120 {
 		return false
 	}
 	return true
@@ -212,6 +225,7 @@ func (a *Account) CoolDownModel(model string, until time.Time) {
 // for diagnostics and to distinguish a local window from a shared one adopted
 // from another replica.
 func (a *Account) CoolDownModelWhy(model string, until time.Time, why string) {
+	model = a.modelKey(model)
 	a.mu.Lock()
 	if a.modelCool == nil {
 		a.modelCool = map[string]int64{}
@@ -390,13 +404,14 @@ func (p *Pool) SyncRecords(recs []*accounts.Record) {
 			if !reflect.DeepEqual(prev.DisabledModels, rec.DisabledModels) {
 				dm := make(map[string]bool, len(rec.DisabledModels))
 				for _, model := range rec.DisabledModels {
-					dm[model] = true
+					dm[a.modelKey(model)] = true
 				}
 				a.mu.Lock()
 				a.disabledMd = dm
 				a.mu.Unlock()
 			}
-			if !reflect.DeepEqual(prev.ModelCaps, rec.ModelCaps) {
+			if !reflect.DeepEqual(prev.ModelCaps, rec.ModelCaps) ||
+				(realm.IsRaccoon(a.Realm) && !reflect.DeepEqual(prev.ModelCool, rec.ModelCool)) {
 				a.restoreCaps(rec, time.Now())
 			}
 			a.touch()

@@ -154,3 +154,77 @@ describe('SettingsPage', () => {
     expect(screen.getByDisplayValue('7')).toBeInTheDocument() // intl override of expiring_window_days
   })
 })
+
+describe('AccountDrawer (raccoon)', () => {
+  it('renders a raccoon account with credit wallets, check-in and claim actions', async () => {
+    const path = '/api/v2/accounts/rc-8080402'
+    route({
+      [`${path}/actions/credits`]: () => json({ ok: true, msg: '剩 9267 积分' }),
+      [path]: () =>
+        json({
+          uid: 'rc-8080402',
+          nickname: '小浣熊测试',
+          realm: 'raccoon',
+          enabled: true,
+          tasks_enabled: true,
+          status: 'ready',
+          weight: 1,
+          note: '',
+          disabled_models: [],
+          proxy_slot: '',
+          product: '',
+          source: 'raccoon-oauth',
+          expires_at: 1797741411,
+          inflight: 0,
+          today: { requests: 3, tokens: 1200 },
+          checkin: { at: '2026-11-20 13:31:12', ok: true, message: '今日积分 +300', credits: '300 积分' },
+          credits: {
+            remain: 9267,
+            available: 9267,
+            unit: '积分',
+            wallets: [{ type: 'daily_points', displayName: '每日积分', balance: 276 }],
+          },
+        }),
+    })
+
+    renderPage(<AccountDrawer uid="rc-8080402" onClose={() => {}} />)
+    expect(await screen.findByText('小浣熊')).toBeInTheDocument()
+    expect(await screen.findByText(/今日积分 \+300/)).toBeInTheDocument()
+    // The check-in button is offered for the raccoon channel.
+    const checkin = await screen.findByRole('button', { name: /签\s*到/ })
+    expect(checkin).toBeEnabled()
+    const credits = await screen.findByRole('button', { name: '刷新积分' })
+    fireEvent.click(credits)
+    expect(await screen.findByText('剩 9267 积分')).toBeInTheDocument()
+  })
+})
+
+describe('AccountDrawer (null-tolerant fields)', () => {
+  it('renders an account whose array fields come back as null', async () => {
+    const path = '/api/v2/accounts/rc-null'
+    route({
+      [path]: () =>
+        json({
+          uid: 'rc-null',
+          nickname: '空数组账号',
+          realm: 'raccoon',
+          enabled: true,
+          tasks_enabled: true,
+          status: 'ready',
+          weight: 1,
+          note: '',
+          disabled_models: null,
+          proxy_slot: '',
+          product: '',
+          source: 'raccoon-import',
+          expires_at: 0,
+          inflight: 0,
+          today: { requests: 0, tokens: 0 },
+        }),
+    })
+    renderPage(<AccountDrawer uid="rc-null" onClose={() => {}} />)
+    // The drawer used to throw "Cannot read properties of null (reading 'join')".
+    expect(await screen.findByText('空数组账号')).toBeInTheDocument()
+    expect(await screen.findByText('账号操作')).toBeInTheDocument()
+  })
+})

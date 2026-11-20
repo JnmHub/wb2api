@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"regexp"
 	"sort"
 	"strings"
 
 	"wb2api/internal/jsonx"
 	"wb2api/internal/realm"
+	"wb2api/internal/upstream/raccoon"
 )
 
 // Export document format.
@@ -48,7 +50,7 @@ func ParseDocument(raw []byte) ([]Row, error) {
 		} else {
 			_, hasAuth := t["auth"].(map[string]any)
 			_, hasAcc := t["account"].(map[string]any)
-			if !(jsonx.Truthy(t["accessToken"]) || hasAuth || hasAcc || isCodeArtsRow(t)) {
+			if !(jsonx.Truthy(t["accessToken"]) || jsonx.Truthy(t["access_token"]) || hasAuth || hasAcc || isCodeArtsRow(t) || isRaccoonRow(t)) {
 				keys := make([]string, 0, len(t))
 				for k := range t {
 					keys = append(keys, k)
@@ -98,10 +100,14 @@ func str(v any) string {
 // the token / domain, so a stale "realm" field from an account once filed under
 // the wrong exit does not keep dragging it back there.
 func NormaliseRow(row Row, forced string) (Row, error) {
+	forced = strings.ToLower(strings.TrimSpace(forced))
 	// The Huawei channel has its own credential shape: an opaque STS token, an
 	// AK/SK pair and a DPoP key. It never passes the JWT checks below.
 	if isCodeArtsRow(row) {
 		return normaliseCodeArtsRow(row)
+	}
+	if isRaccoonRow(row) || forced == realm.Raccoon {
+		return normaliseRaccoonRow(row)
 	}
 	if _, hasSnake := row["access_token"]; hasSnake && row["accessToken"] == nil {
 		row = Row{"uid": row["uid"], "nickname": firstStr(row["nickname"], row["email"]), "domain": row["domain"],
@@ -126,7 +132,6 @@ func NormaliseRow(row Row, forced string) (Row, error) {
 	if strings.Count(token, ".") != 2 {
 		return nil, fmt.Errorf("accessToken is not a JWT")
 	}
-	forced = strings.ToLower(strings.TrimSpace(forced))
 	evidence := realm.Evidence(token, str(pick("domain")))
 	rowRealm := strings.ToLower(str(pick("realm")))
 	var detected string
@@ -167,6 +172,101 @@ func NormaliseRow(row Row, forced string) (Row, error) {
 	}, nil
 }
 
+func isRaccoonRow(row Row) bool {
+	if strings.EqualFold(str(row["realm"]), realm.Raccoon) || strings.EqualFold(str(row["provider"]), realm.Raccoon) {
+		return true
+	}
+	if asRow(row[raccoon.ExtraKey]) != nil || asRow(asRow(row["extra"])[raccoon.ExtraKey]) != nil {
+		return true
+	}
+	return strings.EqualFold(raccoon.Issuer(str(firstStr(row["accessToken"], row["access_token"]))), raccoon.ExpectedIAMIssuer())
+}
+
+func normaliseRaccoonRow(row Row) (Row, error) {
+	extra := asRow(row["extra"])
+	fields := maps.Clone(asRow(row[raccoon.ExtraKey]))
+	if fields == nil {
+		fields = maps.Clone(asRow(extra[raccoon.ExtraKey]))
+	}
+	if fields == nil {
+		fields = make(Row)
+	}
+	pick := func(keys ...string) string {
+		for _, layer := range []Row{row, asRow(row["auth"]), fields, extra} {
+			for _, key := range keys {
+				if value := str(layer[key]); value != "" {
+					return value
+				}
+			}
+		}
+		return ""
+	}
+	token := raccoon.StripBearer(pick("accessToken", "access_token", "token"))
+	if token == "" {
+		return nil, fmt.Errorf("missing Raccoon accessToken")
+	}
+	if strings.Count(token, ".") != 2 || strings.ContainsAny(token, " \t\r\n\"{}") || raccoon.Claims(token) == nil {
+		return nil, fmt.Errorf("Raccoon accessToken is not a JWT")
+	}
+	if realm.Evidence(token, "") != "" {
+		return nil, fmt.Errorf("Raccoon account carries a WorkBuddy token")
+	}
+	if raccoon.IsIAM(token) && !strings.EqualFold(raccoon.Issuer(token), raccoon.ExpectedIAMIssuer()) {
+		return nil, fmt.Errorf("invalid Raccoon IAM token issuer")
+	}
+	uid := str(row["uid"])
+	if uid == "" {
+		id := pick("userId", "user_id")
+		if id == "" {
+			id = raccoon.UserID(token)
+		}
+		if id == "" || id == "unknown" {
+			return nil, fmt.Errorf("cannot determine Raccoon user ID")
+		}
+		uid = "rc-" + id
+	}
+	if strings.Trim(uidClean.ReplaceAllString(uid, "_"), "_ ") != uid {
+		return nil, fmt.Errorf("invalid Raccoon account UID")
+	}
+	out := maps.Clone(row)
+	// Older exporters may group private fields under extra; account files use
+	// top-level provider data. Preserve other metadata in either layout.
+	for key, value := range extra {
+		if _, exists := out[key]; !exists {
+			out[key] = value
+		}
+	}
+	out["uid"], out["realm"], out["platform"], out["accessToken"] = uid, realm.Raccoon, realm.Raccoon, token
+	refresh := raccoon.StripBearer(pick("refreshToken", "refresh_token"))
+	if raccoon.IsIAM(token) {
+		refresh = ""
+	}
+	out["refreshToken"] = refresh
+	expiry := realm.NormalizeEpoch(pick("expiresAt", "expires_at"))
+	if expiry <= 0 {
+		expiry = realm.JWTExp(token)
+	}
+	out["expiresAt"] = expiry
+	if str(out["source"]) == "" {
+		out["source"] = "raccoon-import"
+	}
+	for _, key := range []string{"officeIdentity", "office_identity", "officeOrgName", "office_org_name", "officeOrgRole", "office_org_role"} {
+		if value := pick(key); value != "" {
+			fields[key] = value
+		}
+	}
+	for _, key := range []string{"token", "access_token", "refresh_token"} {
+		delete(out, key)
+		delete(fields, key)
+	}
+	delete(fields, "accessToken")
+	delete(fields, "refreshToken")
+	delete(out, "extra")
+	delete(out, "auth")
+	out[raccoon.ExtraKey] = fields
+	return out, nil
+}
+
 func firstStr(a, b any) any {
 	if str(a) != "" {
 		return a
@@ -200,9 +300,14 @@ func (c *Client) Import(rows []Row, forcedRealm string, overwrite, dryRun bool) 
 			continue
 		}
 		seen[uid] = true
-		exists := c.Pool.Get(uid) != nil
+		current := c.Pool.Get(uid)
+		exists := current != nil
 		if exists && !overwrite {
 			rep.Skipped = append(rep.Skipped, map[string]any{"uid": uid, "reason": "already exists"})
+			continue
+		}
+		if exists && current.Realm != norm["realm"] && (realm.IsRaccoon(current.Realm) || norm["realm"] == realm.Raccoon) {
+			rep.Invalid = append(rep.Invalid, map[string]any{"index": i + 1, "reason": "UID belongs to another realm"})
 			continue
 		}
 		if !dryRun {
@@ -246,6 +351,8 @@ func (c *Client) Export(realmName string, uids []string, secrets bool) (map[stri
 				// a secret-free export must not leak it.
 				if realm.IsCodeArts(rec.Realm) {
 					removeCodeArtsSecrets(m)
+				} else if realm.IsRaccoon(rec.Realm) {
+					removeRaccoonSecrets(m)
 				}
 				if raw, ok := m["extra"]; ok {
 					var extra map[string]json.RawMessage
@@ -270,4 +377,20 @@ func (c *Client) Export(realmName string, uids []string, secrets bool) (map[stri
 		"format": ExportFormat, "version": ExportVersion, "exportedAt": stampNow(c.now()),
 		"count": len(rows), "accounts": rows,
 	}, nil
+}
+
+func removeRaccoonSecrets(fields map[string]json.RawMessage) {
+	for _, key := range []string{"token", "accessToken", "access_token", "refreshToken", "refresh_token"} {
+		delete(fields, key)
+	}
+	for key, value := range fields {
+		if len(value) == 0 || value[0] != '{' {
+			continue
+		}
+		var nested map[string]json.RawMessage
+		if json.Unmarshal(value, &nested) == nil {
+			removeRaccoonSecrets(nested)
+			fields[key], _ = json.Marshal(nested)
+		}
+	}
 }

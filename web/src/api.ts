@@ -3,8 +3,8 @@
 // from /session after a page reload.
 
 // Realm names the upstream channel an account or API key belongs to: the two
-// WorkBuddy exits plus the Huawei Cloud CodeArts channel.
-export type Realm = 'intl' | 'cn' | 'codearts'
+// WorkBuddy exits, the Huawei Cloud CodeArts channel and SenseTime's 小浣熊.
+export type Realm = 'intl' | 'cn' | 'codearts' | 'raccoon'
 
 export class ApiError extends Error {
   status: number
@@ -104,7 +104,19 @@ export interface Account {
   restricted_for?: number
   unavailable_reason?: string
   model_cooldowns?: { model: string; expires_at: number; reason?: string }[]
-  credits?: { remain?: number; total?: number; used?: number; plan?: string; reset?: string; source?: string }
+  credits?: {
+    remain?: number
+    total?: number
+    used?: number
+    plan?: string
+    reset?: string
+    source?: string
+    /** Raccoon: the unit label ("积分") and the per-bucket breakdown. */
+    unit?: string
+    available?: number
+    wallets?: { type: string; displayName?: string; balance: number }[]
+    subscription?: { planName?: string; status?: string; expireAt?: string }
+  }
   refresh?: { failures: number; next_try: number; last_error: string }
   /** Last check-in result, normalised by the gateway for both channels. */
   checkin?: { at?: string | number; ok?: boolean; message?: string; credits?: number; channel?: string }
@@ -271,6 +283,8 @@ export interface ModelCatalogue {
   source: string
   fetched_at: number
   models: CatalogModel[]
+  /** Account count of the channel (only sent for codearts / raccoon). */
+  accounts?: number
 }
 
 // ---------------------------------------------------------------- settings
@@ -394,6 +408,20 @@ export interface SchedulerStatus {
   logs: string[]
   credits: { ttl_hours: number; last_run: string; last_uid: string; last_error: string }
   codearts_daily: CodeArtsDailyStatus
+  raccoon_daily: RaccoonDailyStatus
+}
+
+/** Raccoon (小浣熊) daily task: the desktop "home" points grant. */
+export interface RaccoonDailyStatus {
+  available: boolean
+  enabled: boolean
+  time: string
+  uids: string[]
+  running: boolean
+  last_run_at?: string
+  next_run_at?: string
+  account_count: number
+  states: Record<string, number>
 }
 
 export interface CodeArtsDailyStatus {
@@ -439,6 +467,11 @@ export interface LoginStart {
   authUrl: string
   realm: Realm
   platform: string
+  /** Raccoon only: "web" (loopback callback) or "desktop" (custom scheme). */
+  mode?: 'web' | 'desktop'
+  /** Raccoon only: the URL the browser will try to land on after sign-in. */
+  callback?: string
+  hint?: string
 }
 
 export interface LoginPoll {

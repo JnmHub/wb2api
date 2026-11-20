@@ -161,6 +161,9 @@ func PrepareBodyWithBudget(shaped *jsonx.Obj, model, chatID string) ([]byte, *To
 		out.Set("prompt_cache_key", chatID)
 	}
 	body, err := jsonx.Marshal(out)
+	if err == nil && len(body) >= reasoningTrimThreshold && trimHistoricalReasoning(out) {
+		body, err = jsonx.Marshal(out)
+	}
 	return body, names, budget, err
 }
 

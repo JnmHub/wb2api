@@ -24,6 +24,57 @@ type APIKey struct {
 	DeletedAt        string
 }
 
+const raccoonKeyField = "raccoon_key"
+
+func storedKeyRealm(m map[string]any) string {
+	return strings.ToLower(strings.TrimSpace(truthyStr(m["realm"])))
+}
+
+func storedKeySecret(m map[string]any) string {
+	if storedKeyRealm(m) == realm.Raccoon {
+		if value, ok := m[raccoonKeyField]; ok {
+			return strings.TrimSpace(truthyStr(value))
+		}
+	}
+	return strings.TrimSpace(truthyStr(m["key"]))
+}
+
+func setStoredKeySecret(m map[string]any, secret string) {
+	if storedKeyRealm(m) == realm.Raccoon {
+		// Older binaries treat an unknown realm as unbound. Keeping the
+		// secret outside their key field makes this row unusable on rollback.
+		m["key"] = ""
+		m[raccoonKeyField] = secret
+		return
+	}
+	m["key"] = secret
+	delete(m, raccoonKeyField)
+}
+
+// ProtectRaccoonKeys migrates already-saved Raccoon keys before serving traffic.
+func (s *Store) ProtectRaccoonKeys() error {
+	needsProtection := func(m map[string]any) bool {
+		return storedKeyRealm(m) == realm.Raccoon && strings.TrimSpace(truthyStr(m["key"])) != ""
+	}
+	for _, raw := range rawKeys(s.View()) {
+		if m, ok := raw.(map[string]any); ok && needsProtection(m) {
+			return s.Update(func(doc Doc) error {
+				for _, row := range rawKeys(doc) {
+					if key, ok := row.(map[string]any); ok && needsProtection(key) {
+						secret := storedKeySecret(key)
+						if strings.TrimSpace(truthyStr(key["deleted_at"])) != "" {
+							secret = ""
+						}
+						setStoredKeySecret(key, secret)
+					}
+				}
+				return nil
+			})
+		}
+	}
+	return nil
+}
+
 func cleanModelPatterns(v any) []string {
 	var raw []string
 	switch t := v.(type) {
@@ -93,12 +144,12 @@ func (s *Store) APIKeys(includeDeleted bool) []APIKey {
 			if !ok {
 				continue
 			}
-			key := strings.TrimSpace(truthyStr(m["key"]))
+			key := storedKeySecret(m)
 			deleted := strings.TrimSpace(truthyStr(m["deleted_at"]))
 			if key == "" && deleted == "" {
 				continue
 			}
-			realmName := strings.ToLower(strings.TrimSpace(truthyStr(m["realm"])))
+			realmName := storedKeyRealm(m)
 			if !realm.Valid(realmName) {
 				realmName = ""
 			}

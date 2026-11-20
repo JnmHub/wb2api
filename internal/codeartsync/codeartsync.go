@@ -177,6 +177,10 @@ func (s *Service) store(acc *pool.Account, dis codearts.Discovery) error {
 	models := make([]any, 0, len(dis.Models))
 	benefit := make([]any, 0, len(dis.Models))
 	names := make(map[string]any, len(dis.Models))
+	// models_meta keeps what discovery already knows (display name, context
+	// window, output cap, description) so the panel can render a real table
+	// instead of a column of dashes.
+	meta := make([]any, 0, len(dis.Models))
 	for _, mi := range dis.Models {
 		models = append(models, mi.ID)
 		if mi.Name != "" && mi.Name != mi.ID {
@@ -185,6 +189,23 @@ func (s *Service) store(acc *pool.Account, dis codearts.Discovery) error {
 		if mi.Benefit {
 			benefit = append(benefit, mi.ID)
 		}
+		entry := map[string]any{"id": mi.ID}
+		if mi.Name != "" {
+			entry["name"] = mi.Name
+		}
+		if mi.ContextWindow > 0 {
+			entry["context_window"] = mi.ContextWindow
+		}
+		if mi.MaxTokens > 0 {
+			entry["max_tokens"] = mi.MaxTokens
+		}
+		if mi.Desc != "" {
+			entry["description"] = mi.Desc
+		}
+		if mi.Benefit {
+			entry["benefit"] = true
+		}
+		meta = append(meta, entry)
 	}
 	var problem any
 	if len(dis.Errors) > 0 {
@@ -204,6 +225,7 @@ func (s *Service) store(acc *pool.Account, dis codearts.Discovery) error {
 		}
 		next["models"] = models
 		next["model_names"] = names
+		next["models_meta"] = meta
 		next["benefit_models"] = benefit
 		next["models_at"] = at
 		if problem != nil {

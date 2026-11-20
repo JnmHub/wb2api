@@ -35,6 +35,19 @@ func TestLocalFullAccountWaitReservesAndReleases(t *testing.T) {
 	}
 }
 
+func TestFullAccountWaitHonorsKeyAccounts(t *testing.T) {
+	up := newRawUpstream(t, func(_ int, _ rawReq, c net.Conn) { sseOK(c) })
+	f := newFixture(t, up, accSpec{})
+	a := f.pool.Get("acct-0")
+	f.h.AccountWait = time.Second
+	q := &request{r: httptest.NewRequest(http.MethodPost, "/", nil), model: "test", keyAccounts: []string{"acct-1"}}
+	q.at.full = map[string]*pool.Account{a.UID: a}
+	if _, release, ok := f.h.waitForFullAccount(q); ok {
+		release()
+		t.Fatal("a waiting request acquired an account denied by its key")
+	}
+}
+
 func TestPinnedLocalFullAccountWaitAndRateLimit(t *testing.T) {
 	for _, wait := range []bool{false, true} {
 		t.Run(map[bool]string{false: "no_wait", true: "wait"}[wait], func(t *testing.T) {

@@ -1,6 +1,7 @@
 /bin/
 /run/
 /.scratch/
+/cj.txt
 *.exe
 *.test
 *.out

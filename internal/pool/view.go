@@ -116,6 +116,9 @@ func (a *Account) TokenBad() bool {
 		rec := a.Record()
 		return rec.CodeArtsNeedsLogin() || (rec.RefreshToken == "" && !rec.CodeArtsAccessUsable(time.Now()))
 	}
+	if realm.IsRaccoon(a.Realm) {
+		return a.tokenBad.Load() || a.Record().RaccoonNeedsLogin()
+	}
 	return a.tokenBad.Load()
 }
 
@@ -145,6 +148,7 @@ type ModelCooldown struct {
 // ModelBlocked reports whether this model cannot be dispatched to the account
 // right now, either through its own soft window or an upstream quota clock.
 func (a *Account) ModelBlocked(model string, now time.Time) bool {
+	model = a.modelKey(model)
 	if model == "" {
 		return false
 	}
@@ -159,6 +163,7 @@ func (a *Account) ModelBlocked(model string, now time.Time) bool {
 // of the per-model window and a persisted quota window. Zero means the account
 // is not blocked for that model.
 func (a *Account) ModelCoolUntil(model string, now time.Time) time.Time {
+	model = a.modelKey(model)
 	if model == "" {
 		return time.Time{}
 	}
@@ -227,15 +232,21 @@ const (
 func (a *Account) State(now time.Time) Status {
 	rec := a.Record()
 	codeArts := realm.IsCodeArts(a.Realm)
+	raccoon := realm.IsRaccoon(a.Realm)
 	switch {
 	case !a.enabled.Load():
 		return StatusDisabled
 	case codeArts && (rec.CodeArtsNeedsLogin() || (rec.RefreshToken == "" && !rec.CodeArtsAccessUsable(now))):
 		return StatusNeedLogin
-	case !codeArts && (a.tokenBad.Load() || rec.AccessToken == ""):
+	case raccoon && (rec.RaccoonNeedsLogin() || (rec.RefreshToken == "" && !rec.RaccoonAccessUsable(now))):
+		return StatusNeedLogin
+	case !codeArts && !raccoon && (a.tokenBad.Load() || rec.AccessToken == ""):
 		return StatusNeedLogin
 	}
 	if codeArts && (a.CodeArtsAccessRejected() || !rec.CodeArtsAccessUsable(now)) {
+		return StatusExpiring
+	}
+	if raccoon && !rec.RaccoonAccessUsable(now) {
 		return StatusExpiring
 	}
 	ns := now.UnixNano()
@@ -248,7 +259,7 @@ func (a *Account) State(now time.Time) Status {
 	case a.cooldownTo.Load() > ns || a.breakerTo.Load() > ns || a.degradeTo.Load() > ns || a.balanceTo.Load() > ns:
 		return StatusCooling
 	}
-	if exp := a.expiresAt.Load(); exp != 0 && exp-now.Unix() <= 120 {
+	if exp := a.expiresAt.Load(); !raccoon && exp != 0 && exp-now.Unix() <= 120 {
 		return StatusExpiring
 	}
 	return StatusReady
@@ -319,7 +330,8 @@ func (p *Pool) FindUnique(ref string) (a *Account, why string) {
 
 // ModelDisabled reports whether the operator denied this model on the account.
 func (a *Account) ModelDisabled(model string) bool {
+	model = a.modelKey(strings.ToLower(strings.TrimSpace(model)))
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return model != "" && a.disabledMd[strings.ToLower(strings.TrimSpace(model))]
+	return model != "" && a.disabledMd[model]
 }

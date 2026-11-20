@@ -17,13 +17,40 @@ import (
 	"wb2api/internal/quota"
 	"wb2api/internal/realm"
 	"wb2api/internal/risk"
+	"wb2api/internal/store/accounts"
 	"wb2api/internal/upstream"
 	"wb2api/internal/upstream/codearts"
 	"wb2api/internal/upstream/identity"
+	"wb2api/internal/upstream/raccoon"
 )
 
 // TestModelDefault is the cheapest model every exit has.
 const TestModelDefault = "deepseek-v4.1-flash"
+
+// probeModel picks the model a probe should send. A caller (or the default)
+// may name a model another vendor serves; on raccoon that request would be
+// refused pre-flight and the probe would report a body error that says nothing
+// about the account. So an unusable name is replaced by the channel's own first
+// catalogued model.
+func probeModel(rec *accounts.Record, model string) string {
+	if rec == nil || !realm.IsRaccoon(rec.Realm) {
+		return model
+	}
+	if wire, ok := raccoon.ResolveChatModel(rec, model); ok {
+		return wire
+	}
+	// Empty or unusable: the channel's own cheap default, when it serves it.
+	if wire, ok := raccoon.ResolveChatModel(rec, raccoon.ProbeModel); ok {
+		return wire
+	}
+	if list := raccoon.PublicModelsOfRecord(rec); len(list) > 0 {
+		return list[0]
+	}
+	if list := raccoon.ModelsOfRecord(rec); len(list) > 0 {
+		return list[0]
+	}
+	return raccoon.DefaultModel
+}
 
 // ProbeModel sends the quota-window probe: one minimal request through the
 // account's own transport and identity. It reports whether the line serves
@@ -38,6 +65,7 @@ func (h *Handler) ProbeModel(ctx context.Context, acc *pool.Account, model strin
 		cancel()
 		rec = acc.Record()
 	}
+	model = probeModel(rec, model)
 
 	payload := jsonx.NewObj()
 	payload.Set("model", model)
@@ -73,6 +101,13 @@ func (h *Handler) ProbeModel(ctx context.Context, acc *pool.Account, model strin
 	}
 	product := identity.NormalizeProduct(rec.Product)
 	out := h.buildOutbound(q, rec, product)
+	if out.err != nil {
+		// A body the channel refuses (e.g. a model it does not serve) is a
+		// pre-flight fact, not an upstream failure: report it and leave the
+		// account alone. Sending an empty body would earn "request body empty
+		// or json invalid" from the upstream and cool a healthy account.
+		return false, time.Time{}, truncate(out.err.Error(), 200)
+	}
 	hdrs := h.chatHeaders(q, rec, product, out, "")
 	target := h.chatURL(acc, product)
 	resp, err := h.Up.Wire(acc.UID, acc.Proxy()).Do(cctx, upstream.Request{
@@ -121,6 +156,7 @@ func (h *Handler) Probe(ctx context.Context, acc *pool.Account, model string) Pr
 		model = TestModelDefault
 	}
 	rec := acc.Record()
+	model = probeModel(rec, model)
 	nick := rec.Nickname
 	if nick == "" {
 		nick = short(rec.UID)
@@ -166,6 +202,10 @@ func (h *Handler) Probe(ctx context.Context, acc *pool.Account, model string) Pr
 	}
 	product := identity.NormalizeProduct(rec.Product)
 	out := h.buildOutbound(q, rec, product)
+	if out.err != nil {
+		res.Error = truncate(out.err.Error(), 200)
+		return res
+	}
 	hdrs := h.chatHeaders(q, rec, product, out, "")
 	target := h.chatURL(acc, product)
 	resp, err := h.Up.Wire(acc.UID, acc.Proxy()).Do(cctx, upstream.Request{

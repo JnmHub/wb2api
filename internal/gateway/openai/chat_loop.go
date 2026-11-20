@@ -24,6 +24,7 @@ import (
 	"wb2api/internal/upstream"
 	"wb2api/internal/upstream/codearts"
 	"wb2api/internal/upstream/identity"
+	"wb2api/internal/upstream/raccoon"
 )
 
 // kind of the most recent failure, which decides how the final error is told.
@@ -128,7 +129,18 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	q.at.tried = map[string]struct{}{}
 	q.at.charged = map[string]bool{}
 	q.at.full = map[string]*pool.Account{}
-	applyBackgroundAlias(payload, h.logger())
+	pinned := PinnedFrom(r.Context())
+	switch explicit := requestRealm(r, key); {
+	case explicit != "":
+		q.realm = explicit
+	case pinned != nil:
+		q.realm = pinned.Realm
+	default:
+		q.realm = h.activeRealm()
+	}
+	if !realm.IsRaccoon(q.realm) {
+		applyBackgroundAlias(payload, h.logger())
+	}
 	q.model, _ = payload.Get("model").(string)
 	// A client-facing alias resolves before every check, so the deny-list, the
 	// key's model filter, realm rules and the upstream call all see the real id.
@@ -141,7 +153,8 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	}
 	// The local model deny-list: refuse before touching the upstream (legacy
 	// is_model_banned), in whatever envelope the endpoint speaks.
-	if h.Settings != nil && h.Settings.ModelBanned(q.model) {
+	if h.Settings != nil && (h.Settings.ModelBanned(q.model) ||
+		(realm.IsRaccoon(q.realm) && h.Settings.ModelBanned(raccoon.WireName(q.model)))) {
 		q.httpErr(http.StatusBadRequest,
 			fmt.Sprintf("模型 %s 已被本机代理封锁（依 ALLOWED_MODELS / BANNED_SUBSTRING 设定）。", q.model),
 			"invalid_request_error")
@@ -152,8 +165,6 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 		q.stream = opts.stream
 	}
 	q.sink = opts.sink
-	explicit := requestRealm(r, key)
-	pinned := PinnedFrom(r.Context())
 	if key != nil {
 		q.keyID = key.ID
 		if key.Restricted() {
@@ -165,14 +176,6 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 				return
 			}
 		}
-	}
-	switch {
-	case explicit != "":
-		q.realm = explicit
-	case pinned != nil:
-		q.realm = pinned.Realm
-	default:
-		q.realm = h.activeRealm()
 	}
 	if realm.IsCodeArts(q.realm) {
 		budget := codeArtsWaitBudget(payload)
@@ -191,6 +194,16 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	} else if msg := crossRealmMessage(q.model, q.realm, nil); msg != "" {
 		q.httpErr(http.StatusBadRequest, msg, "invalid_request_error")
 		return
+	}
+	if realm.IsRaccoon(q.realm) {
+		h.normaliseModelName(q)
+		// Unknown models are silently served by the upstream's default model.
+		if h.raccoonRejectsModel(q, pinned) {
+			q.httpErr(http.StatusBadRequest,
+				fmt.Sprintf("model %q is not available on the selected raccoon route; GET /v1/models?realm=raccoon lists the channel's models", q.viewModel()),
+				"invalid_request_error")
+			return
+		}
 	}
 	if h.UsageReady != nil {
 		if err := h.UsageReady(); err != nil {
@@ -246,7 +259,7 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 		}
 	}
 	q.vscodeConv = identity.NewMessageID()
-	if realm.IsCodeArts(q.realm) {
+	if realm.IsCodeArts(q.realm) || realm.IsRaccoon(q.realm) {
 		q.shaped = q.payload
 	} else {
 		h.reshape(q)
@@ -323,6 +336,9 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 	fallbackTried := false
 	for {
 		aborted := false
+		if realm.IsRaccoon(q.realm) {
+			h.normaliseModelName(q)
+		}
 		h.scopeCodeArtsSession(q)
 		// Adopt windows other replicas learned for this model, so a cooldown is
 		// cluster-wide instead of per process. A chain step is forced fresh:
@@ -375,6 +391,9 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 					if pinned == nil {
 						for _, full := range h.Pool.Full(q.realm, q.model, h.realmLimit(q.realm)) {
 							if _, tried := q.at.tried[full.UID]; tried {
+								continue
+							}
+							if !accountAllowed(q.keyAccounts, full.UID) || !accountAllowsModel(full.Record(), q.model) {
 								continue
 							}
 							if q.at.full == nil {
@@ -492,7 +511,7 @@ func (h *Handler) run(w http.ResponseWriter, r *http.Request, start time.Time, k
 				release()
 				return
 			}
-			if !acc.HealthReady(q.model, time.Now()) || (realm.IsCodeArts(q.realm) && !codeArtsAllowsModel(acc.Record(), q.model)) {
+			if !accountAllowed(q.keyAccounts, acc.UID) || !acc.HealthReady(q.model, time.Now()) || !accountAllowsModel(acc.Record(), q.model) {
 				// A guard/cooldown may change while shared admission is in I/O.
 				// Never dispatch on the stale selection; neither slot may leak.
 				localRelease()
@@ -658,6 +677,11 @@ func egressKey(rawURL, proxy string) string {
 // try performs one upstream attempt with acc.
 func (h *Handler) try(q *request, acc *pool.Account) result {
 	rec := acc.Record()
+	if realm.IsRaccoon(rec.Realm) && !raccoon.AllowsModel(rec, q.model) {
+		// Discovery can change after selection. This attempt never reached the
+		// upstream, so continue with another compatible account.
+		return result{kind: retry}
+	}
 	isCodeArts := realm.IsCodeArts(rec.Realm)
 	if isCodeArts {
 		startCodeArtsAttempt(q.r.Context(), acc.UID)
@@ -875,11 +899,32 @@ func chatPathFor(r string) string {
 	if realm.IsCodeArts(r) {
 		return codearts.ChatPath
 	}
+	if realm.IsRaccoon(r) {
+		return raccoon.ChatPath
+	}
 	return ChatPath
 }
 
 // buildOutbound renders the body of one attempt for the account's channel.
 func (h *Handler) buildOutbound(q *request, rec *accounts.Record, product string) outbound {
+	if realm.IsRaccoon(rec.Realm) {
+		// Raccoon is a plain OpenAI endpoint: no WorkBuddy shaping (no injected
+		// system prompt, no sanitising, no tool renaming), no gzip. The only
+		// rewrite is the thinking field of the model family.
+		//
+		// The upstream answers an unknown model with its own default instead of
+		// an error, so a model outside the discovered catalogue is rejected here
+		// rather than silently served by a different model.
+		wireModel, ok := raccoon.ResolveChatModel(rec, q.model)
+		if !ok {
+			return outbound{err: fmt.Errorf("model %q is not available on the raccoon channel", q.model)}
+		}
+		body, err := raccoon.PrepareBody(q.payload, wireModel)
+		if err != nil {
+			return outbound{err: err}
+		}
+		return outbound{body: body}
+	}
 	if realm.IsCodeArts(rec.Realm) {
 		wire := codearts.WireName(rec, q.model)
 		payload := q.payload
@@ -907,6 +952,9 @@ func (h *Handler) buildOutbound(q *request, rec *accounts.Record, product string
 // identity: the conversation id is stable per (account, session key), the turn
 // request id is shared by every retry of one user turn.
 func (h *Handler) chatHeaders(q *request, rec *accounts.Record, product string, out outbound, sessionID string) identity.Headers {
+	if realm.IsRaccoon(rec.Realm) {
+		return raccoon.ChatHeaders(raccoon.CredentialOf(rec), raccoon.RequestID())
+	}
 	if realm.IsCodeArts(rec.Realm) {
 		return codearts.ChatHeaders(codearts.CredentialOf(rec), rec.AccessToken, q.turnID, "", sessionID, codearts.WireName(rec, q.model),
 			codearts.IsBenefitModel(rec, q.model), out.body)
@@ -1016,6 +1064,11 @@ func (h *Handler) classify(q *request, acc *pool.Account, status int, body []byt
 	acc.NoteResult(false)
 	now := time.Now()
 	q.at.kind, q.at.lastStatus, q.at.lastBody, q.at.lastErr = failHTTP, status, body, nil
+	if realm.IsRaccoon(acc.Realm) {
+		if res, handled := h.classifyRaccoon(q, acc, status, body, observed, now); handled {
+			return res
+		}
+	}
 	if realm.IsCodeArts(acc.Realm) {
 		if fault := codearts.ParseChatError(body); fault != nil && fault.Status == http.StatusPaymentRequired {
 			status = fault.Status

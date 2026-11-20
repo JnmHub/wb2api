@@ -17,12 +17,32 @@ const (
 	// not a second region: snap-access has one commercial region (cn-north-4),
 	// so the value names the vendor rather than an exit of one vendor.
 	CodeArts = "codearts"
+	// Raccoon is SenseTime's 小浣熊 (raccoon) channel. Like CodeArts it names a
+	// vendor, not an exit: xiaohuanxiong.com has a single deployment.
+	Raccoon = "raccoon"
 )
 
 // CodeArtsChatBase is the snap-access endpoint of the CodeArts Agent channel.
 // It lives here (not in the client package) so identity.Endpoint can resolve a
 // channel without importing its HTTP client.
 const CodeArtsChatBase = "https://snap-access.cn-north-4.myhuaweicloud.com"
+
+// RaccoonChatBase is the LLM gateway root of the raccoon channel. The chat
+// endpoint is {RaccoonChatBase}/chat/completions, so the base already carries
+// the /api/web/llm/v2 prefix (mirrors the upstream client's DEFAULT_LLM_BASE).
+const RaccoonChatBase = "https://xiaohuanxiong.com/api/web/llm/v2"
+
+// RaccoonLLMBase resolves the shared base for Raccoon chat and discovery.
+func RaccoonLLMBase() string {
+	if base := strings.TrimRight(strings.TrimSpace(os.Getenv("WB_RACCOON_LLM_BASE")), "/"); base != "" {
+		return base
+	}
+	return RaccoonChatBase
+}
+
+// RaccoonOrigin is the raccoon main site: balance, check-in trigger, signup
+// grants, the authorize page and the auth API all live under this origin.
+const RaccoonOrigin = "https://xiaohuanxiong.com"
 
 // Family groups realms by upstream vendor. Every WorkBuddy-only behaviour
 // (check-in tasks, growth tasks, identity headers, product catalogue) is gated
@@ -31,6 +51,9 @@ const CodeArtsChatBase = "https://snap-access.cn-north-4.myhuaweicloud.com"
 func Family(r string) string {
 	if r == CodeArts {
 		return "codearts"
+	}
+	if r == Raccoon {
+		return "raccoon"
 	}
 	return "workbuddy"
 }
@@ -41,6 +64,34 @@ func SameFamily(a, b string) bool { return Family(a) == Family(b) }
 
 // IsCodeArts reports whether r is the Huawei Cloud CodeArts channel.
 func IsCodeArts(r string) bool { return r == CodeArts }
+
+// IsRaccoon reports whether r is the SenseTime 小浣熊 channel.
+func IsRaccoon(r string) bool { return r == Raccoon }
+
+// DefaultRaccoonInflight is how many turns one raccoon account may run at
+// once. The upstream has no session-lease endpoint, so this is purely a local
+// politeness ceiling: two in-flight turns keep latency sane without tripping
+// rate limits. WB_RACCOON_INFLIGHT overrides it (0 or negative = no ceiling).
+const DefaultRaccoonInflight = 2
+
+// RaccoonInflight resolves the raccoon channel's per-account ceiling.
+func RaccoonInflight() int {
+	return intFromEnv("WB_RACCOON_INFLIGHT", DefaultRaccoonInflight)
+}
+
+// intFromEnv reads an integer override, falling back to def when the value is
+// absent or unparsable.
+func intFromEnv(name string, def int) int {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return def
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return def
+	}
+	return n
+}
 
 // DefaultCodeArtsInflight is how many turns one CodeArts account may run at
 // once. The channel tolerates roughly three parallel chats; beyond that the
@@ -69,10 +120,15 @@ func CodeArtsInflight() int {
 // a dozen turns, while a CodeArts account starts pushing back at three. One
 // global number would either throttle WorkBuddy or overrun CodeArts.
 func InflightFor(r string, global int) int {
-	if !IsCodeArts(r) {
+	var ch int
+	switch {
+	case IsCodeArts(r):
+		ch = CodeArtsInflight()
+	case IsRaccoon(r):
+		ch = RaccoonInflight()
+	default:
 		return global
 	}
-	ch := CodeArtsInflight()
 	if ch <= 0 {
 		return global
 	}
@@ -87,7 +143,7 @@ func InflightFor(r string, global int) int {
 // realm.Get fall back to the international WorkBuddy exit.
 func Valid(r string) bool {
 	switch strings.ToLower(strings.TrimSpace(r)) {
-	case Intl, CN, CodeArts:
+	case Intl, CN, CodeArts, Raccoon:
 		return true
 	}
 	return false
@@ -128,6 +184,21 @@ func CNChatBase() (base string, ignored string) {
 // validate it with Valid first: the fallback is a migration rule for old
 // account files, not a routing decision.
 func Get(r string) Config {
+	if r == Raccoon {
+		return Config{
+			Name:            "商汤小浣熊 (Raccoon)",
+			ChatUpstream:    RaccoonLLMBase(),
+			BillingUpstream: RaccoonOrigin,
+			Origin:          RaccoonOrigin,
+			Domain:          "",
+			InfoFilename:    "raccoon-auth.json",
+			CacheDirName:    ".raccoon",
+			// Daily points are granted by the desktop "home" endpoint, which is
+			// not a check-in verb; HasCheckin marks "this channel has a daily
+			// task the scheduler may run", not "the same semantics as WorkBuddy".
+			HasCheckin: true,
+		}
+	}
 	if r == CodeArts {
 		return Config{
 			Name:            "华为云 CodeArts (China)",

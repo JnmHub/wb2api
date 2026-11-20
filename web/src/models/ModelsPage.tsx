@@ -67,6 +67,8 @@ const SOURCE_LABEL: Record<string, string> = {
   legacy: '宽松解析缓存',
   bundled: '内置快照',
   'not built yet': '尚未加载',
+  codearts: '华为 CodeArts 账号目录',
+  raccoon: '小浣熊账号目录',
 }
 
 /** The model catalogue the gateway advertises on /v1/models. */
@@ -76,13 +78,21 @@ export function ModelsPage() {
   const [discoverMsg, setDiscoverMsg] = useState('')
   const discover = useMutation({
     mutationFn: () =>
-      post<{ ok: boolean; count: number; accounts: { uid: string; ok: boolean; models: string[] }[] }>(
-        '/api/v2/codearts/models/refresh',
-        {},
-      ),
+      realm === 'raccoon'
+        ? post<{ ok: boolean; accounts: { uid: string; models: string[]; error?: string }[] }>(
+            '/api/v2/raccoon/models/refresh',
+            {},
+          )
+        : post<{ ok: boolean; count: number; accounts: { uid: string; ok: boolean; models: string[] }[] }>(
+            '/api/v2/codearts/models/refresh',
+            {},
+          ),
     onSuccess: (r) => {
-      const models = r.accounts.reduce((n, a) => n + a.models.length, 0)
-      setDiscoverMsg(`已发现 ${r.count} 个账号 / ${models} 个模型`)
+      const models = (r.accounts ?? []).reduce((n, a) => n + (a.models?.length ?? 0), 0)
+      const failed = (r.accounts ?? []).filter((a) => 'error' in a && a.error).length
+      setDiscoverMsg(
+        `已发现 ${r.accounts?.length ?? 0} 个账号 / ${models} 个模型` + (failed ? `（${failed} 个失败）` : ''),
+      )
       query.refetch()
     },
     onError: (e) => setDiscoverMsg(String(e)),
@@ -164,6 +174,26 @@ export function ModelsPage() {
     },
   ]
 
+  // An empty table has two very different causes; say which one it is.
+  const channel = realm === 'codearts' ? '华为 CodeArts' : realm === 'raccoon' ? '小浣熊' : ''
+  const emptyText =
+    channel && query.data && query.data.models.length === 0 ? (
+      <div style={{ padding: '16px 8px' }}>
+        <div>
+          {query.data.accounts === 0
+            ? `${channel} 渠道还没有账号。`
+            : `${channel} 渠道还没有发现可展示的模型。`}
+        </div>
+        <div className="dim" style={{ marginTop: 4 }}>
+          {query.data.accounts === 0
+            ? `在「账号 → 添加账号」里接入一个 ${channel} 账号后，可在这里重新发现。`
+            : '可点击「重新发现」查看账号的发现结果。'}
+        </div>
+      </div>
+    ) : (
+      '没有符合条件的模型'
+    )
+
   return (
     <div className="page">
       <div className="page-head">
@@ -173,6 +203,7 @@ export function ModelsPage() {
           </Typography.Title>
           <Typography.Text type="secondary">
             {query.data ? `${num(query.data.models.length)} 个模型 · ${SOURCE_LABEL[query.data.source] ?? query.data.source}` : '网关对外宣告的模型目录'}
+            {query.data?.accounts != null ? ` · ${num(query.data.accounts)} 个账号` : ''}
             {query.data?.fetched_at ? ` · 抓取于 ${new Date(query.data.fetched_at * 1000).toLocaleString()}` : ''}
           </Typography.Text>
         </div>
@@ -184,10 +215,11 @@ export function ModelsPage() {
               { value: 'intl', label: '国际版' },
               { value: 'cn', label: '国内版' },
               { value: 'codearts', label: '华为 CodeArts' },
+              { value: 'raccoon', label: '小浣熊' },
             ]}
           />
           <Input allowClear prefix={<Search size={14} />} placeholder="搜索模型 / 名称 / 描述" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: 260 }} />
-          {realm === 'codearts' && (
+          {(realm === 'codearts' || realm === 'raccoon') && (
             <Button icon={<RefreshCw size={14} />} loading={discover.isPending} onClick={() => discover.mutate()}>
               重新发现
             </Button>
@@ -209,7 +241,7 @@ export function ModelsPage() {
           dataSource={rows}
           loading={query.isFetching}
           pagination={{ pageSize: 20, showSizeChanger: false, showTotal: (n) => `共 ${num(n)} 个模型` }}
-          locale={{ emptyText: '没有符合条件的模型' }}
+          locale={{ emptyText: emptyText }}
           scroll={{ x: 900 }}
         />
       </Card>

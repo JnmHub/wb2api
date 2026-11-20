@@ -165,6 +165,7 @@ export function RequestsPage() {
               { value: 'intl', label: '国际版' },
               { value: 'cn', label: '国内版' },
               { value: 'codearts', label: '华为 CodeArts' },
+              { value: 'raccoon', label: '小浣熊' },
             ]}
           />
           <Input allowClear prefix={<Search size={14} />} placeholder="模型" value={model} onChange={(e) => setModel(e.target.value)} style={{ width: 180 }} />

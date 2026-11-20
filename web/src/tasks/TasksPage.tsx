@@ -77,6 +77,7 @@ export function TasksPage() {
       </div>
       <SchedulerCard query={scheduler} />
       <CodeArtsDailyCard status={scheduler.data} />
+      <RaccoonDailyCard status={scheduler.data} />
       <GrowthCard />
       <ActivityCard />
     </div>
@@ -307,6 +308,97 @@ function SchedulerCard({ query: q }: { query: UseQueryResult<SchedulerStatus> })
   )
 }
 
+function RaccoonDailyCard({ status }: { status?: SchedulerStatus }) {
+  const qc = useQueryClient()
+  const [edit, setEdit] = useState<{ time: string; uids: string[] } | null>(null)
+  const [notice, setNotice] = useState<{ text: string; type: 'info' | 'error' } | null>(null)
+  const update = useMutation({
+    mutationFn: (body: { enabled?: boolean; time?: string; uids?: string[] }) =>
+      patch<SchedulerStatus>('/api/v2/scheduler', { raccoon_daily: body }),
+    onSuccess: (status, body) => {
+      qc.setQueryData(['scheduler'], status)
+      if (body.time !== undefined) setEdit(null)
+      setNotice(null)
+    },
+    onError: (error) => setNotice({ text: (error as Error).message, type: 'error' }),
+  })
+  const trigger = useMutation({
+    mutationFn: () => post<{ msg: string }>('/api/v2/scheduler/trigger-raccoon', {}),
+    onSuccess: (result) => {
+      setNotice({ text: result.msg, type: 'info' })
+      void qc.invalidateQueries({ queryKey: ['scheduler'] })
+      void qc.invalidateQueries({ queryKey: ['activity'] })
+      void qc.invalidateQueries({ queryKey: ['accounts'] })
+    },
+    onError: (error) => setNotice({ text: (error as Error).message, type: 'error' }),
+  })
+  const daily = status?.raccoon_daily
+  if (!daily?.available) return null
+  const value = edit ?? { time: daily.time, uids: daily.uids }
+  const automatic = daily.enabled && status?.enabled
+  return (
+    <Card
+      title="小浣熊每日积分"
+      style={{ marginBottom: 12 }}
+      extra={
+        <Space>
+          <Tag color={daily.running ? 'processing' : automatic ? 'success' : 'default'}>
+            {daily.running ? '执行中' : automatic ? '已启用' : '自动签到已停用'}
+          </Tag>
+          <Button
+            size="small"
+            icon={<Play size={13} />}
+            loading={trigger.isPending}
+            disabled={daily.running || !daily.account_count}
+            onClick={() => trigger.mutate()}
+          >
+            立即签到
+          </Button>
+        </Space>
+      }
+    >
+      <Toggle label="启用小浣熊自动签到" checked={daily.enabled} onChange={(enabled) => update.mutate({ enabled })} />
+      <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
+        小浣熊没有签到接口：每日积分是打开桌面端首页时按天发放的，网关会触发一次并回读积分账单确认是否到账。
+      </Typography.Paragraph>
+      <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
+        <Col xs={24} md={6}>
+          <Typography.Text type="secondary">每天开始时间（北京时间）</Typography.Text>
+          <Input type="time" aria-label="小浣熊每天开始时间" value={value.time} onChange={(e) => setEdit({ ...value, time: e.target.value })} />
+        </Col>
+        <Col xs={24} md={18}>
+          <Typography.Text type="secondary">账号范围</Typography.Text>
+          <Select
+            mode="tags"
+            aria-label="小浣熊签到账号范围"
+            tokenSeparators={[',', '，', ' ']}
+            style={{ width: '100%' }}
+            value={value.uids}
+            onChange={(uids) => setEdit({ ...value, uids })}
+            placeholder="输入账号 UID，留空时涵盖全部已启用定时任务的小浣熊账号"
+          />
+        </Col>
+      </Row>
+      <Space wrap style={{ marginTop: 12 }}>
+        <Typography.Text type="secondary">
+          今日范围内 {daily.account_count} 个账号
+          {daily.last_run_at ? ` · 上次运行 ${daily.last_run_at}` : ''}
+        </Typography.Text>
+        {Object.entries(raccoonDailyStates).map(([key, state]) => {
+          const count = daily.states[key]
+          return count ? <Tag key={key} color={state.color}>{state.label} {count}</Tag> : null
+        })}
+        {edit && (
+          <Button size="small" type="primary" loading={update.isPending} disabled={!value.time} onClick={() => update.mutate(value)}>
+            保存签到设置
+          </Button>
+        )}
+        {notice && <Typography.Text type={notice.type === 'error' ? 'danger' : 'secondary'}>{notice.text}</Typography.Text>}
+      </Space>
+    </Card>
+  )
+}
+
 function CodeArtsDailyCard({ status }: { status?: SchedulerStatus }) {
   const qc = useQueryClient()
   const [edit, setEdit] = useState<{ time: string; uids: string[] } | null>(null)
@@ -490,4 +582,14 @@ function ActivityCard() {
       />
     </Card>
   )
+}
+
+// The raccoon scheduler reports its own state vocabulary: "due" = will run at
+// the next tick, "skip" = ineligible (rejected credential / daily task off).
+const raccoonDailyStates: Record<string, { label: string; color: string }> = {
+  done: { label: '今日已签到', color: 'success' },
+  due: { label: '待签到', color: 'processing' },
+  retry: { label: '等待重试', color: 'warning' },
+  skip: { label: '跳过（需重登/关闭任务）', color: 'default' },
+  hold: { label: '风控暂停', color: 'warning' },
 }

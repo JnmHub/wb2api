@@ -40,7 +40,7 @@ const MORE_ACTIONS = [
   { key: 'refresh_token', label: '刷新 Token' },
   { key: 'refresh_credits', label: '刷新积分' },
   { key: 'test', label: '测试账号' },
-  { key: 'checkin', label: '签到（国内版 / 华为 CodeArts，自动跳过其他渠道）' },
+  { key: 'checkin', label: '签到（国内版 / 华为 CodeArts / 小浣熊，自动跳过其他渠道）' },
   { key: 'daily_chat', label: '每日活跃（仅国际版，自动跳过国内版）' },
   { key: 'clear_cooldown', label: '清除冷却' },
   { key: 'clear_restriction', label: '解除风控…', danger: true },

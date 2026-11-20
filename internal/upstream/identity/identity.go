@@ -104,6 +104,10 @@ func Endpoint(r, product string) (base, domain string) {
 	if r == realm.CodeArts {
 		return realm.CodeArtsChatBase, ""
 	}
+	// Raccoon is the same: one host, one API shape, no X-Domain.
+	if r == realm.Raccoon {
+		return realm.RaccoonLLMBase(), ""
+	}
 	if r == realm.CN {
 		cnBase, _ := realm.CNChatBase()
 		if product == ProductVSCode {

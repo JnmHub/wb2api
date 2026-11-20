@@ -3,6 +3,9 @@ package openai
 import (
 	"strings"
 	"time"
+
+	"wb2api/internal/realm"
+	"wb2api/internal/upstream/raccoon"
 )
 
 // viewModel is the model name the client sees: the one it asked for, even when
@@ -35,7 +38,7 @@ func (h *Handler) modelBlockedForRealm(realmName, model string, now time.Time) b
 			continue
 		}
 		seen++
-		if a.HealthReady(model, now) {
+		if a.HealthReady(model, now) && (!realm.IsRaccoon(realmName) || raccoon.AllowsModel(rec, model)) {
 			return false
 		}
 	}
@@ -74,6 +77,9 @@ func (h *Handler) advanceModelChain(q *request) bool {
 	}
 	if q.chain == nil {
 		q.chain = h.Settings.ModelChain(q.model)
+		if len(q.chain) < 2 && realm.IsRaccoon(q.realm) && q.viewModel() != q.model {
+			q.chain = h.Settings.ModelChain(q.viewModel())
+		}
 		q.chainPos = 0
 	}
 	if len(q.chain) < 2 {
@@ -86,10 +92,16 @@ func (h *Handler) advanceModelChain(q *request) bool {
 	for q.chainPos+1 < len(q.chain) {
 		q.chainPos++
 		next := q.chain[q.chainPos]
-		if next == "" || next == q.model {
+		if next == "" || next == q.model || h.modelBanned(next) {
 			continue
 		}
-		if h.modelBanned(next) || h.modelBlockedForRealm(q.realm, next, now) {
+		if realm.IsRaccoon(q.realm) {
+			next = raccoon.WireName(next)
+			if next == q.model || h.modelBanned(next) {
+				continue
+			}
+		}
+		if h.modelBlockedForRealm(q.realm, next, now) {
 			continue
 		}
 		if q.clientModel == "" {
@@ -99,7 +111,11 @@ func (h *Handler) advanceModelChain(q *request) bool {
 			"realm", q.realm, "model", q.model, "next", next)
 		q.model = next
 		q.payload.Set("model", next)
-		h.reshape(q)
+		if realm.IsRaccoon(q.realm) {
+			q.shaped = q.payload
+		} else {
+			h.reshape(q)
+		}
 		q.effortDone = false
 		// A new model is a new request: nothing has been charged for it yet.
 		q.at = attemptState{tried: map[string]struct{}{}, charged: map[string]bool{}}

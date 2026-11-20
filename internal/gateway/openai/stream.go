@@ -703,6 +703,9 @@ func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp fun
 	acc *pool.Account, model, keyID, effort string, start time.Time, names *codearts.ToolNameMap) {
 
 	res := h.collect(r, cancelUp, idleD, body, model, true)
+	if realm.IsRaccoon(acc.Realm) {
+		res.meta.model = model
+	}
 	if names != nil && !realm.IsCodeArts(acc.Realm) {
 		for _, call := range res.calls {
 			fn, ok := call["function"].(map[string]any)

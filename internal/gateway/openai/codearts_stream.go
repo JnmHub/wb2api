@@ -25,17 +25,18 @@ var (
 // Responses and Messages relays. TCP reads and individual data lines are not
 // event boundaries. A canonical event is always a single data line.
 type codeArtsStream struct {
-	lines      *bufio.Scanner
-	data       []byte
-	frame      []byte
-	pending    bool
-	firstLine  bool
-	seenSSE    bool
-	seenFinish bool
-	done       bool
-	names      *codearts.ToolNameMap
-	tools      map[int]*codeArtsToolName
-	observe    func([]byte)
+	lines           *bufio.Scanner
+	data            []byte
+	frame           []byte
+	pending         bool
+	firstLine       bool
+	seenSSE         bool
+	seenFinish      bool
+	done            bool
+	names           *codearts.ToolNameMap
+	tools           map[int]*codeArtsToolName
+	observe         func([]byte)
+	inlineReasoning *codeArtsInlineReasoning
 }
 
 type codeArtsToolName struct {
@@ -338,6 +339,9 @@ func (s *codeArtsStream) dispatch() error {
 				d["reasoning_content"] = d["reasoning"]
 			}
 			delete(d, "reasoning")
+			if s.inlineReasoning != nil {
+				s.inlineReasoning.normalize(d, finish != "")
+			}
 			if err := s.restoreToolNames(d, finish != ""); err != nil {
 				return err
 			}
@@ -360,11 +364,16 @@ func (s *codeArtsStream) writeFrame(enc []byte) {
 }
 
 func (s *codeArtsStream) complete() error {
+	delta := rawObj{}
+	if s.inlineReasoning != nil {
+		s.inlineReasoning.normalize(delta, true)
+	}
 	if len(s.tools) > 0 {
-		delta := rawObj{}
 		if err := s.restoreToolNames(delta, true); err != nil {
 			return err
 		}
+	}
+	if len(delta) > 0 {
 		enc, err := marshalNoEscape(map[string]any{"choices": []any{map[string]any{
 			"index": 0, "delta": delta, "finish_reason": nil,
 		}}})

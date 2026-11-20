@@ -7,6 +7,7 @@ import (
 	"wb2api/internal/realm"
 	"wb2api/internal/store/accounts"
 	"wb2api/internal/upstream/codearts"
+	"wb2api/internal/upstream/raccoon"
 )
 
 // redactSecrets removes the account's credentials from a piece of upstream
@@ -43,6 +44,13 @@ func accountSecrets(rec *accounts.Record) []string {
 		for _, key := range []string{"access_key_id", "secret_access_key", "security_token", "dpop_private_key", "code_verifier", "client_id"} {
 			if v, ok := extra[key].(string); ok {
 				out = append(out, v)
+			}
+		}
+	}
+	if realm.IsRaccoon(rec.Realm) {
+		for _, key := range []string{"accessToken", "access_token", "token", "refreshToken", "refresh_token"} {
+			if v, ok := rec.RaccoonFields()[key].(string); ok {
+				out = append(out, raccoon.StripBearer(v))
 			}
 		}
 	}

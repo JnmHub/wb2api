@@ -26,6 +26,9 @@ func LoadSnapshot(ctx context.Context, pool *pgxpool.Pool, seedDir string) ([]*a
 			return nil, nil, 0, err
 		}
 	}
+	if err := protectRaccoonRows(ctx, pool); err != nil {
+		return nil, nil, 0, err
+	}
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, nil, 0, err

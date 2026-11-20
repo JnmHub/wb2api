@@ -49,6 +49,7 @@ import (
 	"wb2api/internal/pool"
 	"wb2api/internal/pricing"
 	"wb2api/internal/quota"
+	"wb2api/internal/raccoonsync"
 	"wb2api/internal/realm"
 	"wb2api/internal/realmswitch"
 	"wb2api/internal/refresh"
@@ -201,7 +202,7 @@ func main() {
 	var accountCursor int64 // guarded with accountMu after startup
 	var accountPool *pool.Pool
 	persist := func(rec *accounts.Record) error {
-		if rec != nil && realm.IsCodeArts(rec.Realm) {
+		if rec != nil && (realm.IsCodeArts(rec.Realm) || realm.IsRaccoon(rec.Realm)) {
 			accountMu.Lock()
 			defer accountMu.Unlock()
 			latest, err := accounts.SaveReconciled(*accountsDir, rec, time.Now())
@@ -222,7 +223,7 @@ func main() {
 		return err
 	}
 	deleteFn := func(rec *accounts.Record) error {
-		if rec != nil && realm.IsCodeArts(rec.Realm) {
+		if rec != nil && (realm.IsCodeArts(rec.Realm) || realm.IsRaccoon(rec.Realm)) {
 			accountMu.Lock()
 			defer accountMu.Unlock()
 			if err := accounts.Delete(rec); err != nil {
@@ -283,6 +284,10 @@ func main() {
 		}
 	} else {
 		recs, errs = accounts.Load(*accountsDir, time.Now())
+		if err := accounts.ProtectRaccoonFiles(*accountsDir, recs, time.Now()); err != nil {
+			log.Error("cannot migrate Raccoon accounts for safe rollback", "err", err)
+			os.Exit(1)
+		}
 	}
 	for _, e := range errs {
 		log.Warn("skipping unreadable account", "err", e)
@@ -290,9 +295,8 @@ func main() {
 	p := pool.New(recs)
 	accountPool = p
 	p.SetTopK(*topK)
-	if *perAccount > 0 || realm.InflightFor(realm.CodeArts, 0) > 0 {
-		// A channel ceiling applies even when the global limit is off: the two
-		// vendors do not share a capacity model.
+	if *perAccount > 0 || realm.InflightFor(realm.CodeArts, 0) > 0 || realm.InflightFor(realm.Raccoon, 0) > 0 {
+		// Each channel's ceiling applies even when the global limit is off.
 		for _, a := range p.All() {
 			a.SetMaxInflight(realm.InflightFor(a.Realm, *perAccount))
 		}
@@ -323,6 +327,10 @@ func main() {
 		)
 	} else {
 		st = settings.Open(*accountsDir)
+	}
+	if err := st.ProtectRaccoonKeys(); err != nil {
+		log.Error("cannot migrate Raccoon API keys for safe rollback", "err", err)
+		os.Exit(1)
 	}
 	applyProxySlots := func() {
 		var slots []pool.ProxySlot
@@ -476,6 +484,7 @@ func main() {
 	var limits *usageest.Estimator
 	defer func() {
 		finishStorage(stopBG, func() {
+			refresher.StopAndWait()
 			for _, join := range backgroundJoins {
 				join()
 			}
@@ -703,6 +712,32 @@ func main() {
 	}
 	sched.Channel = codeArtsSvc
 	accountsAPI.CodeArts = codeArtsSvc
+	// The raccoon channel (小浣熊) has its own daily task, catalogue and sign-up
+	// grants. Same shape as CodeArts: one service shared by the panel, the
+	// scheduler and the background scan.
+	raccoonSvc := &raccoonsync.Service{
+		Pool: p, Persist: persist, Log: log,
+		Refresh:         refresher.Refresh,
+		RefreshObserved: refresher.RefreshObserved,
+	}
+	if pgDB != nil {
+		raccoonSvc.WithAccountLock = func(ctx context.Context, uid string, run func(context.Context) error) error {
+			release, err := pgaccounts.LockRaccoonAccount(ctx, pgDB.Pool, "maintenance", uid)
+			if err != nil {
+				return err
+			}
+			defer release()
+			return run(ctx)
+		}
+		raccoonSvc.LoadLatest = func(ctx context.Context, uid string) (*accounts.Record, error) {
+			return pgaccounts.LoadOne(ctx, pgDB.Pool, uid)
+		}
+	}
+	sched.Raccoon = raccoonSvc
+	accountsAPI.Raccoon = raccoonSvc
+	background.start(func() {
+		(&raccoonsync.Scanner{Service: raccoonSvc, Leader: isLeader}).Run(bg)
+	})
 	// The upstream gates each account to three concurrent conversations and
 	// rejects the fourth with TM.00001041, so the gateway registers a busy
 	// lease per attempt instead of firing blindly.
@@ -711,7 +746,7 @@ func main() {
 	background.start(func() {
 		(&codeartsync.Scanner{Service: codeArtsSvc}).Run(bg)
 	})
-	(&api.Operations{Ops: opsClient, Pool: p, Prober: h, Scheduler: sched, Activity: activityLog, Scanner: scanner, AtRest: keyring, Agents: agentMgr, Persist: persist, CodeArts: codeArtsSvc,
+	(&api.Operations{Ops: opsClient, Pool: p, Prober: h, Scheduler: sched, Activity: activityLog, Scanner: scanner, AtRest: keyring, Agents: agentMgr, Persist: persist, CodeArts: codeArtsSvc, Raccoon: raccoonSvc,
 		Push: accountsAPI.PushHandler()}).Register(mux, auth.Require)
 	(&api.Settings{Store: st, Pool: p, Realm: realmSw, Guards: h.Guards, Catalog: cat, Ops: opsGate}).Register(mux, auth.Require)
 	checker := &updates.Checker{Current: version, Enabled: st.UpdateCheckEnabled, Store: st, Log: log}

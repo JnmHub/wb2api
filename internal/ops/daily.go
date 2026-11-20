@@ -353,6 +353,9 @@ func (c *Client) dailyChatUpstream(ctx context.Context, acc *pool.Account) Resul
 // nickname are read; a uid mismatch against the credential is an error.
 func (c *Client) SyncProfile(ctx context.Context, acc *pool.Account) Result {
 	rec := acc.Record()
+	if rec.Realm != realm.CN && rec.Realm != realm.Intl {
+		return failure("当前渠道不支持通过 WorkBuddy 同步昵称")
+	}
 	origin := "https://www.workbuddy.ai"
 	if rec.Realm == realm.CN {
 		origin = "https://www.workbuddy.cn"

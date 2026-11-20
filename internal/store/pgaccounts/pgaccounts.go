@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"wb2api/internal/realm"
 	"wb2api/internal/store/accounts"
 )
 
@@ -28,7 +29,9 @@ func Load(ctx context.Context, pool *pgxpool.Pool, seedDir string) ([]*accounts.
 		if err := seedOnce(ctx, pool, seedDir); err != nil {
 			return nil, nil, err
 		}
-		seedDir = ""
+	}
+	if err := protectRaccoonRows(ctx, pool); err != nil {
+		return nil, nil, err
 	}
 	rows, err := pool.Query(ctx, `select uid, data from wb_accounts order by uid`)
 	if err != nil {
@@ -90,7 +93,7 @@ func seedOnce(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 				return fmt.Errorf("account seed has %d unreadable paths: %w", len(bad), bad[0])
 			}
 			for _, rec := range recs {
-				raw, e := rec.Marshal()
+				raw, e := rec.MarshalPostgres()
 				if e != nil {
 					return e
 				}
@@ -116,6 +119,10 @@ func decode(uid string, raw []byte, now time.Time) (*accounts.Record, error) {
 	}
 	if m == nil {
 		return nil, errors.New("not a JSON object")
+	}
+	m, err := accounts.UnwrapStoredRecord(m)
+	if err != nil {
+		return nil, err
 	}
 	if v, _ := m["uid"].(string); v != "" && v != uid {
 		// Tombstones are keyed by the SQL primary key. Publishing a different
@@ -147,13 +154,26 @@ func Save(ctx context.Context, pool *pgxpool.Pool, rec *accounts.Record) error {
 		return err
 	}
 	if rec.SharedBaseline == nil {
-		_, err = pool.Exec(ctx, `
-			insert into wb_accounts(uid, data, updated_at) values($1, $2::jsonb, now())
-			on conflict (uid) do update set data = excluded.data, updated_at = now()`, rec.UID, string(raw))
-		if err == nil {
-			rec.SharedBaseline = raw
+		if rec.ObservedRaccoonCredential != nil {
+			return fmt.Errorf("%w: Raccoon write has no persisted baseline", ErrConflict)
 		}
-		return err
+		stored, err := rec.MarshalPostgres()
+		if err != nil {
+			return err
+		}
+		result, err := pool.Exec(ctx, `
+			insert into wb_accounts(uid, data, updated_at) values($1, $2::jsonb, now())
+			on conflict (uid) do update set data = excluded.data, updated_at = now()
+			where not $3 and not (wb_accounts.data ? 'raccoon_record_v1')
+			  and lower(btrim(coalesce(wb_accounts.data->>'realm',''))) <> 'raccoon'`, rec.UID, string(stored), realm.IsRaccoon(rec.Realm))
+		if err != nil {
+			return err
+		}
+		if result.RowsAffected() == 0 {
+			return fmt.Errorf("%w: protected account UID already exists", ErrConflict)
+		}
+		rec.SharedBaseline = raw
+		return nil
 	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -173,9 +193,32 @@ func Save(ctx context.Context, pool *pgxpool.Pool, rec *accounts.Record) error {
 		}
 		return err
 	}
+	if realm.IsRaccoon(rec.Realm) {
+		live, err := decode(rec.UID, current, time.Now())
+		if err != nil {
+			return err
+		}
+		if live.Realm != rec.Realm {
+			return fmt.Errorf("%w: account channel changed", ErrConflict)
+		}
+		if rec.ObservedRaccoonCredential != nil && !live.MatchesRaccoonCredential(rec.ObservedRaccoonCredential) {
+			return fmt.Errorf("%w: Raccoon credential changed before commit", ErrConflict)
+		}
+		current = live.SharedBaseline
+	}
 	merged, err := merge(rec.SharedBaseline, raw, current)
 	if err != nil {
 		return err
+	}
+	if realm.IsRaccoon(rec.Realm) {
+		next, err := decode(rec.UID, merged, time.Now())
+		if err != nil {
+			return err
+		}
+		merged, err = next.MarshalPostgres()
+		if err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec(ctx, `update wb_accounts set data = $2::jsonb, updated_at = now() where uid = $1`, rec.UID, string(merged)); err != nil {
 		return err
