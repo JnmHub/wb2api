@@ -17,6 +17,7 @@ import (
 
 	"wb2api/internal/gateway/leak"
 	"wb2api/internal/gateway/ratelimit"
+	"wb2api/internal/gateway/usageview"
 	"wb2api/internal/pool"
 	"wb2api/internal/realm"
 	"wb2api/internal/upstream/codearts"
@@ -189,6 +190,7 @@ func (h *Handler) pipeStream(w http.ResponseWriter, r *http.Request, cancelUp fu
 	acc *pool.Account, model, keyID, effort string, start time.Time, maxTPS float64, names *codearts.ToolNameMap, shape *RequestShape, usageOpt ...bool) {
 	isCodeArts := realm.IsCodeArts(acc.Realm)
 	includeUsage := isCodeArts && len(usageOpt) > 0 && usageOpt[0]
+	removedPromptTokens := removedPromptTokensFrom(r.Context())
 
 	hdr := w.Header()
 	hdr.Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -357,6 +359,8 @@ loop:
 					if isCodeArts {
 						delete(c.top, "usage")
 						meta.codeArtsEnvelope(c.top, start)
+					} else if u := c.usage(); u != nil && removedPromptTokens > 0 {
+						c.top["usage"] = usageview.WithOriginalPrompt(u, removedPromptTokens)
 					}
 					for i := range c.deltas {
 						if rs := c.reasoning(i); rs != "" {
@@ -469,7 +473,7 @@ loop:
 				}
 			} else if !reasoningOnly {
 				if includeUsage && lastUsage != nil {
-					clientClosed = writeData(meta.codeArtsUsage(lastUsage)) != nil
+					clientClosed = writeData(meta.codeArtsUsage(usageview.WithOriginalPrompt(lastUsage, removedPromptTokens))) != nil
 				}
 				if !clientClosed {
 					_, err := bw.WriteString("data: [DONE]\n\n")
@@ -759,7 +763,7 @@ func (h *Handler) aggregate(w http.ResponseWriter, r *http.Request, cancelUp fun
 		"choices": []map[string]any{{"index": 0, "message": msg, "finish_reason": res.finish}},
 	}
 	if res.usage != nil {
-		resp["usage"] = res.usage
+		resp["usage"] = usageview.WithOriginalPrompt(res.usage, removedPromptTokensFrom(r.Context()))
 	}
 	b, err := marshalNoEscape(resp)
 	if err != nil {

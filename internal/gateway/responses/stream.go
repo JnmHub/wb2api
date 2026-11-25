@@ -3,6 +3,8 @@ package responses
 import (
 	"sort"
 	"strings"
+
+	"wb2api/internal/gateway/usageview"
 	"wb2api/internal/jsonx"
 )
 
@@ -39,6 +41,8 @@ type Stream struct {
 	dsmlCalls              []dsmlCall
 	sawDone                bool
 	estimatedUsage         bool
+	roundRemovedTokens     int
+	usageRemovedTokens     int
 }
 
 // NewStream starts a translation; Start returns the opening events.
@@ -56,6 +60,9 @@ func (s *Stream) Usage() *jsonx.Obj { return s.usage }
 
 // Estimated reports whether Usage was estimated locally.
 func (s *Stream) Estimated() bool { return s.estimatedUsage }
+
+// SetRoundRemovedPromptTokens associates a trimming estimate with this round's usage.
+func (s *Stream) SetRoundRemovedPromptTokens(tokens int) { s.roundRemovedTokens = tokens }
 
 // FinishReason is the upstream finish reason seen so far ("stop" before one
 // arrives). The relay uses it to explain a reasoning-only answer.
@@ -82,7 +89,7 @@ func (s *Stream) respObj(status string) *jsonx.Obj {
 		"model", s.model, "output", out, "output_text", strings.Join(s.textParts, ""),
 		"parallel_tool_calls", s.info.ParallelToolCalls, "tool_choice", s.info.ToolChoice,
 		"tools", tools, "metadata", jsonx.NewObj())
-	if u := Usage(s.usage); u != nil {
+	if u := Usage(usageview.WithOriginalPromptObject(s.usage, s.usageRemovedTokens)); u != nil {
 		obj.Set("usage", u)
 	}
 	applyNamespaceToCalls(out, s.info.Namespaces)
@@ -197,6 +204,7 @@ func (s *Stream) Chunk(chunk *jsonx.Obj) []Frame {
 	if uo, ok := asObj(chunk.Get("usage")); ok && uo.Len() > 0 {
 		if s.usage == nil || numOf(uo.Get("total_tokens")) >= numOf(s.usage.Get("total_tokens")) {
 			s.usage = uo
+			s.usageRemovedTokens = s.roundRemovedTokens
 		}
 	}
 	choices, _ := chunk.Get("choices").([]any)
@@ -401,6 +409,7 @@ func (s *Stream) Finish() []Frame {
 				"completion_tokens_details", obj("reasoning_tokens", num(int64(estimateTokens(rsTxt)))),
 				"prompt_tokens_details", obj("cached_tokens", num(0)))
 			s.estimatedUsage = true
+			s.usageRemovedTokens = s.roundRemovedTokens
 		}
 	}
 	status := "completed"

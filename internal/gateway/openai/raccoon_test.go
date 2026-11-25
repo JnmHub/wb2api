@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -273,6 +274,127 @@ func TestRaccoonUndiscoveredModelAndResponseAliases(t *testing.T) {
 	var reply struct{ Model string }
 	if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil || resp.StatusCode != http.StatusOK || reply.Model != "deepseek-v4.1-flash" {
 		t.Fatalf("raccoon reply status=%d model=%q error=%v", resp.StatusCode, reply.Model, err)
+	}
+}
+
+func TestRaccoonHistoryLimitOnGateway(t *testing.T) {
+	var calls atomic.Int32
+	received := make(chan []byte, 2)
+	e := newEnv(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream request: %v", err)
+			http.Error(w, "could not read fixture request", http.StatusBadRequest)
+			return
+		}
+		select {
+		case received <- body:
+		default:
+			t.Error("unexpected extra upstream request")
+		}
+		sseUpstream("正常")(w, r)
+	}), 0, "")
+	const model = "sn-glm-5-3"
+	rec := raccoonAccount("history-test", model)
+	e.h.Pool = pool.New([]*accounts.Record{rec})
+	if _, err := e.h.Settings.SetUpstream(map[string]any{"codearts_history_limit_mib": 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	headers := map[string]string{"X-Realm": realm.Raccoon}
+	post := func(body string, want int) []byte {
+		t.Helper()
+		resp := postJSON(t, e.srv.URL+"/v1/chat/completions", body, headers)
+		defer resp.Body.Close()
+		payload, err := io.ReadAll(resp.Body)
+		if err != nil || resp.StatusCode != want {
+			t.Fatalf("response status %d, want %d, error %v: %s", resp.StatusCode, want, err, payload)
+		}
+		return payload
+	}
+	takeWire := func() []byte {
+		t.Helper()
+		select {
+		case wire := <-received:
+			return wire
+		default:
+			t.Fatal("gateway did not dispatch a request")
+			return nil
+		}
+	}
+	const limit = (1 << 20) * 8 / 10
+	longText := strings.Repeat("旧", 900*1024/3)
+	body := fmt.Sprintf(`{"model":%q,"messages":[
+		{"role":"system","content":"keep-system"},
+		{"role":"user","content":%q},
+		{"role":"assistant","content":"old-answer"},
+		{"role":"user","content":"keep-current"},
+		{"role":"assistant","tool_calls":[{"id":"call_active","type":"function","function":{"name":"lookup","arguments":"{\"key\":\"x\"}"}}]},
+		{"role":"tool","tool_call_id":"call_active","content":"keep-result"}
+	],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}`, model, longText)
+	post(body, http.StatusOK)
+	if wire := takeWire(); len(wire) <= limit {
+		t.Fatalf("CodeArts limit affected Raccoon: sent %d bytes, want more than %d", len(wire), limit)
+	}
+	e.event(t)
+
+	if _, err := e.h.Settings.SetUpstream(map[string]any{"raccoon_history_limit_mib": 0.8}); err != nil {
+		t.Fatal(err)
+	}
+	if payload := post(body, http.StatusOK); !strings.Contains(string(payload), "正常") {
+		t.Fatalf("response did not carry upstream content: %s", payload)
+	}
+	trimmed := takeWire()
+	if len(trimmed) > limit {
+		t.Fatalf("sent %d bytes, limit %d", len(trimmed), limit)
+	}
+	var wire struct {
+		Model    string
+		Stream   bool
+		Messages []struct {
+			Role       string
+			Content    string
+			ToolCallID string `json:"tool_call_id"`
+			ToolCalls  []struct {
+				ID       string
+				Function struct{ Name, Arguments string }
+			} `json:"tool_calls"`
+		}
+	}
+	if err := json.Unmarshal(trimmed, &wire); err != nil {
+		t.Fatal(err)
+	}
+	m := wire.Messages
+	if wire.Model != model || !wire.Stream || len(m) != 4 ||
+		m[0].Role != "system" || m[0].Content != "keep-system" ||
+		m[1].Role != "user" || m[1].Content != "keep-current" ||
+		m[2].Role != "assistant" || len(m[2].ToolCalls) != 1 ||
+		m[3].Role != "tool" || m[3].Content != "keep-result" || m[3].ToolCallID != "call_active" {
+		t.Fatalf("wire body did not preserve the system message and active tool turn: %s", trimmed)
+	}
+	if call := m[2].ToolCalls[0]; call.ID != m[3].ToolCallID || call.Function.Name != "lookup" || call.Function.Arguments != `{"key":"x"}` {
+		t.Fatalf("tool call did not match the active result: %+v", call)
+	}
+	e.event(t)
+
+	oversized := strings.Replace(body, "keep-result", longText, 1)
+	payload := post(oversized, http.StatusOK)
+	if !strings.Contains(string(payload), "正常") || calls.Load() != 3 {
+		t.Fatalf("oversized current turn: upstream calls %d, body %s", calls.Load(), payload)
+	}
+	oversizedWire := takeWire()
+	if err := json.Unmarshal(oversizedWire, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if len(oversizedWire) <= limit || len(wire.Messages) != 4 ||
+		wire.Messages[1].Content != "keep-current" || wire.Messages[3].Content != longText ||
+		wire.Messages[3].ToolCallID != "call_active" {
+		t.Fatal("oversized active tool result did not reach upstream intact with old history removed")
+	}
+	if ev := e.event(t); ev.Status != http.StatusOK || ev.Account != rec.UID ||
+		!e.h.Pool.Get(rec.UID).HealthReady(model, time.Now()) {
+		t.Fatalf("unexpected usage for oversized current turn: status %d, account %q", ev.Status, ev.Account)
 	}
 }
 

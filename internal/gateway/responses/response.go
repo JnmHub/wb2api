@@ -87,13 +87,17 @@ func Usage(u *jsonx.Obj) *jsonx.Obj {
 		pdet = jsonx.NewObj()
 	}
 	cached := first(first(u.Get("prompt_cache_hit_tokens"), det.Get("cached_tokens")), pdet.Get("cached_tokens"))
-	return obj(
+	out := obj(
 		"input_tokens", orZero(u.Get("prompt_tokens")),
 		"input_tokens_details", obj("cached_tokens", orZero(cached)),
 		"output_tokens", orZero(u.Get("completion_tokens")),
 		"output_tokens_details", obj("reasoning_tokens", orZero(det.Get("reasoning_tokens"))),
 		"total_tokens", orZero(u.Get("total_tokens")),
 	)
+	if u.Get("input_tokens_estimated") == true {
+		out.Set("input_tokens_estimated", true)
+	}
+	return out
 }
 
 func messageItem(env Env, text string) *jsonx.Obj {

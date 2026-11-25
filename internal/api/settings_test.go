@@ -98,6 +98,44 @@ func TestSettingsSnapshotAndPatch(t *testing.T) {
 	}
 }
 
+func TestUpstreamHistoryLimitSettings(t *testing.T) {
+	f := newSettingsFixture(t)
+	const path = "/api/v2/settings"
+	const codeArtsKey = "codearts_history_limit_mib"
+	const raccoonKey = "raccoon_history_limit_mib"
+	checkSnapshot := func(code int, out map[string]any, codeArts, raccoon float64) {
+		t.Helper()
+		upstream, _ := out["upstream"].(map[string]any)
+		if code != http.StatusOK || upstream[codeArtsKey] != codeArts || upstream[raccoonKey] != raccoon {
+			t.Fatalf("HTTP %d, CodeArts = %v, Raccoon = %v, want %v and %v", code, upstream[codeArtsKey], upstream[raccoonKey], codeArts, raccoon)
+		}
+	}
+	code, out := f.do(t, http.MethodGet, path, "")
+	checkSnapshot(code, out, 0, 0)
+	code, out = f.do(t, http.MethodPatch, path, `{"upstream":{"codearts_history_limit_mib":0.8}}`)
+	checkSnapshot(code, out, 0.8, 0)
+	code, out = f.do(t, http.MethodPatch, path, `{"upstream":{"raccoon_history_limit_mib":0.75}}`)
+	checkSnapshot(code, out, 0.8, 0.75)
+	for _, key := range []string{codeArtsKey, raccoonKey} {
+		for _, invalid := range []string{"-0.1", "1024.1", "true", "\"0.8\"", "null", "1e400"} {
+			if code, _ := f.do(t, http.MethodPatch, path, `{"upstream":{"`+key+`":`+invalid+`}}`); code != http.StatusBadRequest {
+				t.Errorf("%s = %s -> HTTP %d, want 400", key, invalid, code)
+			}
+		}
+	}
+	if persisted := settings.Open(f.dir).UpstreamConfig(); persisted.CodeArtsHistoryLimitMiB != 0.8 || persisted.RaccoonHistoryLimitMiB != 0.75 {
+		t.Fatalf("persisted limits = %g and %g MiB, want 0.8 and 0.75", persisted.CodeArtsHistoryLimitMiB, persisted.RaccoonHistoryLimitMiB)
+	}
+	code, out = f.do(t, http.MethodPatch, path, `{"upstream":{"raccoon_history_limit_mib":1024}}`)
+	checkSnapshot(code, out, 0.8, 1024)
+	code, out = f.do(t, http.MethodPatch, path, `{"upstream":{"codearts_history_limit_mib":1024}}`)
+	checkSnapshot(code, out, 1024, 1024)
+	code, out = f.do(t, http.MethodPatch, path, `{"upstream":{"raccoon_history_limit_mib":0}}`)
+	checkSnapshot(code, out, 1024, 0)
+	code, out = f.do(t, http.MethodPatch, path, `{"upstream":{"codearts_history_limit_mib":0}}`)
+	checkSnapshot(code, out, 0, 0)
+}
+
 func TestAPIKeyEndpoints(t *testing.T) {
 	f := newSettingsFixture(t)
 	code, created := f.do(t, "POST", "/api/v2/keys", `{"name":"ci","realm":"intl","models":["glm-*"],"concurrency_limit":2}`)

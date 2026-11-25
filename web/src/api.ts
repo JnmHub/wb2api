@@ -338,7 +338,14 @@ export interface SettingsView {
   limits: Record<string, LimitEntry>
   switches: Record<string, boolean>
   auto_switch_products: string[]
-  upstream: { header_timeout_seconds: number; idle_timeout_seconds: number; device_token_set: boolean; device_token_file: string }
+  upstream: {
+    header_timeout_seconds: number
+    idle_timeout_seconds: number
+    codearts_history_limit_mib: number
+    raccoon_history_limit_mib: number
+    device_token_set: boolean
+    device_token_file: string
+  }
   prompt: {
     mode: 'passthrough' | 'custom' | 'append'
     file: string

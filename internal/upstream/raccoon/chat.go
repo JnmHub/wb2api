@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"wb2api/internal/jsonx"
+	"wb2api/internal/upstream/chathistory"
 	"wb2api/internal/upstream/identity"
 )
 
@@ -142,6 +143,17 @@ func NormalizeBody(payload *jsonx.Obj, model string) *jsonx.Obj {
 // stream:false upstream makes the endpoint answer one JSON document, which the
 // gateway's stream reader would read as "no chunks" (empty content, usage only).
 func PrepareBody(payload *jsonx.Obj, model string) ([]byte, error) {
+	return PrepareBodyWithHistoryLimit(payload, model, 0)
+}
+
+// PrepareBodyWithHistoryLimit trims old turns toward a byte limit on the outbound JSON.
+func PrepareBodyWithHistoryLimit(payload *jsonx.Obj, model string, limit int) ([]byte, error) {
+	body, _, err := PrepareBodyWithHistoryAccounting(payload, model, limit)
+	return body, err
+}
+
+// PrepareBodyWithHistoryAccounting also estimates the input tokens removed by the history limit.
+func PrepareBodyWithHistoryAccounting(payload *jsonx.Obj, model string, limit int) ([]byte, int, error) {
 	out := NormalizeBody(payload, model)
 	if out == nil {
 		out = jsonx.NewObj()
@@ -153,7 +165,11 @@ func PrepareBody(payload *jsonx.Obj, model string) ([]byte, error) {
 		// through would make the upstream serve its own default model instead.
 		out.Set("model", model)
 	}
-	return jsonx.Marshal(out)
+	body, err := jsonx.Marshal(out)
+	if err != nil {
+		return nil, 0, err
+	}
+	return chathistory.Apply(out, body, limit, nil)
 }
 
 // ChatHeaders builds the outbound headers of one chat attempt. The desktop

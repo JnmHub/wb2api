@@ -9,6 +9,7 @@ import (
 
 	"wb2api/internal/jsonx"
 	"wb2api/internal/realm"
+	"wb2api/internal/upstream/chathistory"
 	"wb2api/internal/upstream/identity"
 )
 
@@ -110,14 +111,26 @@ func PrepareBody(shaped *jsonx.Obj, model, chatID string) ([]byte, *ToolNameMap,
 // that asked for a non-stream response is served by wb2api's own aggregation
 // over that stream, which keeps one wire shape for both modes.
 func PrepareBodyWithBudget(shaped *jsonx.Obj, model, chatID string) ([]byte, *ToolNameMap, int64, error) {
+	return PrepareBodyWithHistoryLimit(shaped, model, chatID, 0)
+}
+
+// PrepareBodyWithHistoryLimit trims old turns toward a byte limit on the final signed JSON.
+// A zero limit keeps the existing large-request reasoning cleanup.
+func PrepareBodyWithHistoryLimit(shaped *jsonx.Obj, model, chatID string, limit int) ([]byte, *ToolNameMap, int64, error) {
+	body, names, budget, _, err := PrepareBodyWithHistoryAccounting(shaped, model, chatID, limit)
+	return body, names, budget, err
+}
+
+// PrepareBodyWithHistoryAccounting also estimates the input tokens removed by the history limit.
+func PrepareBodyWithHistoryAccounting(shaped *jsonx.Obj, model, chatID string, limit int) ([]byte, *ToolNameMap, int64, int, error) {
 	if shaped == nil {
-		return nil, nil, 0, errors.New("messages must be an array")
+		return nil, nil, 0, 0, errors.New("messages must be an array")
 	}
 	if _, ok := shaped.Arr("messages"); !ok {
-		return nil, nil, 0, errors.New("messages must be an array")
+		return nil, nil, 0, 0, errors.New("messages must be an array")
 	}
 	if !singleChatChoice(shaped.Get("n")) {
-		return nil, nil, 0, errors.New("CodeArts supports only n=1")
+		return nil, nil, 0, 0, errors.New("CodeArts supports only n=1")
 	}
 	out := jsonx.NewObj()
 	for _, k := range bodyKeys {
@@ -128,7 +141,7 @@ func PrepareBodyWithBudget(shaped *jsonx.Obj, model, chatID string) ([]byte, *To
 	tools, _ := out.Arr("tools")
 	selected, err := selectChatTool(out, tools)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, 0, 0, err
 	}
 	// The upstream rejects function names longer than 64 characters before it
 	// even parses the request; shorten them and keep the mapping for the reply.
@@ -161,10 +174,14 @@ func PrepareBodyWithBudget(shaped *jsonx.Obj, model, chatID string) ([]byte, *To
 		out.Set("prompt_cache_key", chatID)
 	}
 	body, err := jsonx.Marshal(out)
-	if err == nil && len(body) >= reasoningTrimThreshold && trimHistoricalReasoning(out) {
+	if err == nil && limit == 0 && len(body) >= reasoningTrimThreshold && trimHistoricalReasoning(out) {
 		body, err = jsonx.Marshal(out)
 	}
-	return body, names, budget, err
+	if err != nil {
+		return body, names, budget, 0, err
+	}
+	body, removedPromptTokens, err := chathistory.Apply(out, body, limit, names.RestoreName)
+	return body, names, budget, removedPromptTokens, err
 }
 
 func singleChatChoice(v any) bool {

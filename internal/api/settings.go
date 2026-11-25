@@ -102,7 +102,9 @@ func (s *Settings) snapshot() map[string]any {
 		"auto_switch_products": s.Store.AutoSwitchProducts(),
 		"upstream": map[string]any{
 			"header_timeout_seconds": int(up.HeaderTimeout.Seconds()), "idle_timeout_seconds": int(up.IdleTimeout.Seconds()),
-			"device_token_set": up.DeviceToken != "", "device_token_file": up.DeviceTokenFile,
+			"codearts_history_limit_mib": up.CodeArtsHistoryLimitMiB,
+			"raccoon_history_limit_mib":  up.RaccoonHistoryLimitMiB,
+			"device_token_set":           up.DeviceToken != "", "device_token_file": up.DeviceTokenFile,
 		},
 		"prompt": map[string]any{
 			"mode":     s.Store.PromptConfig().Mode,
@@ -393,13 +395,6 @@ func (s *Settings) patch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if p.Upstream != nil {
-		for k, v := range p.Upstream {
-			if n, ok := v.(json.Number); ok {
-				if i, err := n.Int64(); err == nil {
-					p.Upstream[k] = int(i)
-				}
-			}
-		}
 		if _, err := s.Store.SetUpstream(p.Upstream); err != nil {
 			fail(err)
 			return

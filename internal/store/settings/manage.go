@@ -338,7 +338,7 @@ func (s *Store) SetProxySlots(slots []ProxySlot) ([]ProxySlot, error) {
 
 // ------------------------------------------------------- simple groups
 
-// SetUpstream validates and stores the upstream timeouts / device token group.
+// SetUpstream validates and stores the upstream settings group.
 func (s *Store) SetUpstream(patch map[string]any) (UpstreamConfig, error) {
 	clean := map[string]any{}
 	for k, v := range patch {
@@ -350,6 +350,12 @@ func (s *Store) SetUpstream(patch map[string]any) (UpstreamConfig, error) {
 			}
 			if n > 24*3600 {
 				return UpstreamConfig{}, fmt.Errorf("%s cannot be more than a day", k)
+			}
+			clean[k] = n
+		case codeArtsHistoryLimitKey, raccoonHistoryLimitKey:
+			n, ok := parseHistoryLimit(v)
+			if !ok {
+				return UpstreamConfig{}, fmt.Errorf("%s must be a number between 0 and %d", k, maxHistoryLimitMiB)
 			}
 			clean[k] = n
 		case "device_token", "device_token_file":

@@ -90,6 +90,71 @@ func codeartsSSE(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, "data: [DONE]\n\n")
 }
 
+func TestCodeArtsHistoryLimitOnGateway(t *testing.T) {
+	received := make(chan struct{}, 2)
+	env := newCodeartsEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		received <- struct{}{}
+		codeartsSSE(w, r)
+	})
+	if _, err := env.h.Settings.SetUpstream(map[string]any{"codearts_history_limit_mib": 0.8}); err != nil {
+		t.Fatal(err)
+	}
+	const limit = (1 << 20) * 8 / 10
+	old := strings.Repeat("旧", 900*1024/3)
+	body := fmt.Sprintf(
+		"{\"model\":\"GLM-5.2\",\"messages\":[{\"role\":\"system\",\"content\":\"keep-system\"},{\"role\":\"user\",\"content\":%q},{\"role\":\"assistant\",\"content\":\"old-answer\"},{\"role\":\"user\",\"content\":\"keep-current\"}],\"stream\":true}",
+		old,
+	)
+	resp := env.post(t, body)
+	payload, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusOK || !strings.Contains(string(payload), "你好") {
+		t.Fatalf("response status %d, error %v: %s", resp.StatusCode, err, payload)
+	}
+	<-received
+	if len(env.body) > limit || env.hits.Load() != 1 {
+		t.Fatalf("wire body is %d bytes with %d upstream calls", len(env.body), env.hits.Load())
+	}
+	var wire struct {
+		Messages []struct{ Role, Content string }
+	}
+	if err := json.Unmarshal(env.body, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if len(wire.Messages) != 2 || wire.Messages[0].Role != "system" || wire.Messages[0].Content != "keep-system" ||
+		wire.Messages[1].Role != "user" || wire.Messages[1].Content != "keep-current" {
+		t.Fatal("wire body did not preserve the system message and current turn")
+	}
+	sum := sha256.Sum256(env.body)
+	if env.header.Get("X-Sdk-Content-Sha256") != hex.EncodeToString(sum[:]) {
+		t.Fatal("signature does not cover the trimmed wire body")
+	}
+
+	oversize := fmt.Sprintf(
+		"{\"model\":\"GLM-5.2\",\"messages\":[{\"role\":\"user\",\"content\":%q}],\"stream\":true}", old,
+	)
+	resp = env.post(t, oversize)
+	payload, err = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || resp.StatusCode != http.StatusOK ||
+		!strings.Contains(string(payload), "你好") || env.hits.Load() != 2 {
+		t.Fatalf("oversized current turn: status %d, upstream calls %d, error %v: %s",
+			resp.StatusCode, env.hits.Load(), err, payload)
+	}
+	<-received
+	if err := json.Unmarshal(env.body, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if len(env.body) <= limit || len(wire.Messages) != 1 ||
+		wire.Messages[0].Role != "user" || wire.Messages[0].Content != old {
+		t.Fatal("oversized current turn did not reach upstream intact")
+	}
+	sum = sha256.Sum256(env.body)
+	if env.header.Get("X-Sdk-Content-Sha256") != hex.EncodeToString(sum[:]) {
+		t.Fatal("signature does not cover the oversized wire body")
+	}
+}
+
 // TestCodeArtsStreamEndToEnd drives a full request through the gateway: the
 // account is picked from the channel, the body is reduced to the CodeArts
 // schema, the request is signed, and the upstream SSE is relayed unchanged.

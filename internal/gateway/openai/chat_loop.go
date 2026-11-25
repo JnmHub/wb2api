@@ -856,6 +856,9 @@ func (h *Handler) try(q *request, acc *pool.Account) result {
 	if q.sessionKey != "" {
 		h.Pool.Affinity().BindObserved(q.sessionKey, acc.UID, q.affinityObservation)
 	}
+	if meta := metaFrom(q.r.Context()); meta != nil {
+		meta.removedPromptTokens = out.removedPromptTokens
+	}
 	if q.sink != nil {
 		q.codeArtsSessionID = sessionID
 		q.sink(q, acc, cancel, idle, body)
@@ -889,9 +892,10 @@ type outbound struct {
 	body []byte
 	gz   bool
 	// names restores the tool names shortened for the Huawei channel.
-	names     *codearts.ToolNameMap
-	maxTokens int64
-	err       error
+	names               *codearts.ToolNameMap
+	maxTokens           int64
+	removedPromptTokens int
+	err                 error
 }
 
 // chatPathFor returns the chat endpoint of an upstream channel.
@@ -903,6 +907,13 @@ func chatPathFor(r string) string {
 		return raccoon.ChatPath
 	}
 	return ChatPath
+}
+
+func historyLimitBytes(mib float64) int {
+	if mib <= 0 {
+		return 0
+	}
+	return max(1, int(mib*(1<<20)))
 }
 
 // buildOutbound renders the body of one attempt for the account's channel.
@@ -919,11 +930,15 @@ func (h *Handler) buildOutbound(q *request, rec *accounts.Record, product string
 		if !ok {
 			return outbound{err: fmt.Errorf("model %q is not available on the raccoon channel", q.model)}
 		}
-		body, err := raccoon.PrepareBody(q.payload, wireModel)
+		limit := 0
+		if h.Settings != nil {
+			limit = historyLimitBytes(h.Settings.UpstreamConfig().RaccoonHistoryLimitMiB)
+		}
+		body, removedPromptTokens, err := raccoon.PrepareBodyWithHistoryAccounting(q.payload, wireModel, limit)
 		if err != nil {
 			return outbound{err: err}
 		}
-		return outbound{body: body}
+		return outbound{body: body, removedPromptTokens: removedPromptTokens}
 	}
 	if realm.IsCodeArts(rec.Realm) {
 		wire := codearts.WireName(rec, q.model)
@@ -938,11 +953,15 @@ func (h *Handler) buildOutbound(q *request, rec *accounts.Record, product string
 				payload.Set("max_tokens", n)
 			}
 		}
-		body, names, maxTokens, err := codearts.PrepareBodyWithBudget(payload, wire, identity.ConversationIDFor(rec.UID, q.sessionKey))
+		limit := 0
+		if h.Settings != nil {
+			limit = historyLimitBytes(h.Settings.UpstreamConfig().CodeArtsHistoryLimitMiB)
+		}
+		body, names, maxTokens, removedPromptTokens, err := codearts.PrepareBodyWithHistoryAccounting(payload, wire, identity.ConversationIDFor(rec.UID, q.sessionKey), limit)
 		if err != nil {
 			return outbound{err: err}
 		}
-		return outbound{body: body, names: names, maxTokens: maxTokens}
+		return outbound{body: body, names: names, maxTokens: maxTokens, removedPromptTokens: removedPromptTokens}
 	}
 	enc, gz := q.bodyFor(product)
 	return outbound{body: enc.wire(gz), gz: gz}

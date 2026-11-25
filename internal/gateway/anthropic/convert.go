@@ -643,6 +643,9 @@ func usageOf(u *jsonx.Obj, cached func(*jsonx.Obj) int64) *jsonx.Obj {
 	if st := u.Get("service_tier"); tr(st) {
 		out.Set("service_tier", st)
 	}
+	if u.Get("input_tokens_estimated") == true {
+		out.Set("input_tokens_estimated", true)
+	}
 	return out
 }
 

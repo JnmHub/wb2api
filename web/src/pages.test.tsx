@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AccountDrawer } from './accounts/AccountDrawer'
 import { LogsPage } from './logs/LogsPage'
@@ -130,7 +130,7 @@ describe('SettingsPage', () => {
     },
     switches: { auto_switch_product: true, egress_backoff_enabled: true, enable_anthropic_messages: false, auth_disabled: false },
     auto_switch_products: ['workbuddy', 'vscode'],
-    upstream: { header_timeout_seconds: 120, idle_timeout_seconds: 60, device_token_set: false, device_token_file: '' },
+    upstream: { header_timeout_seconds: 120, idle_timeout_seconds: 60, codearts_history_limit_mib: 0, raccoon_history_limit_mib: 0, device_token_set: false, device_token_file: '' },
     prompt: { mode: 'passthrough', file: '' },
     credits_refresh_hours: 6,
     window_probe: true,
@@ -152,6 +152,39 @@ describe('SettingsPage', () => {
     expect(screen.getByText('关闭 API Key 校验')).toBeInTheDocument()
     expect(screen.getByDisplayValue('socks5://127.0.0.1:1080')).toBeInTheDocument()
     expect(screen.getByDisplayValue('7')).toBeInTheDocument() // intl override of expiring_window_days
+  })
+
+  it.each([
+    ['CodeArts 历史裁剪阈值', 'codearts_history_limit_mib', '小浣熊历史裁剪阈值', 'raccoon_history_limit_mib'],
+    ['小浣熊历史裁剪阈值', 'raccoon_history_limit_mib', 'CodeArts 历史裁剪阈值', 'codearts_history_limit_mib'],
+  ])('saves the fractional value for %s independently', async (label, key, otherLabel, otherKey) => {
+    const upstream = { ...settings.upstream, [otherKey]: 2 }
+    const fetchSettings = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method !== 'PATCH') return json({ ...settings, upstream })
+      const patch = JSON.parse(String(init.body))
+      return json({ ...settings, upstream: { ...upstream, ...patch.upstream } })
+    })
+    globalThis.fetch = fetchSettings
+    renderPage(<SettingsPage />)
+
+    const limit = await screen.findByRole('spinbutton', { name: label })
+    const otherLimit = screen.getByRole('spinbutton', { name: otherLabel })
+    expect(limit).toHaveAttribute('aria-valuenow', '0')
+    expect(otherLimit).toHaveAttribute('aria-valuenow', '2')
+    fireEvent.focus(limit)
+    fireEvent.change(limit, { target: { value: '0.8' } })
+    fireEvent.blur(limit)
+    const card = limit.closest('.ant-card')
+    if (!(card instanceof HTMLElement)) throw new Error('Missing upstream settings card')
+    fireEvent.click(within(card).getByRole('button', { name: /^保\s*存$/ }))
+
+    await waitFor(() => expect(fetchSettings).toHaveBeenCalledWith('/api/v2/settings', expect.objectContaining({ method: 'PATCH' })))
+    const request = fetchSettings.mock.calls.find(([, init]) => init?.method === 'PATCH')
+    const saved = JSON.parse(String(request?.[1]?.body))
+    expect(saved.upstream[key]).toBe(0.8)
+    expect(saved.upstream).not.toHaveProperty(otherKey)
+    await waitFor(() => expect(limit).toHaveDisplayValue('0.8'))
+    expect(otherLimit).toHaveAttribute('aria-valuenow', '2')
   })
 })
 

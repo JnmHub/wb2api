@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"wb2api/internal/gateway/responses"
+	"wb2api/internal/gateway/usageview"
 	"wb2api/internal/jsonx"
 	"wb2api/internal/pool"
 	"wb2api/internal/realm"
@@ -293,8 +294,9 @@ func disableWebTools(chat *jsonx.Obj) *jsonx.Obj {
 // Stop the round's timer before moving on; its callback captures this value.
 type responseRound struct {
 	io.Reader
-	cancel context.CancelFunc
-	once   sync.Once
+	cancel              context.CancelFunc
+	once                sync.Once
+	removedPromptTokens int
 }
 
 func (r *responseRound) close() {
@@ -310,7 +312,7 @@ func (r *responseRound) close() {
 
 // openFollowUp sends another chat request for a web-tool round on the same
 // account, returning the upstream stream.
-func (h *Handler) openFollowUp(q *request, acc *pool.Account, chat *jsonx.Obj) (io.ReadCloser, error) {
+func (h *Handler) openFollowUp(q *request, acc *pool.Account, chat *jsonx.Obj) (*responseRound, error) {
 	q2 := *q
 	q2.payload = chat
 	h.reshape(&q2)
@@ -357,10 +359,11 @@ func (h *Handler) openFollowUp(q *request, acc *pool.Account, chat *jsonx.Obj) (
 	if isCodeArts {
 		body = codeArtsOutput(&q2, body)
 	}
-	return &cancelOnCloseBody{ReadCloser: struct {
+	reader := &cancelOnCloseBody{ReadCloser: struct {
 		io.Reader
 		io.Closer
-	}{body, resp.Body}, cancel: cancel}, nil
+	}{body, resp.Body}, cancel: cancel}
+	return &responseRound{Reader: reader, removedPromptTokens: out.removedPromptTokens}, nil
 }
 
 func (h *Handler) runWebCalls(ctx context.Context, calls []webCall) []string {
@@ -441,7 +444,7 @@ func (h *Handler) responsesWhole(q *request, acc *pool.Account, cancel context.C
 	body io.Reader, model string, info responses.Info) {
 
 	chat := q.payload.Clone()
-	current := &responseRound{Reader: body, cancel: cancel}
+	current := &responseRound{Reader: body, cancel: cancel, removedPromptTokens: removedPromptTokensFrom(q.r.Context())}
 	defer func() { current.close() }()
 	rounds := 0
 	if info.WebTools {
@@ -482,7 +485,7 @@ func (h *Handler) responsesWhole(q *request, acc *pool.Account, cancel context.C
 					}
 					return
 				}
-				chat, current = next, &responseRound{Reader: nr}
+				chat, current = next, nr
 				continue
 			}
 		}
@@ -525,7 +528,7 @@ func (h *Handler) responsesWhole(q *request, acc *pool.Account, cancel context.C
 	chatObj := jsonx.NewObj()
 	chatObj.Set("choices", []any{choice})
 	if res.usage != nil {
-		if u, err := jsonx.UnmarshalObj(res.usage); err == nil {
+		if u, err := jsonx.UnmarshalObj(usageview.WithOriginalPrompt(res.usage, current.removedPromptTokens)); err == nil {
 			chatObj.Set("usage", u)
 		}
 	}
@@ -589,9 +592,10 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 	if info.WebTools {
 		rounds = maxWebRounds()
 	}
-	current := &responseRound{Reader: body, cancel: cancelUp}
+	current := &responseRound{Reader: body, cancel: cancelUp, removedPromptTokens: removedPromptTokensFrom(q.r.Context())}
 	defer func() { current.close() }()
 	for round := 0; !clientClosed; round++ {
+		s.SetRoundRemovedPromptTokens(current.removedPromptTokens)
 		// Capture this round: an expired read must never close its follow-up.
 		br := bufio.NewReaderSize(&relayReader{body: current.Reader, idle: idleD, cancel: current.close, beforeRead: func() error {
 			err := flush()
@@ -705,7 +709,7 @@ func (h *Handler) responsesStream(q *request, acc *pool.Account, cancelUp contex
 			break
 		}
 		chat = next
-		current = &responseRound{Reader: nr}
+		current = nr
 	}
 	if !clientClosed && streamErr == nil {
 		if !sawContent && sawReasoning {

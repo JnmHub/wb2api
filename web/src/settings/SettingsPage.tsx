@@ -499,6 +499,8 @@ function UpstreamSection({ s }: { s: SettingsView }) {
   const save = useSaveSettings()
   const [hdr, setHdr] = useState(String(s.upstream.header_timeout_seconds))
   const [idle, setIdle] = useState(String(s.upstream.idle_timeout_seconds))
+  const [codeArtsHistoryLimit, setCodeArtsHistoryLimit] = useState<number | undefined>()
+  const [raccoonHistoryLimit, setRaccoonHistoryLimit] = useState<number | undefined>()
   const [token, setToken] = useState('')
   const [tokenFile, setTokenFile] = useState(s.upstream.device_token_file)
   const [mode, setMode] = useState(s.prompt.mode)
@@ -509,6 +511,8 @@ function UpstreamSection({ s }: { s: SettingsView }) {
     header_timeout_seconds: Number(hdr), idle_timeout_seconds: Number(idle), device_token_file: tokenFile,
   }
   if (token) upstream.device_token = token
+  if (codeArtsHistoryLimit !== undefined) upstream.codearts_history_limit_mib = codeArtsHistoryLimit
+  if (raccoonHistoryLimit !== undefined) upstream.raccoon_history_limit_mib = raccoonHistoryLimit
   return (
     <Card
       title="上游与提示词"
@@ -518,7 +522,12 @@ function UpstreamSection({ s }: { s: SettingsView }) {
           size="small"
           loading={save.isPending}
           onClick={() => {
-            save.mutate({ upstream, prompt: { mode, file, sanitize }, credits_refresh_hours: Number(credits) })
+            save.mutate({ upstream, prompt: { mode, file, sanitize }, credits_refresh_hours: Number(credits) }, {
+              onSuccess: () => {
+                setCodeArtsHistoryLimit((current) => current === codeArtsHistoryLimit ? undefined : current)
+                setRaccoonHistoryLimit((current) => current === raccoonHistoryLimit ? undefined : current)
+              },
+            })
             setToken('')
           }}
         >
@@ -576,6 +585,38 @@ function UpstreamSection({ s }: { s: SettingsView }) {
               { value: 'off', label: '不改写（只做最小指纹补丁）' },
             ]}
           />
+        </Col>
+        <Col xs={24} md={12}>
+          <Typography.Text type="secondary">CodeArts 历史裁剪阈值（MiB，0 = 关闭）</Typography.Text>
+          <InputNumber
+            min={0}
+            max={1024}
+            step={0.1}
+            style={{ width: '100%' }}
+            value={codeArtsHistoryLimit ?? s.upstream.codearts_history_limit_mib ?? 0}
+            onChange={(v) => setCodeArtsHistoryLimit(v ?? 0)}
+            aria-label="CodeArts 历史裁剪阈值"
+            aria-describedby="codearts-history-limit-hint"
+          />
+          <Typography.Text id="codearts-history-limit-hint" type="secondary">
+            从最旧的完整轮次开始裁剪，保留系统提示、当前轮及其工具链和工具定义。保留内容仍超过阈值时继续转发。
+          </Typography.Text>
+        </Col>
+        <Col xs={24} md={12}>
+          <Typography.Text type="secondary">小浣熊历史裁剪阈值（MiB，0 = 关闭）</Typography.Text>
+          <InputNumber
+            min={0}
+            max={1024}
+            step={0.1}
+            style={{ width: '100%' }}
+            value={raccoonHistoryLimit ?? s.upstream.raccoon_history_limit_mib ?? 0}
+            onChange={(v) => setRaccoonHistoryLimit(v ?? 0)}
+            aria-label="小浣熊历史裁剪阈值"
+            aria-describedby="raccoon-history-limit-hint"
+          />
+          <Typography.Text id="raccoon-history-limit-hint" type="secondary">
+            从最旧的完整轮次开始裁剪，保留系统提示、当前轮及其工具链和工具定义。保留内容仍超过阈值时继续转发。
+          </Typography.Text>
         </Col>
       </Row>
       {save.isError && <Typography.Text type="danger">{String(save.error)}</Typography.Text>}

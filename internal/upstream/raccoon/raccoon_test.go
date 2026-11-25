@@ -376,3 +376,41 @@ func TestPrepareBodyWritesResolvedModel(t *testing.T) {
 		t.Fatal("stream must be forced")
 	}
 }
+
+func TestPrepareBodyWithHistoryAccounting(t *testing.T) {
+	const model = "sn-deepseek-v4-1-flash-1017"
+	const begin = `{"messages":[`
+	const old = `{"role":"user","content":"旧问题"},{"role":"assistant","content":"Old answer."},`
+	const current = `{"role":"user","content":"当前轮"}]}`
+	payload, err := jsonx.UnmarshalObj([]byte(begin + old + current))
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := PrepareBody(payload, model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activePayload, err := jsonx.UnmarshalObj([]byte(begin + current))
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := PrepareBody(activePayload, model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		limit, wantRemoved int
+		want               []byte
+	}{
+		{limit: 0, want: full},
+		{limit: len(full), want: full},
+		{limit: len(active), want: active, wantRemoved: 12},
+		{limit: 1, want: active, wantRemoved: 12},
+	} {
+		got, removed, err := PrepareBodyWithHistoryAccounting(payload, model, test.limit)
+		if err != nil || string(got) != string(test.want) || removed != test.wantRemoved {
+			t.Fatalf("limit = %d, body = %s, removed tokens = %d, error = %v; want %s and %d removed tokens",
+				test.limit, got, removed, err, test.want, test.wantRemoved)
+		}
+	}
+}

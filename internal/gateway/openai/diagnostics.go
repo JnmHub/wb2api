@@ -116,9 +116,10 @@ func requestIDFromContext(ctx context.Context) string {
 // post-hoc emitters only have a context, and a failure has to be traceable to
 // the id the client was handed plus a summary of what was actually sent.
 type requestMeta struct {
-	id            string
-	shape         *RequestShape
-	codeArtsModel string
+	id                  string
+	shape               *RequestShape
+	codeArtsModel       string
+	removedPromptTokens int
 }
 
 type requestMetaKey struct{}
@@ -143,6 +144,13 @@ func requestShapeFrom(ctx context.Context) *RequestShape {
 		return m.shape
 	}
 	return nil
+}
+
+func removedPromptTokensFrom(ctx context.Context) int {
+	if m := metaFrom(ctx); m != nil {
+		return m.removedPromptTokens
+	}
+	return 0
 }
 
 func errText(err error) string {

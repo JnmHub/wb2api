@@ -11,14 +11,42 @@ import (
 const (
 	DefaultHeaderTimeoutSeconds = 120
 	DefaultIdleTimeoutSeconds   = 300
+	maxHistoryLimitMiB          = 1024
 )
 
 // UpstreamConfig is the "upstream" settings group.
 type UpstreamConfig struct {
-	HeaderTimeout   time.Duration
-	IdleTimeout     time.Duration
-	DeviceToken     string
-	DeviceTokenFile string
+	HeaderTimeout           time.Duration
+	IdleTimeout             time.Duration
+	CodeArtsHistoryLimitMiB float64
+	RaccoonHistoryLimitMiB  float64
+	DeviceToken             string
+	DeviceTokenFile         string
+}
+
+const (
+	codeArtsHistoryLimitKey = "codearts_history_limit_mib"
+	raccoonHistoryLimitKey  = "raccoon_history_limit_mib"
+)
+
+func parseHistoryLimit(v any) (float64, bool) {
+	var size float64
+	switch value := v.(type) {
+	case int:
+		size = float64(value)
+	case int64:
+		size = float64(value)
+	default:
+		var ok bool
+		size, ok = numberFloat(v)
+		if !ok {
+			return 0, false
+		}
+	}
+	if !(size >= 0 && size <= maxHistoryLimitMiB) {
+		return 0, false
+	}
+	return size, true
 }
 
 func positiveInt(v any, def int) int {
@@ -45,11 +73,15 @@ func trimmedString(v any) string {
 // UpstreamConfig returns the upstream group with legacy defaults and validation.
 func (s *Store) UpstreamConfig() UpstreamConfig {
 	g, _ := s.View()["upstream"].(map[string]any)
+	codeArtsHistoryLimit, _ := parseHistoryLimit(g[codeArtsHistoryLimitKey])
+	raccoonHistoryLimit, _ := parseHistoryLimit(g[raccoonHistoryLimitKey])
 	return UpstreamConfig{
-		HeaderTimeout:   time.Duration(positiveInt(g["header_timeout_seconds"], DefaultHeaderTimeoutSeconds)) * time.Second,
-		IdleTimeout:     time.Duration(positiveInt(g["idle_timeout_seconds"], DefaultIdleTimeoutSeconds)) * time.Second,
-		DeviceToken:     trimmedString(g["device_token"]),
-		DeviceTokenFile: trimmedString(g["device_token_file"]),
+		HeaderTimeout:           time.Duration(positiveInt(g["header_timeout_seconds"], DefaultHeaderTimeoutSeconds)) * time.Second,
+		IdleTimeout:             time.Duration(positiveInt(g["idle_timeout_seconds"], DefaultIdleTimeoutSeconds)) * time.Second,
+		CodeArtsHistoryLimitMiB: codeArtsHistoryLimit,
+		RaccoonHistoryLimitMiB:  raccoonHistoryLimit,
+		DeviceToken:             trimmedString(g["device_token"]),
+		DeviceTokenFile:         trimmedString(g["device_token_file"]),
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"wb2api/internal/gateway/anthropic"
+	"wb2api/internal/gateway/usageview"
 	"wb2api/internal/jsonx"
 	"wb2api/internal/pool"
 	"wb2api/internal/realm"
@@ -149,7 +150,7 @@ func (h *Handler) messagesWhole(q *request, acc *pool.Account, cancel context.Ca
 		}
 		return
 	}
-	chat := chatFromCollected(res)
+	chat := chatFromCollected(res, removedPromptTokensFrom(q.r.Context()))
 	out := anthropic.ChatToMessages(chat, anthropic.Env{}, anthropic.DefaultCached)
 	b, err := jsonx.Marshal(out)
 	if err != nil {
@@ -160,7 +161,7 @@ func (h *Handler) messagesWhole(q *request, acc *pool.Account, cancel context.Ca
 }
 
 // chatFromCollected rebuilds a chat.completion object from a folded stream.
-func chatFromCollected(res *collected) *jsonx.Obj {
+func chatFromCollected(res *collected, removedPromptTokens int) *jsonx.Obj {
 	msg := jsonx.NewObj()
 	msg.Set("role", "assistant")
 	msg.Set("content", res.content)
@@ -191,7 +192,7 @@ func chatFromCollected(res *collected) *jsonx.Obj {
 	chat.Set("model", res.meta.model)
 	chat.Set("choices", []any{choice})
 	if res.usage != nil {
-		if u, err := jsonx.UnmarshalObj(res.usage); err == nil {
+		if u, err := jsonx.UnmarshalObj(usageview.WithOriginalPrompt(res.usage, removedPromptTokens)); err == nil {
 			chat.Set("usage", u)
 		}
 	}
@@ -294,7 +295,7 @@ func (h *Handler) messagesStream(q *request, acc *pool.Account, cancelUp context
 		reasoningOnly = true
 		_, _ = bw.Write(anthropic.ErrorFrame("api_error", reasoningOnlyDetail))
 	default:
-		for _, f := range s.Finish() {
+		for _, f := range s.FinishWithOriginalPrompt(removedPromptTokensFrom(q.r.Context())) {
 			_, _ = bw.Write(f)
 		}
 	}

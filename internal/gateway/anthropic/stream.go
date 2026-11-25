@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"wb2api/internal/gateway/usageview"
 	"wb2api/internal/jsonx"
 )
 
@@ -225,6 +226,11 @@ func itoa(n int) string { return jsonx.PyStr(num(int64(n))) }
 
 // Finish closes every open block and emits message_delta / message_stop.
 func (s *Stream) Finish() []Frame {
+	return s.FinishWithOriginalPrompt(0)
+}
+
+// FinishWithOriginalPrompt adds the removed input estimate to the final client usage.
+func (s *Stream) FinishWithOriginalPrompt(removedPromptTokens int) []Frame {
 	if s.failed {
 		return nil
 	}
@@ -249,7 +255,7 @@ func (s *Stream) Finish() []Frame {
 	}
 	s.done = true
 	out = append(out,
-		frame("message_delta", obj("delta", obj("stop_reason", s.stop, "stop_sequence", nil), "usage", usageOf(s.usage, s.cached))),
+		frame("message_delta", obj("delta", obj("stop_reason", s.stop, "stop_sequence", nil), "usage", usageOf(usageview.WithOriginalPromptObject(s.usage, removedPromptTokens), s.cached))),
 		frame("message_stop", jsonx.NewObj()))
 	return out
 }
